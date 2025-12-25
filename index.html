@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BerryEditor</title>
+    <link data-trunk rel="rust" data-bin="berry-editor" data-wasm-opt="0"/>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            overflow: hidden;
+        }
+
+        .berry-editor-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .berry-editor-sidebar {
+            width: 250px;
+            background: #252525;
+            border-right: 1px solid #3e3e3e;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .berry-editor-sidebar-header {
+            padding: 12px 16px;
+            background: #2d2d2d;
+            border-bottom: 1px solid #3e3e3e;
+            font-size: 11px;
+            font-weight: 600;
+            color: #858585;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .berry-editor-refresh-btn {
+            background: none;
+            border: none;
+            color: #858585;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0 4px;
+        }
+
+        .berry-editor-refresh-btn:hover {
+            color: #d4d4d4;
+        }
+
+        .berry-editor-file-tree {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .berry-editor-file-item {
+            padding: 4px 8px;
+            cursor: pointer;
+            color: #d4d4d4;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            user-select: none;
+        }
+
+        .berry-editor-file-item:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .berry-editor-folder-icon {
+            margin-right: 4px;
+            width: 16px;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .berry-editor-folder-icon.collapsed::before {
+            content: '▶';
+            font-size: 10px;
+        }
+
+        .berry-editor-folder-icon.expanded::before {
+            content: '▼';
+            font-size: 10px;
+        }
+
+        .berry-editor-file-icon {
+            margin-right: 6px;
+        }
+
+        .berry-editor-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .berry-editor-tab-bar {
+            display: flex;
+            background: #252525;
+            border-bottom: 1px solid #3e3e3e;
+            min-height: 35px;
+        }
+
+        .berry-editor-tab {
+            padding: 8px 16px;
+            background: #252525;
+            border-right: 1px solid #3e3e3e;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #d4d4d4;
+        }
+
+        .berry-editor-tab.active {
+            background: #1e1e1e;
+            border-bottom: 2px solid #007acc;
+        }
+
+        .berry-editor-tab-close {
+            background: none;
+            border: none;
+            color: #858585;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0 4px;
+        }
+
+        .berry-editor-tab-close:hover {
+            color: #d4d4d4;
+        }
+
+        .berry-editor-pane {
+            flex: 1;
+            background: #1e1e1e;
+            overflow: auto;
+        }
+
+        .berry-editor-content {
+            display: flex;
+            padding: 16px 0;
+        }
+
+        .berry-editor-line-numbers {
+            min-width: 50px;
+            text-align: right;
+            padding-right: 16px;
+            color: #858585;
+            font-size: 14px;
+            line-height: 1.6;
+            user-select: none;
+        }
+
+        .berry-editor-line-number {
+            padding: 0 8px;
+        }
+
+        .berry-editor-lines {
+            flex: 1;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .berry-editor-line {
+            padding: 0 16px;
+            white-space: pre;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+
+        .berry-editor-status-bar {
+            height: 24px;
+            background: #007acc;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+            font-size: 11px;
+            gap: 16px;
+        }
+
+        /* Syntax highlighting colors */
+        .syntax-keyword { color: #569cd6; }
+        .syntax-function { color: #dcdcaa; }
+        .syntax-type { color: #4ec9b0; }
+        .syntax-string { color: #ce9178; }
+        .syntax-number { color: #b5cea8; }
+        .syntax-comment { color: #6a9955; font-style: italic; }
+        .syntax-operator { color: #d4d4d4; }
+        .syntax-identifier { color: #d4d4d4; }
+
+        /* Main editor area layout */
+        .berry-editor-main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Bottom panel for diagnostics */
+        .berry-editor-bottom-panel {
+            height: 200px;
+            border-top: 1px solid #3e3e3e;
+            background: #1e1e1e;
+            overflow-y: auto;
+        }
+
+        /* Debug sidebar on the right */
+        .berry-editor-debug-sidebar {
+            width: 300px;
+            background: #252525;
+            border-left: 1px solid #3e3e3e;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Status bar buttons */
+        .berry-status-button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 11px;
+            border-radius: 2px;
+        }
+
+        .berry-status-button:hover {
+            background: #005a9e;
+        }
+
+        .berry-editor-status-left,
+        .berry-editor-status-right {
+            display: flex;
+            align-items: center;
+        }
+
+        /* Panel styles */
+        .berry-panel {
+            border-bottom: 1px solid #3e3e3e;
+            background: #252525;
+        }
+
+        .berry-panel-header {
+            padding: 8px 12px;
+            background: #2d2d2d;
+            border-bottom: 1px solid #3e3e3e;
+            font-size: 11px;
+            font-weight: 600;
+            color: #858585;
+        }
+
+        .berry-panel-content {
+            padding: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        /* Diagnostics */
+        .berry-diagnostics-list {
+            padding: 4px;
+        }
+
+        .berry-diagnostic {
+            padding: 4px 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .berry-diagnostic:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .berry-diagnostic-error {
+            border-left: 3px solid #f48771;
+        }
+
+        .berry-diagnostic-warning {
+            border-left: 3px solid #cca700;
+        }
+
+        .berry-diagnostic-info {
+            border-left: 3px solid #75beff;
+        }
+
+        .berry-diagnostic-icon {
+            font-weight: bold;
+        }
+
+        .berry-diagnostic-message {
+            flex: 1;
+        }
+
+        .berry-diagnostic-location {
+            color: #858585;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <div id="berry-editor-wasm-root"></div>
+</body>
+</html>

@@ -1,0 +1,364 @@
+//! Syntax Highlighting using Regex
+//! 100% Rust - No JavaScript!
+//! WASM-compatible without tree-sitter
+
+use regex::Regex;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenType {
+    Keyword,
+    Function,
+    Type,
+    String,
+    Number,
+    Comment,
+    Operator,
+    Identifier,
+}
+
+impl TokenType {
+    pub fn to_color(&self) -> &'static str {
+        match self {
+            TokenType::Keyword => "#569cd6",
+            TokenType::Function => "#dcdcaa",
+            TokenType::Type => "#4ec9b0",
+            TokenType::String => "#ce9178",
+            TokenType::Number => "#b5cea8",
+            TokenType::Comment => "#6a9955",
+            TokenType::Operator => "#d4d4d4",
+            TokenType::Identifier => "#9cdcfe",
+        }
+    }
+
+    pub fn to_class(&self) -> &'static str {
+        match self {
+            TokenType::Keyword => "syntax-keyword",
+            TokenType::Function => "syntax-function",
+            TokenType::Type => "syntax-type",
+            TokenType::String => "syntax-string",
+            TokenType::Number => "syntax-number",
+            TokenType::Comment => "syntax-comment",
+            TokenType::Operator => "syntax-operator",
+            TokenType::Identifier => "syntax-identifier",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntaxToken {
+    pub token_type: TokenType,
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Clone)]
+pub struct SyntaxHighlighter {
+    current_language: Option<String>,
+}
+
+impl SyntaxHighlighter {
+    pub fn new() -> Self {
+        Self {
+            current_language: None,
+        }
+    }
+
+    pub fn set_language(&mut self, lang: &str) -> Result<(), String> {
+        self.current_language = Some(lang.to_string());
+        Ok(())
+    }
+
+    pub fn highlight_line(&self, line: &str) -> Vec<SyntaxToken> {
+        let lang = self.current_language.as_deref().unwrap_or("");
+
+        match lang {
+            "rust" | "rs" => self.highlight_rust(line),
+            "javascript" | "js" | "typescript" | "ts" => self.highlight_javascript(line),
+            "python" | "py" => self.highlight_python(line),
+            _ => vec![SyntaxToken {
+                token_type: TokenType::Identifier,
+                text: line.to_string(),
+                start: 0,
+                end: line.len(),
+            }],
+        }
+    }
+
+    fn highlight_rust(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+        let trimmed = line.trim_start();
+
+        // Comments
+        if let Some(pos) = line.find("//") {
+            if pos > 0 {
+                self.add_basic_tokens(&mut tokens, &line[..pos], 0);
+            }
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Comment,
+                text: line[pos..].to_string(),
+                start: pos,
+                end: line.len(),
+            });
+            return tokens;
+        }
+
+        self.add_basic_tokens(&mut tokens, line, 0);
+        tokens
+    }
+
+    fn highlight_javascript(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+
+        // Comments
+        if let Some(pos) = line.find("//") {
+            if pos > 0 {
+                self.add_basic_tokens(&mut tokens, &line[..pos], 0);
+            }
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Comment,
+                text: line[pos..].to_string(),
+                start: pos,
+                end: line.len(),
+            });
+            return tokens;
+        }
+
+        self.add_basic_tokens(&mut tokens, line, 0);
+        tokens
+    }
+
+    fn highlight_python(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+
+        // Comments
+        if let Some(pos) = line.find('#') {
+            if pos > 0 {
+                self.add_basic_tokens(&mut tokens, &line[..pos], 0);
+            }
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Comment,
+                text: line[pos..].to_string(),
+                start: pos,
+                end: line.len(),
+            });
+            return tokens;
+        }
+
+        self.add_basic_tokens(&mut tokens, line, 0);
+        tokens
+    }
+
+    fn add_basic_tokens(&self, tokens: &mut Vec<SyntaxToken>, text: &str, offset: usize) {
+        let keywords = [
+            "fn", "let", "mut", "const", "pub", "use", "mod", "impl", "struct",
+            "enum", "trait", "type", "if", "else", "match", "for", "while", "loop",
+            "return", "async", "await", "move", "self", "Self", "super", "crate",
+            "where", "unsafe", "extern", "static", "ref", "dyn", "as", "in",
+            "function", "var", "class", "import", "export", "from", "def", "class",
+            "return", "yield", "lambda", "with", "try", "except", "finally",
+        ];
+
+        let types = [
+            "String", "str", "Vec", "Option", "Result", "Box", "Rc", "Arc",
+            "i32", "i64", "u32", "u64", "f32", "f64", "bool", "char", "usize",
+        ];
+
+        let mut current_pos = 0;
+        let words: Vec<&str> = text.split_whitespace().collect();
+
+        for word in words {
+            if let Some(word_start) = text[current_pos..].find(word) {
+                let absolute_start = current_pos + word_start;
+                let absolute_end = absolute_start + word.len();
+
+                // Check if it's a keyword
+                if keywords.contains(&word) {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Keyword,
+                        text: word.to_string(),
+                        start: offset + absolute_start,
+                        end: offset + absolute_end,
+                    });
+                }
+                // Check if it's a type
+                else if types.contains(&word) || (word.len() > 0 && word.chars().next().unwrap().is_uppercase()) {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Type,
+                        text: word.to_string(),
+                        start: offset + absolute_start,
+                        end: offset + absolute_end,
+                    });
+                }
+                // Check if it's a string
+                else if word.starts_with('"') || word.starts_with('\'') {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::String,
+                        text: word.to_string(),
+                        start: offset + absolute_start,
+                        end: offset + absolute_end,
+                    });
+                }
+                // Check if it's a number
+                else if word.chars().all(|c| c.is_numeric() || c == '.') {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Number,
+                        text: word.to_string(),
+                        start: offset + absolute_start,
+                        end: offset + absolute_end,
+                    });
+                }
+                // Identifier
+                else {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Identifier,
+                        text: word.to_string(),
+                        start: offset + absolute_start,
+                        end: offset + absolute_end,
+                    });
+                }
+
+                current_pos = absolute_end;
+            }
+        }
+
+        // If no tokens were created, add the whole line as identifier
+        if tokens.is_empty() && !text.is_empty() {
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Identifier,
+                text: text.to_string(),
+                start: offset,
+                end: offset + text.len(),
+            });
+        }
+    }
+
+    pub fn get_language(&self) -> Option<&str> {
+        self.current_language.as_deref()
+    }
+}
+
+impl Default for SyntaxHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn test_highlight_rust_keyword() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("fn main() {");
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Keyword && t.text == "fn"));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_highlight_comment() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("// This is a comment");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token_type, TokenType::Comment);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_highlight_type() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("let x: String = String::new();");
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Type && t.text == "String"));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_javascript_comment() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("javascript").unwrap();
+
+        let tokens = highlighter.highlight_line("// JavaScript comment");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token_type, TokenType::Comment);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_python_comment() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("python").unwrap();
+
+        let tokens = highlighter.highlight_line("# Python comment");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token_type, TokenType::Comment);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_token_type_colors() {
+        assert_eq!(TokenType::Keyword.to_color(), "#569cd6");
+        assert_eq!(TokenType::Function.to_color(), "#dcdcaa");
+        assert_eq!(TokenType::Type.to_color(), "#4ec9b0");
+        assert_eq!(TokenType::String.to_color(), "#ce9178");
+        assert_eq!(TokenType::Number.to_color(), "#b5cea8");
+        assert_eq!(TokenType::Comment.to_color(), "#6a9955");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_token_type_classes() {
+        assert_eq!(TokenType::Keyword.to_class(), "syntax-keyword");
+        assert_eq!(TokenType::Function.to_class(), "syntax-function");
+        assert_eq!(TokenType::Type.to_class(), "syntax-type");
+        assert_eq!(TokenType::String.to_class(), "syntax-string");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_no_language_set() {
+        let highlighter = SyntaxHighlighter::new();
+        let tokens = highlighter.highlight_line("some text");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token_type, TokenType::Identifier);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_get_language() {
+        let mut highlighter = SyntaxHighlighter::new();
+        assert!(highlighter.get_language().is_none());
+
+        highlighter.set_language("rust").unwrap();
+        assert_eq!(highlighter.get_language(), Some("rust"));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_partial_line_with_comment() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("let x = 5; // inline comment");
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Keyword));
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Comment));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_number_highlighting() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("let x = 42;");
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Number));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_uppercase_type_detection() {
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_language("rust").unwrap();
+
+        let tokens = highlighter.highlight_line("MyCustomType");
+        assert!(tokens.iter().any(|t| t.token_type == TokenType::Type));
+    }
+}
