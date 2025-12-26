@@ -198,8 +198,10 @@ pub fn VirtualEditorPanel(
                         let is_editing = tab.is_editing;
 
                         if is_editing {
-                            // EDIT MODE: Show textarea
+                            // EDIT MODE: Show textarea with line numbers
                             let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
+                            let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                            let line_count = lines.len().max(1);
 
                             // Auto-focus when entering edit mode
                             Effect::new(move |_| {
@@ -209,22 +211,47 @@ pub fn VirtualEditorPanel(
                             });
 
                             view! {
-                                <textarea
-                                    node_ref=textarea_ref
-                                    style="
-                                        width: 100%;
-                                        height: 100%;
-                                        background: #2b2b2b;
-                                        color: #a9b7c6;
-                                        font-family: Menlo, Monaco, 'Courier New', monospace;
+                                <div style="
+                                    display: flex;
+                                    width: 100%;
+                                    height: 100%;
+                                    background: #2b2b2b;
+                                ">
+                                    // Line numbers
+                                    <div style="
+                                        min-width: 50px;
+                                        text-align: right;
+                                        padding: 10px 12px 10px 0;
+                                        background: #313335;
+                                        color: #606366;
                                         font-size: 13px;
                                         line-height: 20px;
-                                        padding: 10px;
-                                        border: none;
-                                        outline: none;
-                                        resize: none;
-                                        tab-size: 4;
-                                    "
+                                        user-select: none;
+                                        border-right: 1px solid #323232;
+                                        font-family: Menlo, Monaco, 'Courier New', monospace;
+                                    ">
+                                        {(1..=line_count).map(|n| {
+                                            view! {
+                                                <div>{n}</div>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+
+                                    <textarea
+                                        node_ref=textarea_ref
+                                        style="
+                                            flex: 1;
+                                            background: #2b2b2b;
+                                            color: #a9b7c6;
+                                            font-family: Menlo, Monaco, 'Courier New', monospace;
+                                            font-size: 13px;
+                                            line-height: 20px;
+                                            padding: 10px;
+                                            border: none;
+                                            outline: none;
+                                            resize: none;
+                                            tab-size: 4;
+                                        "
                                     on:input=move |ev| {
                                         let new_content = event_target_value(&ev);
                                         tabs.update(|t| {
@@ -278,6 +305,7 @@ pub fn VirtualEditorPanel(
                                         }
                                     }
                                 >{content}</textarea>
+                                </div>
                             }.into_any()
                         } else {
                             // VIEW MODE: Show syntax highlighted code
