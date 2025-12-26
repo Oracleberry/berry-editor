@@ -3,6 +3,7 @@
 //! Displays watch expressions and their evaluated values.
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use crate::common::ui_components::Panel;
 use super::session::DebugSession;
@@ -27,7 +28,7 @@ pub fn WatchPanel(
     let new_expression = RwSignal::new(String::new());
 
     // Add new watch expression
-    let add_watch = move |_| {
+    let add_watch = move || {
         let expr = new_expression.get_untracked();
         if !expr.is_empty() {
             let watch = WatchExpression {
@@ -67,58 +68,55 @@ pub fn WatchPanel(
         }
     };
 
-    Panel(
-        "Watch",
-        move || {
-            view! {
-                <div class="berry-watch-panel">
-                    <div class="berry-watch-add">
-                        <input
-                            type="text"
-                            class="berry-input"
-                            prop:value=move || new_expression.get()
-                            on:input=move |ev| {
-                                new_expression.set(event_target_value(&ev));
+    view! {
+        <Panel title="Watch">
+            <div class="berry-watch-panel">
+                <div class="berry-watch-add">
+                    <input
+                        type="text"
+                        class="berry-input"
+                        prop:value=move || new_expression.get()
+                        on:input=move |ev| {
+                            new_expression.set(event_target_value(&ev));
+                        }
+                        on:keydown=move |ev| {
+                            if ev.key() == "Enter" {
+                                add_watch();
                             }
-                            on:keydown=move |ev| {
-                                if ev.key() == "Enter" {
-                                    add_watch(ev);
-                                }
-                            }
-                            placeholder="Add watch expression..."
-                        />
-                        <button class="berry-button" on:click=add_watch>"+"</button>
-                    </div>
-                    <div class="berry-watch-list">
-                        {move || {
-                            let current_watches = watches.get();
-
-                            if current_watches.is_empty() {
-                                view! {
-                                    <div class="berry-watch-empty">
-                                        "No watch expressions"
-                                    </div>
-                                }.into_any()
-                            } else {
-                                current_watches.iter().map(|watch| {
-                                    let watch_clone = watch.clone();
-                                    view! {
-                                        <WatchExpressionView
-                                            watch=watch.clone()
-                                            on_remove=move || {
-                                                let id = watch_clone.id.clone();
-                                                watches.update(|w| w.retain(|w| w.id != id));
-                                            }
-                                        />
-                                    }
-                                }).collect::<Vec<_>>().into_any()
-                            }
-                        }}
-                    </div>
+                        }
+                        placeholder="Add watch expression..."
+                    />
+                    <button class="berry-button" on:click=move |_| add_watch()>"+"</button>
                 </div>
-            }
-        }
-    )
+                <div class="berry-watch-list">
+                    {move || {
+                        let current_watches = watches.get();
+
+                        if current_watches.is_empty() {
+                            view! {
+                                <div class="berry-watch-empty">
+                                    "No watch expressions"
+                                </div>
+                            }.into_any()
+                        } else {
+                            current_watches.iter().map(|watch| {
+                                let watch_clone = watch.clone();
+                                view! {
+                                    <WatchExpressionView
+                                        watch=watch.clone()
+                                        on_remove=move || {
+                                            let id = watch_clone.id.clone();
+                                            watches.update(|w| w.retain(|w| w.id != id));
+                                        }
+                                    />
+                                }
+                            }).collect::<Vec<_>>().into_any()
+                        }
+                    }}
+                </div>
+            </div>
+        </Panel>
+    }
 }
 
 /// Single watch expression view
@@ -129,15 +127,19 @@ fn WatchExpressionView(
     /// Remove callback
     on_remove: impl Fn() + 'static,
 ) -> impl IntoView {
+    let expression = watch.expression.clone();
+    let value_text = watch.value.clone();
+    let error_text = watch.error.clone();
+
     view! {
         <div class="berry-watch-expression">
-            <div class="berry-watch-expr-name">{&watch.expression}</div>
+            <div class="berry-watch-expr-name">{expression}</div>
             <div class="berry-watch-expr-value">
-                {if let Some(ref value) = watch.value {
+                {if let Some(value) = value_text {
                     view! {
                         <span class="berry-watch-value">{value}</span>
                     }.into_any()
-                } else if let Some(ref error) = watch.error {
+                } else if let Some(error) = error_text {
                     view! {
                         <span class="berry-watch-error">{error}</span>
                     }.into_any()

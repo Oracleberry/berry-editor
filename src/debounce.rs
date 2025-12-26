@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 /// Handle to a timeout that can be canceled
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct TimeoutHandle {
     id: i32,
 }

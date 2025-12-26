@@ -6,15 +6,12 @@ use leptos::prelude::*;
 
 /// Generic panel component with title and children
 #[component]
-pub fn Panel<F, IV>(
+pub fn Panel(
     /// Panel title
     title: &'static str,
     /// Child content
-    children: F,
+    children: Children,
 ) -> impl IntoView
-where
-    F: Fn() -> IV + 'static,
-    IV: IntoView,
 {
     view! {
         <div class="berry-panel">
@@ -51,11 +48,15 @@ pub fn IconButton(
     tooltip: &'static str,
     /// Click handler
     on_click: impl Fn() + 'static,
+    /// Disabled state
+    #[prop(optional, default = false)]
+    disabled: bool,
 ) -> impl IntoView {
     view! {
         <button
             class="berry-icon-button"
             title=tooltip
+            disabled=disabled
             on:click=move |_| on_click()
         >
             {icon}
@@ -66,8 +67,9 @@ pub fn IconButton(
 /// Generic list view component
 #[component]
 pub fn ListView<T, F, IV>(
-    /// List items signal
-    items: RwSignal<Vec<T>>,
+    /// List items
+    #[prop(into)]
+    items: Vec<T>,
     /// Item renderer
     render_item: F,
 ) -> impl IntoView
@@ -78,11 +80,9 @@ where
 {
     view! {
         <div class="berry-list-view">
-            {move || {
-                items.get().into_iter().map(|item| {
-                    render_item(item)
-                }).collect::<Vec<_>>()
-            }}
+            {items.into_iter().map(|item| {
+                render_item(item)
+            }).collect::<Vec<_>>()}
         </div>
     }
 }

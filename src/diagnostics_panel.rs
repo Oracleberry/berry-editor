@@ -12,41 +12,38 @@ pub fn DiagnosticsPanel(
     /// Diagnostics to display
     diagnostics: RwSignal<Vec<Diagnostic>>,
     /// Callback when a diagnostic is clicked (to jump to location)
-    on_click: impl Fn(u32, u32) + 'static + Clone,
+    on_click: impl Fn(u32, u32) + 'static + Clone + Send,
 ) -> impl IntoView {
-    Panel(
-        "Problems",
-        move || {
-            view! {
-                <div class="berry-diagnostics-list">
-                    {move || {
-                        let diags = diagnostics.get();
+    view! {
+        <Panel title="Problems">
+            <div class="berry-diagnostics-list">
+                {move || {
+                    let diags = diagnostics.get();
 
-                        if diags.is_empty() {
+                    if diags.is_empty() {
+                        view! {
+                            <div class="berry-diagnostics-empty">
+                                "No problems detected"
+                            </div>
+                        }.into_any()
+                    } else {
+                        diags.iter().map(|diagnostic| {
+                            let on_click_clone = on_click.clone();
+                            let line = diagnostic.range.start.line;
+                            let character = diagnostic.range.start.character;
+
                             view! {
-                                <div class="berry-diagnostics-empty">
-                                    "No problems detected"
-                                </div>
-                            }.into_any()
-                        } else {
-                            diags.iter().map(|diagnostic| {
-                                let on_click_clone = on_click.clone();
-                                let line = diagnostic.range.start.line;
-                                let character = diagnostic.range.start.character;
-
-                                view! {
-                                    <DiagnosticItem
-                                        diagnostic=diagnostic.clone()
-                                        on_click=move || on_click_clone(line, character)
-                                    />
-                                }
-                            }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </div>
-            }
-        }
-    )
+                                <DiagnosticItem
+                                    diagnostic=diagnostic.clone()
+                                    on_click=move || on_click_clone(line, character)
+                                />
+                            }
+                        }).collect::<Vec<_>>().into_any()
+                    }
+                }}
+            </div>
+        </Panel>
+    }
 }
 
 /// Single diagnostic item
@@ -66,6 +63,9 @@ fn DiagnosticItem(
     };
 
     let class = format!("berry-diagnostic berry-diagnostic-{}", severity_class);
+    let message = diagnostic.message.clone();
+    let location = format!("[{}:{}]", diagnostic.range.start.line + 1, diagnostic.range.start.character + 1);
+    let source_text = diagnostic.source.clone();
 
     view! {
         <div
@@ -73,11 +73,11 @@ fn DiagnosticItem(
             on:click=move |_| on_click()
         >
             <span class="berry-diagnostic-icon">{severity_icon}</span>
-            <span class="berry-diagnostic-message">{&diagnostic.message}</span>
+            <span class="berry-diagnostic-message">{message}</span>
             <span class="berry-diagnostic-location">
-                {format!("[{}:{}]", diagnostic.range.start.line + 1, diagnostic.range.start.character + 1)}
+                {location}
             </span>
-            {diagnostic.source.as_ref().map(|source| {
+            {source_text.map(|source| {
                 view! {
                     <span class="berry-diagnostic-source">{source}</span>
                 }

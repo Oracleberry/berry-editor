@@ -2,37 +2,41 @@
 //! 100% Rust - No JavaScript!
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use crate::file_tree::FileTreePanel;
 use crate::editor::EditorPanel;
 use crate::debugger::{DebugToolbar, VariablesPanel, CallStackPanel, WatchPanel, DebugConsole};
 use crate::debugger::session::DebugSession;
 use crate::diagnostics_panel::DiagnosticsPanel;
 use crate::lsp_ui::{Diagnostic, LspIntegration};
+use crate::common::splitter::{ResizableSplitter, Orientation};
 
 #[component]
 pub fn EditorApp() -> impl IntoView {
+    web_sys::console::log_1(&"[EditorApp] Component function called".into());
+
     // Debug session
     let debug_session = DebugSession::new();
 
     // LSP integration
     let diagnostics = RwSignal::new(Vec::<Diagnostic>::new());
 
+    // File selection state (shared between FileTree and Editor)
+    let selected_file = RwSignal::new(Option::<(String, String)>::None); // (path, content)
+
     // UI state
     let show_debug_panels = RwSignal::new(false);
     let selected_frame = RwSignal::new(None);
 
+    web_sys::console::log_1(&"[EditorApp] Rendering view...".into());
+
     view! {
-        <div class="berry-editor-container">
+        <div class="berry-editor-container" style="border: 5px solid red; background: #1e1e1e;">
             // Left Sidebar - File Tree
-            <div class="berry-editor-sidebar">
-                <div class="berry-editor-sidebar-header">
-                    <span>"EXPLORER"</span>
-                </div>
-                <FileTreePanel />
-            </div>
+            <FileTreePanel on_file_select=selected_file />
 
             // Main Editor Area
-            <div class="berry-editor-main-area">
+            <div class="berry-editor-main-area" style="border: 5px solid blue;">
                 // Debug Toolbar (shown when debugging)
                 {move || {
                     if show_debug_panels.get() {
@@ -45,7 +49,7 @@ pub fn EditorApp() -> impl IntoView {
                 }}
 
                 // Editor Panel
-                <EditorPanel />
+                <EditorPanel selected_file=selected_file />
 
                 // Bottom Panel - Diagnostics
                 <div class="berry-editor-bottom-panel">

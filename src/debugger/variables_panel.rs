@@ -12,32 +12,29 @@ pub fn VariablesPanel(
     /// Scopes to display
     scopes: RwSignal<Vec<Scope>>,
 ) -> impl IntoView {
-    Panel(
-        "Variables",
-        move || {
-            view! {
-                <div class="berry-variables-panel">
-                    {move || {
-                        let current_scopes = scopes.get();
+    view! {
+        <Panel title="Variables">
+            <div class="berry-variables-panel">
+                {move || {
+                    let current_scopes = scopes.get();
 
-                        if current_scopes.is_empty() {
+                    if current_scopes.is_empty() {
+                        view! {
+                            <div class="berry-variables-empty">
+                                "No variables (not paused in debugger)"
+                            </div>
+                        }.into_any()
+                    } else {
+                        current_scopes.iter().map(|scope| {
                             view! {
-                                <div class="berry-variables-empty">
-                                    "No variables (not paused in debugger)"
-                                </div>
-                            }.into_any()
-                        } else {
-                            current_scopes.iter().map(|scope| {
-                                view! {
-                                    <ScopeView scope=scope.clone() />
-                                }
-                            }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </div>
-            }
-        }
-    )
+                                <ScopeView scope=scope.clone() />
+                            }
+                        }).collect::<Vec<_>>().into_any()
+                    }
+                }}
+            </div>
+        </Panel>
+    }
 }
 
 /// Single scope view
@@ -47,6 +44,7 @@ fn ScopeView(
     scope: Scope,
 ) -> impl IntoView {
     let expanded = RwSignal::new(true);
+    let scope_name = scope.name.clone();
 
     let toggle_expanded = move |_| {
         expanded.update(|e| *e = !*e);
@@ -61,7 +59,7 @@ fn ScopeView(
                 <span class="berry-scope-arrow">
                     {move || if expanded.get() { "▼" } else { "▶" }}
                 </span>
-                <span class="berry-scope-name">{&scope.name}</span>
+                <span class="berry-scope-name">{scope_name}</span>
             </div>
             {move || {
                 if expanded.get() {
@@ -92,6 +90,8 @@ fn VariableView(
 ) -> impl IntoView {
     let expanded = RwSignal::new(false);
     let has_children = variable.children.is_some();
+    let var_name = variable.name.clone();
+    let var_value = variable.value.clone();
 
     let toggle_expanded = move |_| {
         if has_children {
@@ -119,9 +119,9 @@ fn VariableView(
                         " "
                     }
                 }}
-                <span class="berry-variable-name">{&variable.name}</span>
+                <span class="berry-variable-name">{var_name}</span>
                 <span class="berry-variable-separator">": "</span>
-                <span class="berry-variable-value">{&variable.value}</span>
+                <span class="berry-variable-value">{var_value}</span>
                 {variable.type_name.as_ref().map(|type_name| {
                     view! {
                         <span class="berry-variable-type">{format!(" ({})", type_name)}</span>

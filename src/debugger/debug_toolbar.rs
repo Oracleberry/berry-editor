@@ -3,6 +3,7 @@
 //! Provides debug control buttons (Continue, Step Over/Into/Out, Stop, Restart).
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use super::session::{DebugSession, DebugState};
 use crate::common::ui_components::IconButton;
 
@@ -15,7 +16,7 @@ pub fn DebugToolbar(
     let state = session.state;
 
     // Continue (F5)
-    let handle_continue = move |_| {
+    let handle_continue = move || {
         spawn_local(async move {
             if let Err(e) = session.continue_execution().await {
                 web_sys::console::error_1(&format!("Continue failed: {}", e).into());
@@ -24,7 +25,7 @@ pub fn DebugToolbar(
     };
 
     // Step Over (F10)
-    let handle_step_over = move |_| {
+    let handle_step_over = move || {
         spawn_local(async move {
             if let Err(e) = session.step_over().await {
                 web_sys::console::error_1(&format!("Step over failed: {}", e).into());
@@ -33,7 +34,7 @@ pub fn DebugToolbar(
     };
 
     // Step Into (F11)
-    let handle_step_into = move |_| {
+    let handle_step_into = move || {
         spawn_local(async move {
             if let Err(e) = session.step_into().await {
                 web_sys::console::error_1(&format!("Step into failed: {}", e).into());
@@ -42,7 +43,7 @@ pub fn DebugToolbar(
     };
 
     // Step Out (Shift+F11)
-    let handle_step_out = move |_| {
+    let handle_step_out = move || {
         spawn_local(async move {
             if let Err(e) = session.step_out().await {
                 web_sys::console::error_1(&format!("Step out failed: {}", e).into());
@@ -51,7 +52,7 @@ pub fn DebugToolbar(
     };
 
     // Stop
-    let handle_stop = move |_| {
+    let handle_stop = move || {
         spawn_local(async move {
             if let Err(e) = session.stop().await {
                 web_sys::console::error_1(&format!("Stop failed: {}", e).into());
@@ -60,7 +61,7 @@ pub fn DebugToolbar(
     };
 
     // Restart
-    let handle_restart = move |_| {
+    let handle_restart = move || {
         spawn_local(async move {
             // Stop current session
             if let Err(e) = session.stop().await {

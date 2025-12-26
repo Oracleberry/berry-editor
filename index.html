@@ -4,14 +4,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BerryEditor</title>
-    <link data-trunk rel="rust" data-bin="berry-editor" data-wasm-opt="0"/>
+
+
+    <script type="module">
+      // Tauri API - only loaded in Tauri context
+      if (window.__TAURI_INTERNALS__) {
+        const { invoke } = window.__TAURI_INTERNALS__;
+        if (!window.__TAURI__) {
+          window.__TAURI__ = { core: { invoke } };
+        }
+      }
+    </script>
+    <link data-trunk rel="rust" data-wasm-opt="0" data-target-name="berry_editor"/>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            background: #1e1e1e;
-            color: #d4d4d4;
+            /* VS Code default fonts */
+            font-family: Menlo, Monaco, 'Courier New', monospace;
+            background: #2b2b2b; /* Darcula background */
+            color: #a9b7c6; /* Darcula text color */
             overflow: hidden;
+            /* フォントレンダリング最適化 */
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         .berry-editor-container {
@@ -22,76 +37,105 @@
 
         .berry-editor-sidebar {
             width: 250px;
-            background: #252525;
-            border-right: 1px solid #3e3e3e;
+            min-width: 250px;
+            max-width: 250px;
+            background: #3c3f41; /* Darcula sidebar */
+            border-right: 1px solid #323232; /* Thin dark border */
             overflow-y: auto;
-            display: flex;
+            display: flex !important;
             flex-direction: column;
+            flex-shrink: 0;
         }
 
         .berry-editor-sidebar-header {
-            padding: 12px 16px;
-            background: #2d2d2d;
-            border-bottom: 1px solid #3e3e3e;
+            padding: 8px 12px; /* Tighter padding */
+            background: #3c3f41;
+            border-bottom: 1px solid #323232;
             font-size: 11px;
-            font-weight: 600;
-            color: #858585;
+            font-weight: normal; /* IntelliJ uses normal weight */
+            color: #afb1b3; /* Lighter gray */
             display: flex;
             justify-content: space-between;
             align-items: center;
+            text-transform: none; /* No uppercase */
         }
 
         .berry-editor-refresh-btn {
             background: none;
             border: none;
-            color: #858585;
+            color: #afb1b3;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 14px;
             padding: 0 4px;
         }
 
         .berry-editor-refresh-btn:hover {
-            color: #d4d4d4;
+            color: #ffffff;
         }
 
         .berry-editor-file-tree {
             flex: 1;
             overflow-y: auto;
+            padding: 2px 0; /* Reduced padding for density */
+            min-height: 100px;
+            background: #3c3f41;
         }
 
         .berry-editor-file-item {
-            padding: 4px 8px;
+            padding: 2px 8px; /* Higher density like IntelliJ */
             cursor: pointer;
-            color: #d4d4d4;
-            font-size: 13px;
-            display: flex;
-            align-items: center;
+            color: #afb1b3 !important;
+            background: transparent !important; /* No background by default */
+            border: none !important; /* Remove red debug border */
+            min-height: 20px !important; /* Smaller height */
+            display: block !important;
+            font-size: 12px; /* Smaller font for density */
             user-select: none;
+            position: relative;
+            white-space: nowrap;
         }
 
         .berry-editor-file-item:hover {
-            background: rgba(255,255,255,0.05);
+            background: #464a4d !important; /* Subtle hover */
+        }
+
+        .berry-editor-file-item.selected {
+            background: #2d333b !important; /* Darcula selection */
+            color: #ffffff !important;
+        }
+
+        /* Tree lines */
+        .berry-editor-tree-line {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #3e3e3e;
+            pointer-events: none;
         }
 
         .berry-editor-folder-icon {
             margin-right: 4px;
             width: 16px;
-            display: inline-block;
-            text-align: center;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 10px;
+            color: #858585;
+            transition: transform 0.1s ease;
         }
 
-        .berry-editor-folder-icon.collapsed::before {
-            content: '▶';
-            font-size: 10px;
-        }
-
-        .berry-editor-folder-icon.expanded::before {
-            content: '▼';
-            font-size: 10px;
+        .berry-editor-folder-icon.expanded {
+            transform: rotate(90deg);
         }
 
         .berry-editor-file-icon {
             margin-right: 6px;
+            width: 18px;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
         }
 
         .berry-editor-main {
@@ -102,60 +146,64 @@
 
         .berry-editor-tab-bar {
             display: flex;
-            background: #252525;
-            border-bottom: 1px solid #3e3e3e;
-            min-height: 35px;
+            background: #3c3f41; /* Darcula tab bar */
+            border-bottom: 1px solid #323232; /* Thin border */
+            min-height: 32px; /* Slightly smaller */
         }
 
         .berry-editor-tab {
-            padding: 8px 16px;
-            background: #252525;
-            border-right: 1px solid #3e3e3e;
+            padding: 4px 12px; /* Tighter padding */
+            background: #3c3f41;
+            border-right: 1px solid #323232; /* Thin border */
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 13px;
-            color: #d4d4d4;
+            font-size: 12px; /* Smaller font */
+            color: #afb1b3;
         }
 
         .berry-editor-tab.active {
-            background: #1e1e1e;
-            border-bottom: 2px solid #007acc;
+            background: #4e5254; /* Slightly lighter for active */
+            border-bottom: none; /* No blue line */
+            color: #ffffff;
         }
 
         .berry-editor-tab-close {
             background: none;
             border: none;
-            color: #858585;
+            color: #afb1b3;
             cursor: pointer;
-            font-size: 16px;
-            padding: 0 4px;
+            font-size: 14px;
+            padding: 0 2px;
         }
 
         .berry-editor-tab-close:hover {
-            color: #d4d4d4;
+            color: #ffffff;
         }
 
         .berry-editor-pane {
             flex: 1;
-            background: #1e1e1e;
+            background: #2b2b2b; /* Darcula editor background */
             overflow: auto;
         }
 
         .berry-editor-content {
             display: flex;
-            padding: 16px 0;
+            padding: 8px 0; /* Reduced padding */
         }
 
         .berry-editor-line-numbers {
             min-width: 50px;
             text-align: right;
-            padding-right: 16px;
-            color: #858585;
-            font-size: 14px;
-            line-height: 1.6;
+            padding-right: 12px;
+            background: #313335; /* Gutter background */
+            color: #606366; /* Darker line numbers */
+            font-size: 13px; /* IntelliJ standard size */
+            line-height: 1.5; /* Optimal for JetBrains Mono */
             user-select: none;
+            border-right: 1px solid #323232;
+            font-family: Menlo, Monaco, 'Courier New', monospace;
         }
 
         .berry-editor-line-number {
@@ -164,20 +212,20 @@
 
         .berry-editor-lines {
             flex: 1;
-            font-size: 14px;
-            line-height: 1.6;
+            font-size: 13px; /* IntelliJ standard size */
+            line-height: 1.5; /* Optimal for JetBrains Mono */
         }
 
         .berry-editor-line {
-            padding: 0 16px;
+            padding: 0 12px; /* Reduced padding */
             white-space: pre;
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-family: Menlo, Monaco, 'Courier New', monospace;
         }
 
         .berry-editor-status-bar {
-            height: 24px;
-            background: #007acc;
-            color: white;
+            height: 22px; /* Smaller status bar */
+            background: #3c3f41; /* Darcula status bar */
+            color: #afb1b3;
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -207,16 +255,16 @@
         /* Bottom panel for diagnostics */
         .berry-editor-bottom-panel {
             height: 200px;
-            border-top: 1px solid #3e3e3e;
-            background: #1e1e1e;
+            border-top: 1px solid #323232; /* Darcula border */
+            background: #2b2b2b; /* Darcula background */
             overflow-y: auto;
         }
 
         /* Debug sidebar on the right */
         .berry-editor-debug-sidebar {
             width: 300px;
-            background: #252525;
-            border-left: 1px solid #3e3e3e;
+            background: #3c3f41; /* Darcula sidebar */
+            border-left: 1px solid #323232; /* Darcula border */
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -224,17 +272,17 @@
 
         /* Status bar buttons */
         .berry-status-button {
-            background: #007acc;
-            color: white;
-            border: none;
+            background: #4e5254; /* Darcula button */
+            color: #afb1b3;
+            border: 1px solid #323232;
             padding: 2px 8px;
             cursor: pointer;
             font-size: 11px;
-            border-radius: 2px;
+            border-radius: 0; /* No rounded corners */
         }
 
         .berry-status-button:hover {
-            background: #005a9e;
+            background: #5a5d60; /* Subtle Darcula hover */
         }
 
         .berry-editor-status-left,
@@ -306,9 +354,616 @@
             color: #858585;
             font-size: 11px;
         }
+
+        /* Completion Widget */
+        .berry-completion-widget {
+            background: #252526;
+            border: 1px solid #454545;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            min-width: 300px;
+            max-width: 500px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 13px;
+        }
+
+        .berry-completion-list {
+            padding: 4px 0;
+        }
+
+        .berry-completion-item {
+            padding: 2px 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #d4d4d4;
+        }
+
+        .berry-completion-item:hover,
+        .berry-completion-item-selected {
+            background: #094771;
+        }
+
+        .berry-completion-kind {
+            width: 16px;
+            height: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #383838;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: bold;
+            color: #c586c0;
+            flex-shrink: 0;
+        }
+
+        .berry-completion-label {
+            flex: 1;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+
+        .berry-completion-detail {
+            color: #858585;
+            font-size: 11px;
+        }
+
+        /* Hover Tooltip */
+        .berry-hover-tooltip {
+            background: #252526;
+            border: 1px solid #454545;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+            padding: 8px 12px;
+            max-width: 500px;
+            font-size: 12px;
+            border-radius: 3px;
+        }
+
+        .berry-hover-content {
+            color: #d4d4d4;
+        }
+
+        .berry-hover-text {
+            margin-bottom: 4px;
+            line-height: 1.4;
+        }
+
+        .berry-hover-code {
+            background: #1e1e1e;
+            border: 1px solid #3e3e3e;
+            border-radius: 3px;
+            padding: 8px;
+            margin: 4px 0;
+            overflow-x: auto;
+        }
+
+        .berry-hover-code pre {
+            margin: 0;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            color: #d4d4d4;
+            white-space: pre;
+        }
+
+        /* Diagnostics Empty State */
+        .berry-diagnostics-empty {
+            padding: 16px;
+            text-align: center;
+            color: #858585;
+            font-size: 12px;
+        }
+
+        /* Button styles */
+        .berry-button {
+            background: #0e639c;
+            border: none;
+            color: white;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 2px;
+        }
+
+        .berry-button:hover {
+            background: #1177bb;
+        }
+
+        .berry-icon-button {
+            background: none;
+            border: none;
+            color: #858585;
+            cursor: pointer;
+            padding: 4px 8px;
+            font-size: 14px;
+        }
+
+        .berry-icon-button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            color: #d4d4d4;
+        }
+
+        .berry-icon-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        /* Git UI Styles */
+        .berry-git-panel {
+            padding: 8px;
+        }
+
+        .berry-git-header {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #3e3e3e;
+            margin-bottom: 8px;
+        }
+
+        .berry-git-branch-select {
+            flex: 1;
+            background: #3c3c3c;
+            color: #d4d4d4;
+            border: 1px solid #3e3e3e;
+            padding: 4px 8px;
+            font-size: 12px;
+            border-radius: 2px;
+        }
+
+        .berry-git-refresh-btn {
+            background: #0e639c;
+            border: none;
+            color: white;
+            padding: 4px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            border-radius: 2px;
+        }
+
+        .berry-git-refresh-btn:hover:not(:disabled) {
+            background: #1177bb;
+        }
+
+        .berry-git-refresh-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .berry-git-error {
+            background: #5a1d1d;
+            border: 1px solid #be1100;
+            color: #f48771;
+            padding: 8px;
+            margin: 8px 0;
+            border-radius: 2px;
+            font-size: 12px;
+        }
+
+        .berry-git-loading {
+            padding: 16px;
+            text-align: center;
+            color: #858585;
+            font-size: 12px;
+        }
+
+        .berry-git-empty {
+            padding: 16px;
+            text-align: center;
+            color: #858585;
+            font-size: 12px;
+            font-style: italic;
+        }
+
+        .berry-git-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #858585;
+            padding: 8px 4px 4px;
+            text-transform: uppercase;
+        }
+
+        .berry-git-changes,
+        .berry-git-staged {
+            margin-bottom: 12px;
+        }
+
+        .berry-git-file {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .berry-git-file:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .berry-git-file-status {
+            width: 16px;
+            font-weight: bold;
+            color: #4ec9b0;
+        }
+
+        .berry-git-file-path {
+            flex: 1;
+            color: #d4d4d4;
+        }
+
+        .berry-git-stage-btn,
+        .berry-git-unstage-btn {
+            background: none;
+            border: 1px solid #858585;
+            color: #858585;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 2px;
+        }
+
+        .berry-git-stage-btn:hover,
+        .berry-git-unstage-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: #d4d4d4;
+        }
+
+        .berry-git-commit {
+            border-top: 1px solid #3e3e3e;
+            padding-top: 8px;
+        }
+
+        .berry-git-commit-message {
+            width: 100%;
+            background: #3c3c3c;
+            color: #d4d4d4;
+            border: 1px solid #3e3e3e;
+            padding: 8px;
+            font-size: 12px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            resize: vertical;
+            min-height: 60px;
+            margin-bottom: 8px;
+            border-radius: 2px;
+        }
+
+        .berry-git-commit-btn {
+            width: 100%;
+            background: #0e639c;
+            border: none;
+            color: white;
+            padding: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 2px;
+        }
+
+        .berry-git-commit-btn:hover:not(:disabled) {
+            background: #1177bb;
+        }
+
+        .berry-git-commit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Commit History */
+        .berry-commit-history {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .berry-commit-item {
+            padding: 8px;
+            border-bottom: 1px solid #3e3e3e;
+            cursor: pointer;
+        }
+
+        .berry-commit-item:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .berry-commit-item-selected {
+            background: #094771;
+        }
+
+        .berry-commit-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .berry-commit-hash {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 11px;
+            color: #4ec9b0;
+        }
+
+        .berry-commit-time {
+            font-size: 11px;
+            color: #858585;
+        }
+
+        .berry-commit-message {
+            font-size: 12px;
+            color: #d4d4d4;
+            margin-bottom: 2px;
+        }
+
+        .berry-commit-author {
+            font-size: 11px;
+            color: #858585;
+        }
+
+        /* Branch Manager */
+        .berry-branch-manager {
+            padding: 8px;
+        }
+
+        .berry-branch-header {
+            padding: 8px 0;
+            border-bottom: 1px solid #3e3e3e;
+            margin-bottom: 8px;
+        }
+
+        .berry-branch-create-dialog {
+            background: #2d2d2d;
+            border: 1px solid #3e3e3e;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 2px;
+        }
+
+        .berry-input {
+            width: 100%;
+            background: #3c3c3c;
+            color: #d4d4d4;
+            border: 1px solid #3e3e3e;
+            padding: 6px 8px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            border-radius: 2px;
+        }
+
+        .berry-dialog-buttons {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .berry-branch-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .berry-branch-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-bottom: 1px solid #3e3e3e;
+        }
+
+        .berry-branch-item:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .berry-branch-name {
+            flex: 1;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            color: #d4d4d4;
+        }
+
+        .berry-branch-checkout-btn,
+        .berry-branch-delete-btn {
+            background: #0e639c;
+            border: none;
+            color: white;
+            padding: 4px 12px;
+            cursor: pointer;
+            font-size: 11px;
+            border-radius: 2px;
+        }
+
+        .berry-branch-checkout-btn:hover {
+            background: #1177bb;
+        }
+
+        .berry-branch-delete-btn {
+            background: #a1260d;
+        }
+
+        .berry-branch-delete-btn:hover {
+            background: #c72e0d;
+        }
+
+        /* Command Palette */
+        .berry-command-palette-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 100px;
+            z-index: 10000;
+        }
+
+        .berry-command-palette {
+            background: #252526;
+            border: 1px solid #454545;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.8);
+            border-radius: 6px;
+            min-width: 600px;
+            max-width: 800px;
+            max-height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .berry-command-palette-input {
+            width: 100%;
+            background: #3c3c3c;
+            color: #d4d4d4;
+            border: none;
+            border-bottom: 1px solid #454545;
+            padding: 16px 20px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .berry-command-palette-input::placeholder {
+            color: #858585;
+        }
+
+        .berry-command-palette-results {
+            overflow-y: auto;
+            max-height: 500px;
+        }
+
+        .berry-command-palette-empty {
+            padding: 32px;
+            text-align: center;
+            color: #858585;
+            font-size: 13px;
+        }
+
+        .berry-palette-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-bottom: 1px solid #2d2d2d;
+        }
+
+        .berry-palette-item:hover,
+        .berry-palette-item-selected {
+            background: #094771;
+        }
+
+        .berry-palette-icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .berry-palette-icon-file {
+            /* File icon style */
+        }
+
+        .berry-palette-icon-git {
+            /* Git icon style */
+        }
+
+        .berry-palette-icon-action {
+            /* Action icon style */
+        }
+
+        .berry-palette-icon-settings {
+            /* Settings icon style */
+        }
+
+        .berry-palette-icon-symbol {
+            /* Symbol icon style */
+        }
+
+        .berry-palette-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .berry-palette-label {
+            font-size: 13px;
+            color: #d4d4d4;
+            margin-bottom: 2px;
+        }
+
+        .berry-palette-description {
+            font-size: 11px;
+            color: #858585;
+        }
+
+        /* === Splitter Component === */
+        .berry-splitter-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        .berry-splitter-horizontal {
+            flex-direction: row;
+        }
+
+        .berry-splitter-vertical {
+            flex-direction: column;
+        }
+
+        .berry-splitter-primary {
+            flex-shrink: 0;
+            overflow: auto;
+        }
+
+        .berry-splitter-secondary {
+            flex: 1;
+            overflow: auto;
+            min-width: 0;
+            min-height: 0;
+        }
+
+        .berry-splitter-handle {
+            background: #2d2d2d;
+            position: relative;
+            flex-shrink: 0;
+            z-index: 10;
+            transition: background 150ms ease;
+        }
+
+        .berry-splitter-handle:hover {
+            background: #094771;
+        }
+
+        .berry-splitter-handle:active {
+            background: #0e639c;
+        }
+
+        .berry-splitter-handle-horizontal {
+            width: 4px;
+            cursor: ew-resize;
+        }
+
+        .berry-splitter-handle-vertical {
+            height: 4px;
+            cursor: ns-resize;
+        }
+
+        /* Dragging state */
+        body.berry-splitter-dragging {
+            cursor: ew-resize !important;
+            user-select: none !important;
+        }
+
+        body.berry-splitter-dragging-vertical {
+            cursor: ns-resize !important;
+            user-select: none !important;
+        }
     </style>
+    <script>
+        // Error logging only - don't overwrite WASM content!
+        window.addEventListener('error', (e) => {
+            console.error('Global error:', e);
+        });
+    </script>
 </head>
 <body>
-    <div id="berry-editor-wasm-root"></div>
+    <div id="berry-editor-wasm-root">Loading...</div>
 </body>
 </html>

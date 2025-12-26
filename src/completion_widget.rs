@@ -17,9 +17,12 @@ pub fn CompletionWidget(
     /// Position to show the widget
     position: Position,
     /// Callback when an item is selected
-    on_select: impl Fn(CompletionItem) + 'static + Clone,
+    on_select: impl Fn(CompletionItem) + 'static + Clone + Send,
 ) -> impl IntoView {
     let selected_index = RwSignal::new(0usize);
+
+    // Clone on_select for use in handle_keydown
+    let on_select_keydown = on_select.clone();
 
     // Keyboard navigation
     let handle_keydown = move |event: KeyboardEvent| {
@@ -43,7 +46,7 @@ pub fn CompletionWidget(
                 event.prevent_default();
                 let idx = selected_index.get_untracked();
                 if let Some(item) = items.get_untracked().get(idx) {
-                    on_select(item.clone());
+                    on_select_keydown(item.clone());
                 }
             }
             "Escape" => {
@@ -123,14 +126,17 @@ fn CompletionItemView(
         _ => "?",
     };
 
+    let label = item.label.clone();
+    let detail_text = item.detail.clone();
+
     view! {
         <div
             class=class
             on:click=move |_| on_click()
         >
             <span class="berry-completion-kind">{kind_text}</span>
-            <span class="berry-completion-label">{&item.label}</span>
-            {item.detail.as_ref().map(|detail| {
+            <span class="berry-completion-label">{label}</span>
+            {detail_text.map(|detail| {
                 view! {
                     <span class="berry-completion-detail">{detail}</span>
                 }

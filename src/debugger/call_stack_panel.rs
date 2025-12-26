@@ -14,42 +14,39 @@ pub fn CallStackPanel(
     /// Currently selected frame ID
     selected_frame: RwSignal<Option<i64>>,
     /// Callback when a frame is clicked
-    on_frame_click: impl Fn(i64) + 'static + Clone,
+    on_frame_click: impl Fn(i64) + 'static + Clone + Send,
 ) -> impl IntoView {
-    Panel(
-        "Call Stack",
-        move || {
-            view! {
-                <div class="berry-call-stack-panel">
-                    {move || {
-                        let current_frames = frames.get();
+    view! {
+        <Panel title="Call Stack">
+            <div class="berry-call-stack-panel">
+                {move || {
+                    let current_frames = frames.get();
 
-                        if current_frames.is_empty() {
+                    if current_frames.is_empty() {
+                        view! {
+                            <div class="berry-call-stack-empty">
+                                "No call stack (not paused in debugger)"
+                            </div>
+                        }.into_any()
+                    } else {
+                        current_frames.iter().enumerate().map(|(index, frame)| {
+                            let on_frame_click_clone = on_frame_click.clone();
+                            let frame_id = frame.id;
+
                             view! {
-                                <div class="berry-call-stack-empty">
-                                    "No call stack (not paused in debugger)"
-                                </div>
-                            }.into_any()
-                        } else {
-                            current_frames.iter().enumerate().map(|(index, frame)| {
-                                let on_frame_click_clone = on_frame_click.clone();
-                                let frame_id = frame.id;
-
-                                view! {
-                                    <StackFrameView
-                                        frame=frame.clone()
-                                        index=index
-                                        selected=move || selected_frame.get() == Some(frame_id)
-                                        on_click=move || on_frame_click_clone(frame_id)
-                                    />
-                                }
-                            }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </div>
-            }
-        }
-    )
+                                <StackFrameView
+                                    frame=frame.clone()
+                                    index=index
+                                    selected=move || selected_frame.get() == Some(frame_id)
+                                    on_click=move || on_frame_click_clone(frame_id)
+                                />
+                            }
+                        }).collect::<Vec<_>>().into_any()
+                    }
+                }}
+            </div>
+        </Panel>
+    }
 }
 
 /// Single stack frame view
@@ -60,7 +57,7 @@ fn StackFrameView(
     /// Frame index (0 = top of stack)
     index: usize,
     /// Whether this frame is selected
-    selected: impl Fn() -> bool + 'static,
+    selected: impl Fn() -> bool + 'static + Send,
     /// Click handler
     on_click: impl Fn() + 'static,
 ) -> impl IntoView {
@@ -91,13 +88,15 @@ fn StackFrameView(
         "<unknown>".to_string()
     };
 
+    let frame_name = frame.name.clone();
+
     view! {
         <div
             class=class
             on:click=move |_| on_click()
         >
             <span class="berry-stack-frame-index">{format!("#{}", index)}</span>
-            <span class="berry-stack-frame-name">{&frame.name}</span>
+            <span class="berry-stack-frame-name">{frame_name}</span>
             <span class="berry-stack-frame-location">{location}</span>
         </div>
     }

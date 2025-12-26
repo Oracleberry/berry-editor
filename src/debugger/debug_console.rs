@@ -3,6 +3,7 @@
 //! Displays debug output and provides REPL-style expression evaluation.
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use crate::common::ui_components::Panel;
 use super::session::DebugSession;
@@ -49,7 +50,7 @@ pub fn DebugConsole(
     let input = RwSignal::new(String::new());
 
     // Execute command/expression
-    let execute = move |_| {
+    let execute = move || {
         let expr = input.get_untracked();
         if expr.is_empty() {
             return;
@@ -80,48 +81,45 @@ pub fn DebugConsole(
     };
 
     // Clear console
-    let clear_console = move |_| {
+    let clear_console = move || {
         messages.set(Vec::new());
     };
 
-    Panel(
-        "Debug Console",
-        move || {
-            view! {
-                <div class="berry-debug-console">
-                    <div class="berry-console-toolbar">
-                        <button class="berry-button" on:click=clear_console>"Clear"</button>
-                    </div>
-                    <div class="berry-console-messages">
-                        {move || {
-                            messages.get().iter().map(|msg| {
-                                view! {
-                                    <ConsoleMessageView message=msg.clone() />
-                                }
-                            }).collect::<Vec<_>>()
-                        }}
-                    </div>
-                    <div class="berry-console-input">
-                        <span class="berry-console-prompt">">"</span>
-                        <input
-                            type="text"
-                            class="berry-input"
-                            prop:value=move || input.get()
-                            on:input=move |ev| {
-                                input.set(event_target_value(&ev));
-                            }
-                            on:keydown=move |ev| {
-                                if ev.key() == "Enter" {
-                                    execute(ev);
-                                }
-                            }
-                            placeholder="Evaluate expression..."
-                        />
-                    </div>
+    view! {
+        <Panel title="Debug Console">
+            <div class="berry-debug-console">
+                <div class="berry-console-toolbar">
+                    <button class="berry-button" on:click=move |_| clear_console()>"Clear"</button>
                 </div>
-            }
-        }
-    )
+                <div class="berry-console-messages">
+                    {move || {
+                        messages.get().iter().map(|msg| {
+                            view! {
+                                <ConsoleMessageView message=msg.clone() />
+                            }
+                        }).collect::<Vec<_>>()
+                    }}
+                </div>
+                <div class="berry-console-input">
+                    <span class="berry-console-prompt">">"</span>
+                    <input
+                        type="text"
+                        class="berry-input"
+                        prop:value=move || input.get()
+                        on:input=move |ev| {
+                            input.set(event_target_value(&ev));
+                        }
+                        on:keydown=move |ev| {
+                            if ev.key() == "Enter" {
+                                execute();
+                            }
+                        }
+                        placeholder="Evaluate expression..."
+                    />
+                </div>
+            </div>
+        </Panel>
+    }
 }
 
 /// Single console message view

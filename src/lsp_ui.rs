@@ -46,6 +46,7 @@ pub struct HoverInfo {
 }
 
 /// LSP Integration Manager
+#[derive(Clone, Copy)]
 pub struct LspIntegration {
     /// Current file path
     file_path: RwSignal<String>,

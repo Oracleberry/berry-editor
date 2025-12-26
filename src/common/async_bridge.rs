@@ -24,14 +24,14 @@ impl TauriBridge {
         }
 
         let args_value = to_value(&args)
-            .context("Failed to serialize arguments")?;
+            .map_err(|e| anyhow::anyhow!("Failed to serialize arguments: {}", e))?;
 
         let result = invoke(command, args_value)
             .await
             .map_err(|e| anyhow::anyhow!("Tauri invoke failed: {:?}", e))?;
 
         serde_wasm_bindgen::from_value(result)
-            .context("Failed to deserialize result")
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize result: {}", e))
     }
 
     /// Invoke a Tauri command without arguments

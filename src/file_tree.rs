@@ -16,6 +16,97 @@ pub struct FileNode {
     pub children: Option<Vec<FileNode>>,
 }
 
+pub fn get_mock_file_tree() -> Vec<FileNode> {
+    vec![
+        FileNode {
+            name: "src".to_string(),
+            path: "/src".to_string(),
+            is_dir: true,
+            children: Some(vec![
+                FileNode {
+                    name: "lib.rs".to_string(),
+                    path: "/src/lib.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "components.rs".to_string(),
+                    path: "/src/components.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "editor.rs".to_string(),
+                    path: "/src/editor.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "file_tree.rs".to_string(),
+                    path: "/src/file_tree.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "buffer.rs".to_string(),
+                    path: "/src/buffer.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "syntax.rs".to_string(),
+                    path: "/src/syntax.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "lsp.rs".to_string(),
+                    path: "/src/lsp.rs".to_string(),
+                    is_dir: false,
+                    children: None,
+                },
+                FileNode {
+                    name: "debugger".to_string(),
+                    path: "/src/debugger".to_string(),
+                    is_dir: true,
+                    children: Some(vec![
+                        FileNode {
+                            name: "mod.rs".to_string(),
+                            path: "/src/debugger/mod.rs".to_string(),
+                            is_dir: false,
+                            children: None,
+                        },
+                        FileNode {
+                            name: "session.rs".to_string(),
+                            path: "/src/debugger/session.rs".to_string(),
+                            is_dir: false,
+                            children: None,
+                        },
+                    ]),
+                },
+            ]),
+        },
+        FileNode {
+            name: "Cargo.toml".to_string(),
+            path: "/Cargo.toml".to_string(),
+            is_dir: false,
+            children: None,
+        },
+        FileNode {
+            name: "index.html".to_string(),
+            path: "/index.html".to_string(),
+            is_dir: false,
+            children: None,
+        },
+        FileNode {
+            name: "README.md".to_string(),
+            path: "/README.md".to_string(),
+            is_dir: false,
+            children: None,
+        },
+    ]
+}
+
 async fn fetch_file_tree(session_id: &str) -> Result<Vec<FileNode>, String> {
     let url = format!("/api/files/tree?session_id={}", session_id);
 
@@ -50,6 +141,42 @@ async fn fetch_file_tree(session_id: &str) -> Result<Vec<FileNode>, String> {
         .map_err(|e| format!("Failed to deserialize: {}", e))
 }
 
+async fn fetch_file_content(session_id: &str, file_path: &str) -> Result<String, String> {
+    let url = format!("/api/files/read?session_id={}&path={}",
+        session_id,
+        urlencoding::encode(file_path)
+    );
+
+    let mut opts = RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(RequestMode::Cors);
+
+    let request = Request::new_with_str_and_init(&url, &opts)
+        .map_err(|e| format!("Failed to create request: {:?}", e))?;
+
+    let window = window().ok_or("no window")?;
+    let resp_value = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| format!("Fetch failed: {:?}", e))?;
+
+    let resp: Response = resp_value
+        .dyn_into()
+        .map_err(|_| "Response is not a Response object")?;
+
+    if !resp.ok() {
+        return Err(format!("HTTP error: {}", resp.status()));
+    }
+
+    let text = JsFuture::from(
+        resp.text()
+            .map_err(|e| format!("Failed to get text: {:?}", e))?,
+    )
+    .await
+    .map_err(|e| format!("Failed to parse text: {:?}", e))?;
+
+    text.as_string().ok_or_else(|| "Response is not a string".to_string())
+}
+
 fn get_session_id() -> Option<String> {
     let window = window()?;
     let location = window.location();
@@ -65,45 +192,109 @@ fn get_session_id() -> Option<String> {
 }
 
 #[component]
-fn FileTreeNode(node: FileNode, level: usize) -> impl IntoView {
-    let (expanded, set_expanded) = signal(false);
-    let indent = level * 16;
-
-    let icon = if node.is_dir {
-        if expanded.get() { "📂" } else { "📁" }
-    } else {
-        match node.path.split('.').last() {
-            Some("rs") => "🦀",
-            Some("js") | Some("ts") => "📜",
-            Some("html") => "🌐",
-            Some("css") => "🎨",
-            Some("md") => "📝",
-            _ => "📄",
+fn FileTreeNode(
+    node: FileNode,
+    level: usize,
+    on_file_select: RwSignal<Option<(String, String)>>,
+) -> impl IntoView {
+    let expanded = RwSignal::new(false);
+    let indent_step = 12;
+    let base_padding = 8;
+    
+    // Generate tree lines for visual hierarchy
+    let tree_lines = (1..=level).map(|l| {
+        let left = base_padding + (l - 1) * indent_step + 4;
+        view! {
+            <div class="berry-editor-tree-line" style:left=format!("{}px", left)></div>
         }
-    };
+    }).collect_view();
+
+    let node_clone = node.clone();
+    let node_for_icon = node.clone();
 
     view! {
-        <div class="file-tree-node">
+        <div>
             <div
-                class="file-tree-item"
-                style:padding-left=format!("{}px", indent)
+                class="berry-editor-file-item"
+                style:padding-left=format!("{}px", base_padding + level * indent_step)
                 on:click=move |_| {
-                    if node.is_dir {
-                        set_expanded.update(|e| *e = !*e);
+                    web_sys::console::log_1(&format!("[FileTreeNode] Clicked: {} (is_dir={})", node_clone.name, node_clone.is_dir).into());
+
+                    if node_clone.is_dir {
+                        web_sys::console::log_1(&"[FileTreeNode] Toggling folder".into());
+                        expanded.update(|e| *e = !*e);
+                    } else {
+                        // File clicked - load content
+                        web_sys::console::log_1(&format!("[FileTreeNode] Loading file: {}", node_clone.path).into());
+
+                        let path = node_clone.path.clone();
+                        let name = node_clone.name.clone();
+
+                        if let Some(session_id) = get_session_id() {
+                            // Session mode: fetch real file content from API
+                            web_sys::console::log_1(&format!("[FileTreeNode] Fetching real content for: {}", path).into());
+                            spawn_local(async move {
+                                match fetch_file_content(&session_id, &path).await {
+                                    Ok(content) => {
+                                        web_sys::console::log_1(&format!("[FileTreeNode] Loaded {} bytes from API", content.len()).into());
+                                        on_file_select.set(Some((path, content)));
+                                    }
+                                    Err(e) => {
+                                        web_sys::console::log_1(&format!("[FileTreeNode] Error loading file: {}", e).into());
+                                        let error_content = format!("// Error loading file: {}\n// {}", path, e);
+                                        on_file_select.set(Some((path, error_content)));
+                                    }
+                                }
+                            });
+                        } else {
+                            // Standalone mode: use mock content
+                            web_sys::console::log_1(&"[FileTreeNode] Standalone mode: using mock content".into());
+                            let mock_content = format!(
+                                "// {}\n// This is a placeholder for file content\n\nfn main() {{\n    println!(\"File: {}\");\n}}",
+                                path,
+                                name
+                            );
+                            web_sys::console::log_1(&format!("[FileTreeNode] Setting signal with {} bytes", mock_content.len()).into());
+                            on_file_select.set(Some((path, mock_content)));
+                        }
+
+                        web_sys::console::log_1(&"[FileTreeNode] Signal set successfully".into());
                     }
                 }
             >
-                <span class="file-icon">{icon}</span>
-                <span class="file-name">{node.name.clone()}</span>
+                {tree_lines}
+                <span class="berry-editor-folder-icon"
+                    class:expanded=move || expanded.get()
+                    style:visibility=if node.is_dir { "visible" } else { "hidden" }
+                >
+                    "▶"
+                </span>
+                <span class="berry-editor-file-icon">
+                    {move || {
+                        if node_for_icon.is_dir {
+                            if expanded.get() { "📂" } else { "📁" }
+                        } else {
+                            match node_for_icon.path.split('.').last() {
+                                Some("rs") => "🦀",
+                                Some("js") | Some("ts") => "📜",
+                                Some("html") => "🌐",
+                                Some("css") => "🎨",
+                                Some("md") => "📝",
+                                _ => "📄",
+                            }
+                        }
+                    }}
+                </span>
+                <span>{node.name.clone()}</span>
             </div>
             {move || {
                 if node.is_dir && expanded.get() {
                     if let Some(children) = &node.children {
                         children.iter().map(|child| {
                             view! {
-                                <FileTreeNode node=child.clone() level=level + 1 />
+                                <FileTreeNode node=child.clone() level=level + 1 on_file_select=on_file_select />
                             }
-                        }).collect::<Vec<_>>().into_any()
+                        }).collect_view().into_any()
                     } else {
                         view! { <></> }.into_any()
                     }
@@ -116,82 +307,105 @@ fn FileTreeNode(node: FileNode, level: usize) -> impl IntoView {
 }
 
 #[component]
-pub fn FileTreePanel() -> impl IntoView {
-    let (tree, set_tree) = signal(Vec::<FileNode>::new());
-    let (loading, set_loading) = signal(true);
-    let (error, set_error) = signal(Option::<String>::None);
+pub fn FileTreePanel(
+    on_file_select: RwSignal<Option<(String, String)>>,
+) -> impl IntoView {
+    web_sys::console::log_1(&"[FileTree] Component mounting...".into());
 
-    // Load file tree on mount
-    Effect::new(move || {
-        if let Some(session_id) = get_session_id() {
-            spawn_local(async move {
-                match fetch_file_tree(&session_id).await {
-                    Ok(nodes) => {
-                        set_tree.set(nodes);
-                        set_loading.set(false);
-                    }
-                    Err(e) => {
-                        set_error.set(Some(format!("Failed to load file tree: {}", e)));
-                        set_loading.set(false);
-                    }
+    // Check session mode
+    let session_id = get_session_id();
+    web_sys::console::log_1(&format!("[FileTree] session_id: {:?}", session_id).into());
+
+    // Initialize with mock data immediately for standalone mode
+    let initial_data = if session_id.is_none() {
+        web_sys::console::log_1(&"[FileTree] Standalone mode: loading mock data immediately".into());
+        let mock_data = get_mock_file_tree();
+        web_sys::console::log_1(&format!("[FileTree] Mock data has {} files", mock_data.len()).into());
+        mock_data
+    } else {
+        Vec::new()
+    };
+
+    let tree = RwSignal::new(initial_data);
+    let loading = RwSignal::new(session_id.is_some());
+    let error = RwSignal::new(Option::<String>::None);
+
+    web_sys::console::log_1(&format!("[FileTree] Initial tree size: {}", tree.get_untracked().len()).into());
+
+    // Load from API only in session mode
+    if let Some(sid) = session_id {
+        web_sys::console::log_1(&format!("[FileTree] Session mode: will load from API for session {}", sid).into());
+        spawn_local(async move {
+            match fetch_file_tree(&sid).await {
+                Ok(nodes) => {
+                    web_sys::console::log_1(&format!("[FileTree] Loaded {} nodes from API", nodes.len()).into());
+                    tree.set(nodes);
+                    loading.set(false);
                 }
-            });
-        } else {
-            set_error.set(Some("No session ID found".to_string()));
-            set_loading.set(false);
-        }
-    });
+                Err(e) => {
+                    web_sys::console::log_1(&format!("[FileTree] API Error: {}", e).into());
+                    error.set(Some(format!("Failed to load file tree: {}", e)));
+                    loading.set(false);
+                }
+            }
+        });
+    }
+
+    web_sys::console::log_1(&"[FileTree Panel] Starting render...".into());
 
     view! {
-        <div class="berry-editor-sidebar">
-            <div class="berry-editor-sidebar-header">
+        <div class="berry-editor-sidebar" style="border: 5px solid green; background: #1e1e1e; width: 250px; height: 100vh;">
+            <div class="berry-editor-sidebar-header" style="border: 2px solid yellow; padding: 8px; background: #252526; color: #cccccc; display: flex; justify-content: space-between; align-items: center;">
                 <span>"FILE EXPLORER"</span>
                 <button
                     class="berry-editor-refresh-btn"
+                    style="background: none; border: none; color: #cccccc; cursor: pointer; font-size: 16px;"
                     on:click=move |_| {
-                        set_loading.set(true);
-                        set_error.set(None);
+                        web_sys::console::log_1(&"[FileTree] Refresh button clicked".into());
+                        loading.set(true);
+                        error.set(None);
                         if let Some(session_id) = get_session_id() {
+                            web_sys::console::log_1(&format!("[FileTree] Refreshing from API for session {}", session_id).into());
                             spawn_local(async move {
                                 match fetch_file_tree(&session_id).await {
                                     Ok(nodes) => {
-                                        set_tree.set(nodes);
-                                        set_loading.set(false);
+                                        web_sys::console::log_1(&format!("[FileTree] Refresh: Loaded {} nodes", nodes.len()).into());
+                                        tree.set(nodes);
+                                        loading.set(false);
                                     }
                                     Err(e) => {
-                                        set_error.set(Some(format!("Failed to load: {}", e)));
-                                        set_loading.set(false);
+                                        web_sys::console::log_1(&format!("[FileTree] Refresh error: {}", e).into());
+                                        error.set(Some(format!("Failed to load: {}", e)));
+                                        loading.set(false);
                                     }
                                 }
                             });
+                        } else {
+                            web_sys::console::log_1(&"[FileTree] Refreshing mock data".into());
+                            let mock_data = get_mock_file_tree();
+                            web_sys::console::log_1(&format!("[FileTree] Refresh: Loaded {} mock files", mock_data.len()).into());
+                            tree.set(mock_data);
+                            loading.set(false);
                         }
                     }
                 >
                     "⟳"
                 </button>
             </div>
-            <div class="berry-editor-file-tree">
-                {move || {
-                    if loading.get() {
+
+            <div class="berry-editor-file-tree" style="border: 2px solid orange; overflow-y: auto; height: calc(100vh - 48px);">
+                {
+                    // 初期レンダリング時に即座に実行
+                    let nodes = tree.get_untracked();
+                    web_sys::console::log_1(&format!("[FileTree View IMMEDIATE] Rendering {} nodes", nodes.len()).into());
+
+                    nodes.into_iter().enumerate().map(|(idx, node)| {
+                        web_sys::console::log_1(&format!("[FileTree View IMMEDIATE] Rendering node {}: {}", idx, node.name).into());
                         view! {
-                            <div style="padding:16px;color:#858585;font-size:12px;">
-                                "Loading..."
-                            </div>
-                        }.into_any()
-                    } else if let Some(err) = error.get() {
-                        view! {
-                            <div style="padding:16px;color:#f48771;font-size:12px;">
-                                {err}
-                            </div>
-                        }.into_any()
-                    } else {
-                        tree.get().iter().map(|node| {
-                            view! {
-                                <FileTreeNode node=node.clone() level=0 />
-                            }
-                        }).collect::<Vec<_>>().into_any()
-                    }
-                }}
+                            <FileTreeNode node=node level=0 on_file_select=on_file_select />
+                        }
+                    }).collect_view()
+                }
             </div>
         </div>
     }
@@ -389,4 +603,31 @@ mod tests {
         assert!(js_file.name.ends_with(".js"));
         assert!(html_file.name.ends_with(".html"));
     }
+
+    #[wasm_bindgen_test]
+    fn test_get_mock_file_tree_contains_files() {
+        let tree = get_mock_file_tree();
+
+        // Should have 4 root items
+        assert_eq!(tree.len(), 4, "Should have 4 root items");
+
+        // Check each item
+        assert_eq!(tree[0].name, "src");
+        assert!(tree[0].is_dir);
+        assert!(tree[0].children.is_some());
+
+        assert_eq!(tree[1].name, "Cargo.toml");
+        assert!(!tree[1].is_dir);
+
+        assert_eq!(tree[2].name, "index.html");
+        assert!(!tree[2].is_dir);
+
+        assert_eq!(tree[3].name, "README.md");
+        assert!(!tree[3].is_dir);
+
+        // Check src children
+        let src_children = tree[0].children.as_ref().unwrap();
+        assert!(src_children.len() >= 7, "src should have at least 7 children");
+    }
 }
+

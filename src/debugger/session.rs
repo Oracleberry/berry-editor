@@ -54,6 +54,7 @@ pub struct Variable {
 }
 
 /// Debug session manager
+#[derive(Clone, Copy)]
 pub struct DebugSession {
     pub session_id: RwSignal<Option<String>>,
     pub state: RwSignal<DebugState>,
@@ -87,7 +88,9 @@ impl DebugSession {
             program_path: String,
         }
 
-        let session_id: String = TauriBridge::invoke("debug_start_session", StartArgs { program_path }).await?;
+        let session_id: String = TauriBridge::invoke("debug_start_session", StartArgs { program_path })
+            .await
+            .map_err(|e| e.to_string())?;
 
         self.session_id.set(Some(session_id.clone()));
         self.state.set(DebugState::Running);
@@ -103,7 +106,9 @@ impl DebugSession {
                 session_id: String,
             }
 
-            TauriBridge::invoke::<_, ()>("debug_stop_session", StopArgs { session_id }).await?;
+            TauriBridge::invoke::<_, ()>("debug_stop_session", StopArgs { session_id })
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         self.session_id.set(None);
@@ -135,7 +140,9 @@ impl DebugSession {
                 line,
                 condition,
             }
-        ).await?;
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Update local breakpoints
         self.breakpoints.update(|bps| {
@@ -159,7 +166,9 @@ impl DebugSession {
         TauriBridge::invoke::<_, ()>(
             "debug_remove_breakpoint",
             RemoveBreakpointArgs { session_id, breakpoint_id: breakpoint_id.clone() }
-        ).await?;
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Update local breakpoints
         self.breakpoints.update(|bps| {
@@ -181,7 +190,9 @@ impl DebugSession {
             session_id: String,
         }
 
-        TauriBridge::invoke::<_, ()>("debug_continue", ContinueArgs { session_id }).await?;
+        TauriBridge::invoke::<_, ()>("debug_continue", ContinueArgs { session_id })
+            .await
+            .map_err(|e| e.to_string())?;
         self.state.set(DebugState::Running);
 
         Ok(())
@@ -197,7 +208,9 @@ impl DebugSession {
             session_id: String,
         }
 
-        TauriBridge::invoke::<_, ()>("debug_step_over", StepOverArgs { session_id }).await?;
+        TauriBridge::invoke::<_, ()>("debug_step_over", StepOverArgs { session_id })
+            .await
+            .map_err(|e| e.to_string())?;
         self.state.set(DebugState::Stepping);
 
         Ok(())
@@ -213,7 +226,9 @@ impl DebugSession {
             session_id: String,
         }
 
-        TauriBridge::invoke::<_, ()>("debug_step_into", StepIntoArgs { session_id }).await?;
+        TauriBridge::invoke::<_, ()>("debug_step_into", StepIntoArgs { session_id })
+            .await
+            .map_err(|e| e.to_string())?;
         self.state.set(DebugState::Stepping);
 
         Ok(())
@@ -229,7 +244,9 @@ impl DebugSession {
             session_id: String,
         }
 
-        TauriBridge::invoke::<_, ()>("debug_step_out", StepOutArgs { session_id }).await?;
+        TauriBridge::invoke::<_, ()>("debug_step_out", StepOutArgs { session_id })
+            .await
+            .map_err(|e| e.to_string())?;
         self.state.set(DebugState::Stepping);
 
         Ok(())
@@ -248,7 +265,9 @@ impl DebugSession {
         let frames: Vec<StackFrame> = TauriBridge::invoke(
             "debug_get_stack_trace",
             GetStackTraceArgs { session_id }
-        ).await?;
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         self.stack_frames.set(frames.clone());
 
@@ -269,7 +288,9 @@ impl DebugSession {
         let scopes: Vec<Scope> = TauriBridge::invoke(
             "debug_get_variables",
             GetVariablesArgs { session_id, frame_id }
-        ).await?;
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         self.scopes.set(scopes.clone());
 
@@ -291,7 +312,9 @@ impl DebugSession {
         let result: String = TauriBridge::invoke(
             "debug_evaluate",
             EvaluateArgs { session_id, expression, frame_id }
-        ).await?;
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         Ok(result)
     }

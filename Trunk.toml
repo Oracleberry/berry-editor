@@ -1,9 +1,11 @@
 [build]
 target = "index.html"
 dist = "dist"
-public_url = "/berry-editor/"
+public_url = "/"
 release = true
-filehash = false
+filehash = true
+rustup = "/Users/kyosukeishizu/.cargo/bin/rustup"
+cargo = "/Users/kyosukeishizu/.cargo/bin/cargo"
 
 [tools]
 wasm-opt = false

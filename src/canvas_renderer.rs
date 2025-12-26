@@ -4,6 +4,7 @@
 //! Supports syntax highlighting, cursor, and selection rendering.
 
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use wasm_bindgen::JsCast;
 use anyhow::{Context, Result};
 
 /// Position in the document (line, column)
@@ -58,8 +59,8 @@ impl CanvasTextRenderer {
     pub fn new(canvas: HtmlCanvasElement) -> Result<Self> {
         let context = canvas
             .get_context("2d")
-            .context("Failed to get 2d context")?
-            .context("Context is None")?
+            .map_err(|e| anyhow::anyhow!("Failed to get 2d context: {:?}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Context is None"))?
             .dyn_into::<CanvasRenderingContext2d>()
             .map_err(|_| anyhow::anyhow!("Failed to cast to CanvasRenderingContext2d"))?;
 
@@ -67,10 +68,9 @@ impl CanvasTextRenderer {
         let line_height = 20.0;
 
         // Measure character width (assuming monospace)
-        context.set_font(&format!("{}px 'JetBrains Mono', 'Fira Code', 'Consolas', monospace", font_size));
-        let char_width = context.measure_text("W")
-            .map(|metrics| metrics.width())
-            .unwrap_or(8.4);
+        context.set_font(&format!("{}px Menlo, Monaco, 'Courier New', monospace", font_size));
+        // Approximate character width for 14px monospace font
+        let char_width = 8.4;
 
         Ok(Self {
             canvas,

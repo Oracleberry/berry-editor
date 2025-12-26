@@ -69,6 +69,10 @@ impl SyntaxHighlighter {
         Ok(())
     }
 
+    pub fn get_language(&self) -> Option<&str> {
+        self.current_language.as_deref()
+    }
+
     pub fn highlight_line(&self, line: &str) -> Vec<SyntaxToken> {
         let lang = self.current_language.as_deref().unwrap_or("");
 
@@ -199,8 +203,11 @@ impl SyntaxHighlighter {
                         end: offset + absolute_end,
                     });
                 }
-                // Check if it's a number
-                else if word.chars().all(|c| c.is_numeric() || c == '.') {
+                // Check if it's a number (strip trailing punctuation)
+                else if {
+                    let stripped = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.');
+                    !stripped.is_empty() && stripped.chars().all(|c| c.is_numeric() || c == '.')
+                } {
                     tokens.push(SyntaxToken {
                         token_type: TokenType::Number,
                         text: word.to_string(),
@@ -231,10 +238,6 @@ impl SyntaxHighlighter {
                 end: offset + text.len(),
             });
         }
-    }
-
-    pub fn get_language(&self) -> Option<&str> {
-        self.current_language.as_deref()
     }
 }
 
