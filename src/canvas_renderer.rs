@@ -70,7 +70,8 @@ impl CanvasTextRenderer {
         // Measure character width (assuming monospace)
         context.set_font(&format!("{}px Menlo, Monaco, 'Courier New', monospace", font_size));
         // Approximate character width for 14px monospace font
-        let char_width = 8.4;
+        // ✅ IntelliJ Pattern: JetBrains Mono 13px の実測幅
+        let char_width = 7.815;
 
         Ok(Self {
             canvas,

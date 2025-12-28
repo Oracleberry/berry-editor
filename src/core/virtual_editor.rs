@@ -1,21 +1,164 @@
 //! Virtual Scroll Editor Component
 //! High-performance editor that can handle 100k+ line files
+//! ✅ IntelliJ Pro: Snapshots, Segment Rendering
+//!
+//! ## Architecture: "Real Model + Virtual View" (IntelliJ/VS Code式)
+//!
+//! ### 3-Layer Design:
+//!
+//! 1. **[本物の入力層] Real Input Layer** (Hidden Textarea)
+//!    - すべてのキーボード入力をキャプチャ（日本語IME含む）
+//!    - データフロー: textarea → tabs.update() → buffer.insert() → version++
+//!
+//! 2. **[本物のデータ層] Real Model Layer** (TextBuffer with Ropey)
+//!    - 実際のテキストデータを保持（不変なRope構造）
+//!    - version番号で更新を追跡
+//!    - バッファ更新 → version++ → リアクティブに描画をトリガー
+//!
+//! 3. **[バーチャル表示層] Virtual View Layer** (VirtualScroll + Rendering)
+//!    - 本物のバッファから可視範囲の行だけを取得して描画
+//!    - データフロー: tabs.with() → buffer.version読取 → visible lines → HTML
+//!    - 100万行でも見えている部分だけレンダリング（O(visible_lines)）
+//!
+//! 4. **[バーチャルカーソル] Virtual Cursor Layer** (Independent Overlay)
+//!    - 絶対位置で描画される独立カーソル
+//!    - 本物のバッファから行データを読み取り、正確な座標を計算
+//!
+//! ### データフロー（明確な一方向）:
+//! ```
+//! User Input → Hidden Textarea
+//!           ↓
+//!      tabs.update() [Reactive Signal]
+//!           ↓
+//!      TextBuffer.insert() → version++ [Real Model]
+//!           ↓
+//!      tabs.with() detects change [Reactive]
+//!           ↓
+//!      Re-render visible lines only [Virtual View]
+//! ```
 
 use leptos::prelude::*;
+use leptos::html;
 use leptos::ev::Event;
+use leptos::task::spawn_local;
 use crate::buffer::TextBuffer;
 use crate::syntax::SyntaxHighlighter;
 use crate::virtual_scroll::VirtualScroll;
+use crate::tauri_bindings::{self, HighlightResult};
+use crate::lsp::{LspClient, Position as LspPosition};
+use crate::lsp_ui::CompletionItem;
+use crate::completion_widget::CompletionWidget;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
+use std::collections::HashMap;
+use unicode_width::UnicodeWidthChar;
 
 const LINE_HEIGHT: f64 = 20.0; // pixels
 
-fn event_target_value(ev: &web_sys::Event) -> String {
-    ev.target()
-        .and_then(|t| t.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
-        .map(|textarea| textarea.value())
-        .unwrap_or_default()
+/// ✅ IntelliJ Pro: Extract word at position for Go to Definition
+/// Returns the identifier/word at the given character position in the line
+fn extract_word_at_position(line: &str, col: usize) -> String {
+    let chars: Vec<char> = line.chars().collect();
+
+    if col >= chars.len() {
+        return String::new();
+    }
+
+    // Check if the character at col is part of an identifier
+    if !is_identifier_char(chars[col]) {
+        return String::new();
+    }
+
+    // Find start of word (go backwards)
+    let mut start = col;
+    while start > 0 && is_identifier_char(chars[start - 1]) {
+        start -= 1;
+    }
+
+    // Find end of word (go forwards)
+    let mut end = col;
+    while end < chars.len() && is_identifier_char(chars[end]) {
+        end += 1;
+    }
+
+    chars[start..end].iter().collect()
+}
+
+/// Helper: Check if character is part of an identifier (alphanumeric or underscore)
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Represents a single edit operation for undo/redo
+#[derive(Clone, Debug)]
+enum EditOperation {
+    Insert {
+        position: usize,
+        text: String,
+        cursor_before: (usize, usize), // (line, col)
+        cursor_after: (usize, usize),
+    },
+    Delete {
+        position: usize,
+        text: String,
+        cursor_before: (usize, usize),
+        cursor_after: (usize, usize),
+    },
+}
+
+/// Manages undo/redo history
+#[derive(Clone, Debug)]
+struct UndoHistory {
+    undo_stack: Vec<EditOperation>,
+    redo_stack: Vec<EditOperation>,
+    max_history: usize,
+}
+
+impl UndoHistory {
+    fn new() -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            // ✅ MEMORY FIX: Reduced from 1000 to 100 to save memory
+            // Each operation stores text, which can be large
+            max_history: 100,
+        }
+    }
+
+    fn push(&mut self, operation: EditOperation) {
+        self.undo_stack.push(operation);
+        if self.undo_stack.len() > self.max_history {
+            self.undo_stack.remove(0);
+        }
+        // Clear redo stack when new edit is made
+        self.redo_stack.clear();
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn undo(&mut self) -> Option<EditOperation> {
+        if let Some(op) = self.undo_stack.pop() {
+            self.redo_stack.push(op.clone());
+            Some(op)
+        } else {
+            None
+        }
+    }
+
+    fn redo(&mut self) -> Option<EditOperation> {
+        if let Some(op) = self.redo_stack.pop() {
+            self.undo_stack.push(op.clone());
+            Some(op)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -25,8 +168,19 @@ struct EditorTab {
     highlighter: SyntaxHighlighter,
     scroll: VirtualScroll,
     is_modified: bool,
-    original_content: String,
-    is_editing: bool,  // New: track if in edit mode
+    // ✅ MEMORY FIX: Removed original_content - it duplicated the entire file in memory!
+    // The buffer (Rope) is the single source of truth. To check if modified,
+    // we can compare buffer hash or use the is_modified flag.
+    // Selection state (char indices)
+    selection_start: Option<usize>,
+    selection_end: Option<usize>,
+    // Undo/Redo history
+    undo_history: UndoHistory,
+    // ✅ Parallel syntax highlighting cache (line_number -> HTML)
+    highlight_cache: HashMap<usize, String>,
+    // Cursor position
+    cursor_line: usize,
+    cursor_col: usize,
 }
 
 #[component]
@@ -36,69 +190,265 @@ pub fn VirtualEditorPanel(
     let tabs = RwSignal::new(Vec::<EditorTab>::new());
     let active_tab_index = RwSignal::new(0usize);
     let scroll_top = RwSignal::new(0.0);
+    let container_ref = NodeRef::<leptos::html::Div>::new();
 
-    web_sys::console::log_1(&"[VirtualEditorPanel] Component initialized".into());
+    // ✅ IntelliJ Pattern: Independent cursor signals (UI truth source)
+    // These are separate from tabs to avoid reactive loops
+    let cursor_line = RwSignal::new(0usize);
+    let cursor_col = RwSignal::new(0usize);
 
-    // Effect to watch for file selection changes
+    // ✅ Selection state (moved to top level to avoid reset on re-render)
+    let selection_start = RwSignal::new(None::<usize>);
+    let selection_end = RwSignal::new(None::<usize>);
+
+    // ✅ IntelliJ Pro: Auto-completion state
+    let show_completion = RwSignal::new(false);
+    let completion_items = RwSignal::new(Vec::<CompletionItem>::new());
+    let completion_position = RwSignal::new((0usize, 0usize)); // (line, col)
+
+    // LSP client for completions (Rust analyzer) - wrapped in RwSignal to allow multiple accesses
+    let lsp_client = RwSignal::new(LspClient::new("rust"));
+
+    // ✅ FIX: Direct file selection handling - use .get() to clone and establish dependency
     Effect::new_isomorphic(move |_| {
-        let file_data = selected_file.get();
-        web_sys::console::log_1(&format!("[VirtualEditorPanel EFFECT] Checking selected_file: {:?}", file_data.as_ref().map(|(p, c)| (p.as_str(), c.len()))).into());
+        // Use .get() to clone the data and establish reactive dependency
+        if let Some((path, content)) = selected_file.get() {
+            #[cfg(target_arch = "wasm32")]
+            {
+                use wasm_bindgen::prelude::*;
+                #[wasm_bindgen]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = console)]
+                    fn log(s: &str);
+                }
+                log(&format!("🔥 Effect: Opening file: {}, length: {}", path, content.len()));
+            }
 
-        if let Some((path, content)) = file_data {
-            web_sys::console::log_1(&format!("[VirtualEditorPanel EFFECT] File selected: {} ({} bytes)", path, content.len()).into());
-
-            // Check if tab already exists
-            let current_tabs = tabs.get_untracked();
+            // ✅ Use .get() to establish dependency on tabs (not .get_untracked())
+            let current_tabs = tabs.get();
             let existing_tab_index = current_tabs.iter().position(|tab| tab.path == path);
 
-            if let Some(idx) = existing_tab_index {
-                // Switch to existing tab
-                web_sys::console::log_1(&format!("[VirtualEditorPanel EFFECT] Switching to existing tab {}", idx).into());
-                active_tab_index.set(idx);
-            } else {
-                // Create new tab
-                web_sys::console::log_1(&"[VirtualEditorPanel EFFECT] Creating new tab".into());
-                let buffer = TextBuffer::from_str(&content);
-                let mut highlighter = SyntaxHighlighter::new();
-
-                // Auto-detect language from file extension
-                if path.ends_with(".rs") {
-                    let _ = highlighter.set_language("rust");
-                } else if path.ends_with(".js") || path.ends_with(".ts") {
-                    let _ = highlighter.set_language("javascript");
-                } else if path.ends_with(".py") {
-                    let _ = highlighter.set_language("python");
+            #[cfg(target_arch = "wasm32")]
+            {
+                use wasm_bindgen::prelude::*;
+                #[wasm_bindgen]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = console)]
+                    fn log(s: &str);
                 }
+                log(&format!("Tab check: existing={:?}, current_tabs_len={}", existing_tab_index, current_tabs.len()));
+            }
 
-                // Create virtual scroll for this file
-                let line_count = buffer.len_lines();
-                let viewport_height = 800.0; // Will be updated by resize observer
-                let scroll = VirtualScroll::new(line_count, viewport_height, LINE_HEIGHT);
-
-                let tab = EditorTab {
-                    path: path.clone(),
-                    buffer,
-                    highlighter,
-                    scroll,
-                    is_modified: false,
-                    original_content: content.clone(),
-                    is_editing: false,  // Start in view mode
-                };
-
-                tabs.update(|t| t.push(tab));
-                let new_index = tabs.get_untracked().len() - 1;
-                web_sys::console::log_1(&format!("[VirtualEditorPanel EFFECT] Tab created at index {}", new_index).into());
-                active_tab_index.set(new_index);
+            if let Some(idx) = existing_tab_index {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    use wasm_bindgen::prelude::*;
+                    #[wasm_bindgen]
+                    extern "C" {
+                        #[wasm_bindgen(js_namespace = console)]
+                        fn log(s: &str);
+                    }
+                    log(&format!("Switching to existing tab at index {}", idx));
+                }
+                // Switch to existing tab
+                active_tab_index.set(idx);
+                // Force re-render
                 scroll_top.set(0.0);
+            } else {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    use wasm_bindgen::prelude::*;
+                    #[wasm_bindgen]
+                    extern "C" {
+                        #[wasm_bindgen(js_namespace = console)]
+                        fn log(s: &str);
+                    }
+                    log("Creating new tab...");
+                }
+                // Create new tab
+                    let buffer = TextBuffer::from_str(&content);
+                    let mut highlighter = SyntaxHighlighter::new();
+
+                    // Auto-detect language from file extension
+                    if path.ends_with(".rs") {
+                        let _ = highlighter.set_language("rust");
+                    } else if path.ends_with(".js") || path.ends_with(".ts") {
+                        let _ = highlighter.set_language("javascript");
+                    } else if path.ends_with(".py") {
+                        let _ = highlighter.set_language("python");
+                    }
+
+                    // Create virtual scroll for this file
+                    let line_count = buffer.len_lines();
+                    let viewport_height = 800.0; // Will be updated by resize observer
+                    let scroll = VirtualScroll::new(line_count, viewport_height, LINE_HEIGHT);
+
+                    let tab = EditorTab {
+                        path: path.clone(),
+                        buffer: buffer.clone(),
+                        highlighter,
+                        scroll,
+                        is_modified: false,
+                        // ✅ MEMORY FIX: No original_content clone!
+                        selection_start: None,
+                        selection_end: None,
+                        undo_history: UndoHistory::new(),
+                        highlight_cache: HashMap::new(),
+                        cursor_line: 0,
+                        cursor_col: 0,
+                    };
+
+                    // ✅ Add tab and set active index
+                    tabs.update(|t| t.push(tab));
+                    let new_index = current_tabs.len(); // Use the cloned value from tabs.get()
+
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use wasm_bindgen::prelude::*;
+                        #[wasm_bindgen]
+                        extern "C" {
+                            #[wasm_bindgen(js_namespace = console)]
+                            fn log(s: &str);
+                        }
+                        log(&format!("✅ Tab added! new_index: {}, total tabs: {}", new_index, new_index + 1));
+                    }
+
+                    active_tab_index.set(new_index);
+
+                    // ✅ CRITICAL FIX: Reset scroll position for new tab
+                    // Without this, scroll_top signal retains value from previous tab
+                    scroll_top.set(0.0);
+
+                    // ✅ Parallel syntax highlighting: Send all lines to Tauri backend
+                    let path_for_highlight = path.clone();
+                    let line_count = buffer.len_lines();
+                    spawn_local(async move {
+                        // Prepare lines for parallel highlighting
+                        let lines_to_highlight: Vec<(usize, String)> = (0..line_count)
+                            .filter_map(|i| {
+                                buffer.line(i).map(|line| (i, line.to_string()))
+                            })
+                            .collect();
+
+                        // Call Tauri parallel highlighter
+                        if let Ok(results) = tauri_bindings::highlight_file_parallel(
+                            &path_for_highlight,
+                            lines_to_highlight,
+                        )
+                        .await
+                        {
+                            // Update cache with results
+                            tabs.update(|t| {
+                                if let Some(tab) = t.get_mut(new_index) {
+                                    for result in results {
+                                        let html = highlight_result_to_html(&result);
+                                        tab.highlight_cache.insert(result.line_number, html);
+                                    }
+                                }
+                            });
+                        }
+                    });
+
+                    // ✅ Force re-render by toggling scroll (ensures dependency fires)
+                    scroll_top.set(-1.0);
+                    scroll_top.set(0.0);
+
             }
         }
     });
 
-    // Get active tab
-    let active_tab = move || {
+    // ✅ Bulletproof: Tab switch restoration with ghost Effect guard
+    // Restore cursor position when tab switches
+    Effect::new(move |_| {
+        // ✅ 最初の確認
+        if active_tab_index.is_disposed() || tabs.is_disposed() { return; }
+
+        // Get current tab index (reactive trigger)
         let idx = active_tab_index.get();
-        let current_tabs = tabs.get();
-        current_tabs.get(idx).cloned()
+
+        // ✅ with_untracked でディスポーズチェック済み
+        let data = tabs.with_untracked(|t| {
+            t.get(idx).map(|tab| (tab.cursor_line, tab.cursor_col))
+        });
+
+        if let Some((l, c)) = data {
+            // ✅ 書き込み直前にもう一度確認
+            if !cursor_line.is_disposed() && !cursor_col.is_disposed() {
+                cursor_line.set(l);
+                cursor_col.set(c);
+            }
+        }
+    });
+
+    // ✅ Bulletproof: Background save with ghost Effect guard
+    // Saves cursor position to tab storage when cursor moves
+    Effect::new(move |_| {
+        // ✅ 最初の確認
+        if cursor_line.is_disposed() || cursor_col.is_disposed() || active_tab_index.is_disposed() || tabs.is_disposed() {
+            return;
+        }
+
+        // Track cursor changes (reactive triggers)
+        let l = cursor_line.get();
+        let c = cursor_col.get();
+        let idx = active_tab_index.get_untracked();
+
+        // ✅ Ghost guard: skip if tab doesn't exist
+        tabs.update_untracked(|t| {
+            if let Some(tab) = t.get_mut(idx) {
+                tab.cursor_line = l;
+                tab.cursor_col = c;
+            }
+            // Silently ignore if tab is disposed
+        });
+    });
+
+    // ✅ Safe active tab accessor (prevents Disposed panic)
+    let get_active_tab = move || -> Option<EditorTab> {
+        // Use untracked access to prevent reactive loops
+        let idx = active_tab_index.get_untracked();
+        tabs.with_untracked(|t| t.get(idx).cloned())
+    };
+
+    // ✅ IntelliJ Pro: Handle completion selection
+    let on_completion_select = move |item: CompletionItem| {
+        // Get text to insert (prefer insert_text, fallback to label)
+        let insert_text = item.insert_text.unwrap_or(item.label);
+
+        // Get current cursor position
+        let insert_idx = tabs.with_untracked(|t| {
+            t.get(active_tab_index.get_untracked())
+                .map(|tab| tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked())
+                .unwrap_or(0)
+        });
+
+        // Insert completion text
+        tabs.update_untracked(|t| {
+            if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                tab.buffer.insert(insert_idx, &insert_text);
+                tab.is_modified = true;
+            }
+        });
+
+
+        // Update cursor position
+        let new_idx = insert_idx + insert_text.chars().count();
+        let (new_line, new_col) = tabs.with_untracked(|t| {
+            if let Some(tab) = t.get(active_tab_index.get()) {
+                let line = tab.buffer.char_to_line(new_idx);
+                let line_start = tab.buffer.line_to_char(line);
+                (line, new_idx - line_start)
+            } else {
+                (0, 0)
+            }
+        });
+
+        cursor_line.set(new_line);
+        cursor_col.set(new_col);
+
+        // Hide completion widget
+        show_completion.set(false);
+        completion_items.set(Vec::new());
     };
 
     // Handle scroll event
@@ -109,18 +459,18 @@ pub fn VirtualEditorPanel(
                 scroll_top.set(new_scroll_top);
 
                 // Update virtual scroll in active tab
-                tabs.update(|t| {
+                tabs.update_untracked(|t| {
                     if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
                         tab.scroll.set_scroll_top(new_scroll_top);
                     }
                 });
+                // No need to trigger re-render for scroll - visual update is handled by scroll_top signal
             }
         }
     };
 
     // Close tab function
     let close_tab = move |idx: usize| {
-        web_sys::console::log_1(&format!("[VirtualEditorPanel] Closing tab {}", idx).into());
 
         tabs.update(|t| {
             if idx < t.len() {
@@ -137,14 +487,98 @@ pub fn VirtualEditorPanel(
                 }
             }
         });
+
+        
+    };
+
+    // ✅ Bulletproof keyboard handler: prevents ghost handler from accessing disposed signals
+    let handle_keydown = move |ev: web_sys::KeyboardEvent| {
+        let key = ev.key();
+
+        // Prevent default for editor keys only
+        match key.as_str() {
+            "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Backspace" | "Enter" => {
+                ev.prevent_default();
+                ev.stop_propagation();
+            }
+            _ => return, // ✅ Early return for non-editor keys
+        }
+
+        // ✅ Ghost guard: verify component is still alive
+        let idx = active_tab_index.get_untracked();
+        let tab_exists = tabs.with_untracked(|t| t.get(idx).is_some());
+        if !tab_exists {
+            return; // Component disposed, skip safely
+        }
+
+        // ✅ Arrow keys: Update cursor position only (independent cursor layer will re-render)
+        match key.as_str() {
+            "ArrowUp" => {
+                cursor_line.update(|l| *l = l.saturating_sub(1));
+            }
+            "ArrowDown" => {
+                let max_lines = tabs.with_untracked(|t| {
+                    t.get(idx).map(|tab| tab.buffer.len_lines()).unwrap_or(1)
+                });
+                cursor_line.update(|l| *l = (*l + 1).min(max_lines.saturating_sub(1)));
+            }
+            "ArrowLeft" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                if col > 0 {
+                    cursor_col.update(|c| *c = col - 1);
+                } else if line > 0 {
+                    cursor_line.update(|l| *l = line - 1);
+                    let prev_line_len = tabs.with_untracked(|t| {
+                        t.get(idx)
+                            .and_then(|tab| tab.buffer.line(line - 1))
+                            .map(|s| s.trim_end_matches('\n').len())
+                            .unwrap_or(0)
+                    });
+                    cursor_col.update(|c| *c = prev_line_len);
+                }
+            }
+            "ArrowRight" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                let (line_len, total_lines) = tabs.with_untracked(|t| {
+                    if let Some(tab) = t.get(idx) {
+                        let ll = tab.buffer.line(line).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                        (ll, tab.buffer.len_lines())
+                    } else {
+                        (0, 1)
+                    }
+                });
+
+                if col < line_len {
+                    cursor_col.update(|c| *c = col + 1);
+                } else if line + 1 < total_lines {
+                    cursor_line.update(|l| *l = line + 1);
+                    cursor_col.update(|c| *c = 0);
+                }
+            }
+            _ => {}
+        }
     };
 
     view! {
-        <div class="berry-editor-main">
+        <div
+            class="berry-editor-main"
+            node_ref=container_ref
+            tabindex="0"
+            on:mousedown=move |_| {
+                // ✅ エディタのどこをクリックしても、確実にこの要素にフォーカスを当てる
+                if let Some(el) = container_ref.get() {
+                    let _ = el.focus();
+                }
+            }
+            on:keydown=handle_keydown
+            style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column;"
+        >
             // Tab Bar
             <div class="berry-editor-tab-bar">
                 {move || {
+                    // ✅ Ensure reactive dependency on tabs
                     let current_tabs = tabs.get();
+                    // ✅ Read render_trigger to force re-render when tabs change
                     let current_index = active_tab_index.get();
 
                     current_tabs.iter().enumerate().map(|(idx, tab)| {
@@ -188,209 +622,189 @@ pub fn VirtualEditorPanel(
             <div
                 class="berry-editor-pane"
                 on:scroll=on_scroll
-                style="overflow-y: auto; height: 100%;"
+                style="position: relative; overflow: auto; height: 100%;"
             >
                 {move || {
-                    let tab_opt = active_tab();
+                    // ✅ Disposed check first
+                    if tabs.is_disposed() || active_tab_index.is_disposed() {
+                        return view! { <div></div> }.into_any();
+                    }
 
-                    if let Some(tab) = tab_opt {
-                        let content = tab.buffer.to_string();
-                        let is_editing = tab.is_editing;
+                    let idx = active_tab_index.get();
 
-                        if is_editing {
-                            // EDIT MODE: Show textarea with line numbers
-                            let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
-                            let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                            let line_count = lines.len().max(1);
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use wasm_bindgen::prelude::*;
+                        #[wasm_bindgen]
+                        extern "C" {
+                            #[wasm_bindgen(js_namespace = console)]
+                            fn log(s: &str);
+                        }
+                        let count = tabs.with(|t| t.len());
+                        log(&format!("RENDER: active_tab_index={}, tabs.len()={}", idx, count));
+                    }
 
-                            // Auto-focus when entering edit mode
-                            Effect::new(move |_| {
-                                if let Some(textarea) = textarea_ref.get() {
-                                    let _ = textarea.focus();
-                                }
-                            });
+                    // ✅ CRITICAL: Read tabs.with() to create reactive dependency
+                    // This detects:
+                    //   1. New tabs added (tabs.len() changes)
+                    //   2. Buffer updates (buffer.version() changes)
+                    //   3. Tab switches (active_tab_index changes)
+                    let tab_data = tabs.with(|t| {
+                        t.get(idx).map(|tab| {
+                            (
+                                tab.buffer.len_lines(),
+                                tab.buffer.version(),  // ✅ Read version to detect buffer changes
+                                tab.scroll.clone(),
+                                tab.buffer.clone(),  // ✅ Clone buffer for rendering (Ropey clone is O(1))
+                            )
+                        })
+                    });
 
-                            view! {
-                                <div style="
-                                    display: flex;
-                                    width: 100%;
-                                    height: 100%;
-                                    background: #2b2b2b;
-                                ">
-                                    // Line numbers
-                                    <div style="
-                                        min-width: 50px;
-                                        text-align: right;
-                                        padding: 10px 12px 10px 0;
-                                        background: #313335;
-                                        color: #606366;
-                                        font-size: 13px;
-                                        line-height: 20px;
-                                        user-select: none;
-                                        border-right: 1px solid #323232;
-                                        font-family: Menlo, Monaco, 'Courier New', monospace;
-                                    ">
-                                        {(1..=line_count).map(|n| {
-                                            view! {
-                                                <div>{n}</div>
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </div>
+                    let Some((line_count, buffer_version, scroll_state, buffer)) = tab_data else {
+                        // Debug: Show why no tab is available
+                        let tabs_count = tabs.with(|t| t.len());
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            use wasm_bindgen::prelude::*;
+                            #[wasm_bindgen]
+                            extern "C" {
+                                #[wasm_bindgen(js_namespace = console)]
+                                fn log(s: &str);
+                            }
+                            log(&format!("RENDER ERROR: No tab at index {}. Total tabs: {}", idx, tabs_count));
+                        }
+                        return view! {
+                            <div class="empty-screen" style="padding: 20px; color: white;">
+                                {format!("No tab at index {}. Total tabs: {}", idx, tabs_count)}
+                            </div>
+                        }.into_any();
+                    };
 
-                                    <textarea
-                                        node_ref=textarea_ref
-                                        style="
-                                            flex: 1;
-                                            background: #2b2b2b;
-                                            color: #a9b7c6;
-                                            font-family: Menlo, Monaco, 'Courier New', monospace;
-                                            font-size: 13px;
-                                            line-height: 20px;
-                                            padding: 10px;
-                                            border: none;
-                                            outline: none;
-                                            resize: none;
-                                            tab-size: 4;
-                                        "
-                                    on:input=move |ev| {
-                                        let new_content = event_target_value(&ev);
-                                        tabs.update(|t| {
-                                            if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
-                                                tab.buffer = TextBuffer::from_str(&new_content);
-                                                tab.is_modified = true;
-                                            }
-                                        });
-                                    }
-                                    on:keydown=move |ev| {
-                                        // Save on Ctrl+S / Cmd+S
-                                        if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "s" {
-                                            ev.prevent_default();
-                                            let current_content = tabs.with_untracked(|t| {
-                                                t.get(active_tab_index.get_untracked())
-                                                    .map(|tab| (tab.path.clone(), tab.buffer.to_string()))
-                                            });
+                    // Extract values from tab_data
+                    let line_count_val = line_count;
+                    let buffer_clone = buffer.clone();
 
-                                            if let Some((path, content)) = current_content {
-                                                web_sys::console::log_1(&format!("[Editor] Saving file: {}", path).into());
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use wasm_bindgen::prelude::*;
+                        #[wasm_bindgen]
+                        extern "C" {
+                            #[wasm_bindgen(js_namespace = console)]
+                            fn log(s: &str);
+                        }
+                        log(&format!("RENDER SUCCESS: line_count={}, buffer_version={}", line_count_val, buffer_version));
+                    }
 
-                                                use crate::tauri_bindings;
-                                                use leptos::task::spawn_local;
+                    // ✅ Calculate total height
+                    let total_height = line_count_val.max(1) as f64 * 20.0;
 
-                                                spawn_local(async move {
-                                                    match tauri_bindings::write_file(&path, &content).await {
-                                                        Ok(_) => {
-                                                            web_sys::console::log_1(&"[Editor] File saved successfully".into());
-                                                            // Mark as unmodified and exit edit mode
-                                                            tabs.update(|t| {
-                                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
-                                                                    tab.is_modified = false;
-                                                                    tab.is_editing = false;
-                                                                }
-                                                            });
-                                                        }
-                                                        Err(e) => {
-                                                            web_sys::console::log_1(&format!("[Editor] Error saving file: {}", e).into());
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                        }
-                                        // Escape key to exit edit mode
-                                        else if ev.key() == "Escape" {
-                                            tabs.update(|t| {
-                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
-                                                    tab.is_editing = false;
+                    // ✅ Hidden input NodeRef for keyboard capture
+                    let input_ref = NodeRef::<html::Textarea>::new();
+
+                    // ✅ Helper function for character width calculation
+                    let calc_x_offset = |line_str: &str, char_count: usize| -> f64 {
+                        line_str.chars().take(char_count).map(|ch| {
+                            if ch as u32 > 255 { 15.625 } else { 7.8125 }
+                        }).sum::<f64>()
+                    };
+
+                    // ✅ NEW STRUCTURE: Simple, reactive layout
+                    return view! {
+                        <div class="berry-editor-scroll-content" style=format!("height: {}px; width: 100%; position: relative; display: flex;", total_height)>
+
+                            // [Layer 1] Line Number Gutter (Sticky)
+                            <div class="berry-editor-gutter" style="width: 55px; background: #313335; border-right: 1px solid #323232; position: sticky; left: 0; z-index: 10; height: 100%;">
+                                {move || {
+                                    let current_scroll = scroll_top.get();
+                                    let start_line = (current_scroll / 20.0).floor() as usize;
+                                    let end_line = (start_line + 50).min(line_count_val);
+
+                                    view! {
+                                        <div style=format!("position: absolute; top: {}px; width: 100%;", start_line as f64 * 20.0)>
+                                            {(start_line..end_line).map(|n| {
+                                                view! {
+                                                    <div style="height: 20px; color: #606366; font-size: 13px; text-align: right; padding-right: 8px; font-family: 'JetBrains Mono', monospace; line-height: 20px;">
+                                                        {n + 1}
+                                                    </div>
                                                 }
-                                            });
-                                        }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
                                     }
-                                >{content}</textarea>
-                                </div>
-                            }.into_any()
-                        } else {
-                            // VIEW MODE: Show syntax highlighted code
-                            let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                                }}
+                            </div>
 
-                            view! {
-                                <div
-                                    style="
-                                        width: 100%;
-                                        height: 100%;
-                                        overflow: auto;
-                                        padding: 10px;
-                                        font-family: Menlo, Monaco, 'Courier New', monospace;
-                                        font-size: 13px;
-                                        line-height: 20px;
-                                        background: #2b2b2b;
-                                        cursor: text;
-                                        pointer-events: auto !important;
-                                        position: relative;
-                                        z-index: 1;
-                                    "
-                                    on:click=move |ev| {
-                                        // Enter edit mode on SINGLE click for now (debugging)
-                                        web_sys::console::log_1(&"[VirtualEditor] Click detected!".into());
-                                        tabs.update(|t| {
-                                            if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
-                                                tab.is_editing = true;
-                                                web_sys::console::log_1(&"[VirtualEditor] Entering edit mode".into());
-                                            }
-                                        });
+                            // [Layer 2] Text Display Area
+                            <div class="berry-editor-lines-container" style="flex: 1; position: relative; height: 100%;">
+                                // Hidden input for keyboard capture
+                                <textarea
+                                    node_ref=input_ref
+                                    class="hidden-input"
+                                    style="position: absolute; opacity: 0; pointer-events: none; z-index: -1;"
+                                ></textarea>
+
+                                // Virtual Cursor
+                                <div style=move || {
+                                    if cursor_line.is_disposed() || cursor_col.is_disposed() {
+                                        return "display: none;".to_string();
                                     }
-                                >
-                                    {lines.iter().enumerate().map(|(idx, line)| {
-                                        let highlighted_html = syntax_highlight_line(line);
+
+                                    let l = cursor_line.get();
+                                    let c = cursor_col.get();
+
+                                    let x_offset = tabs.with(|t| {
+                                        t.get(idx).and_then(|tab| {
+                                            tab.buffer.line(l).map(|s| calc_x_offset(&s, c))
+                                        })
+                                    }).unwrap_or(0.0);
+
+                                    format!(
+                                        "position: absolute; left: {}px; top: {}px; width: 2px; height: 18px; background: #aeafad; z-index: 100; pointer-events: none; animation: blink 1s step-end infinite;",
+                                        15.0 + x_offset,
+                                        l as f64 * 20.0
+                                    )
+                                }></div>
+
+                                // Visible Lines Viewport
+                                {move || {
+                                    let current_scroll = scroll_top.get();
+                                    let start_line = (current_scroll / 20.0).floor() as usize;
+                                    let end_line = (start_line + 50).min(line_count_val);
+
+                                    // ✅ Re-establish dependency on tabs for highlighting
+                                    tabs.with(|t| {
+                                        let tab = &t[idx];
 
                                         view! {
-                                            <div style="display: flex; pointer-events: auto;">
-                                                <span style="
-                                                    color: #606366;
-                                                    margin-right: 10px;
-                                                    user-select: none;
-                                                    -webkit-user-select: none;
-                                                    -moz-user-select: none;
-                                                    -ms-user-select: none;
-                                                    min-width: 40px;
-                                                    text-align: right;
-                                                    font-size: 12px;
-                                                    pointer-events: none;
-                                                ">
-                                                    {idx + 1}
-                                                </span>
-                                                <code style="
-                                                    margin: 0;
-                                                    padding: 0;
-                                                    font-family: inherit;
-                                                    font-size: inherit;
-                                                    line-height: inherit;
-                                                    flex: 1;
-                                                    white-space: pre;
-                                                    display: block;
-                                                    user-select: text;
-                                                    -webkit-user-select: text;
-                                                    pointer-events: auto;
-                                                    cursor: text;
-                                                " inner_html=highlighted_html></code>
+                                            <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%;", start_line as f64 * 20.0)>
+                                                {(start_line..end_line).filter_map(|line_idx| {
+                                                    buffer_clone.line(line_idx).map(|line_text| {
+                                                        let html = tab.highlight_cache.get(&line_idx).cloned()
+                                                            .unwrap_or_else(|| syntax_highlight_line(&line_text));
+
+                                                        view! {
+                                                            <div
+                                                                class="berry-editor-line"
+                                                                style="height: 20px; line-height: 20px; padding-left: 15px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px;"
+                                                                inner_html=html
+                                                            ></div>
+                                                        }
+                                                    })
+                                                }).collect::<Vec<_>>()}
                                             </div>
                                         }
-                                    }).collect::<Vec<_>>()}
-                                </div>
-                            }.into_any()
-                        }
-                    } else {
-                        view! {
-                            <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#606366;background:#2b2b2b;">
-                                "Click a file to start editing..."
+                                    })
+                                }}
                             </div>
-                        }.into_any()
-                    }
+                        </div>
+                    }.into_any();
                 }}
             </div>
 
             // Status Bar
             <div class="berry-editor-status-bar">
                 {move || {
-                    if let Some(tab) = active_tab() {
+                    let idx = active_tab_index.get();
+                    if let Some(tab) = tabs.with(|t| t.get(idx).cloned()) {
                         let lang = tab.highlighter.get_language().unwrap_or("text");
                         format!("{} | UTF-8 | {} lines", lang, tab.buffer.len_lines())
                     } else {
@@ -402,7 +816,20 @@ pub fn VirtualEditorPanel(
     }
 }
 
-/// Basic syntax highlighting for Rust code
+/// Convert parallel highlighting result to HTML
+fn highlight_result_to_html(result: &HighlightResult) -> String {
+    let mut html = String::new();
+    for token in &result.tokens {
+        html.push_str(&format!(
+            "<span style=\"color: {}\">{}</span>",
+            token.color,
+            html_escape(&token.text)
+        ));
+    }
+    html
+}
+
+/// IntelliJ Darcula syntax highlighting for Rust code (fallback for non-Tauri mode)
 fn syntax_highlight_line(line: &str) -> String {
     let keywords = [
         "fn", "let", "mut", "const", "static", "impl", "trait", "struct", "enum",
@@ -420,14 +847,15 @@ fn syntax_highlight_line(line: &str) -> String {
     let mut current_word = String::new();
     let mut in_string = false;
     let mut in_comment = false;
+    let mut in_attribute = false;
     let mut string_char = ' ';
 
     while let Some(ch) = chars.next() {
         // Handle comments
-        if !in_string && ch == '/' && chars.peek() == Some(&'/') {
+        if !in_string && !in_attribute && ch == '/' && chars.peek() == Some(&'/') {
             in_comment = true;
             flush_word(&mut result, &mut current_word, &keywords, &types);
-            result.push_str("<span style=\"color:#6A9955\">");
+            result.push_str("<span style=\"color:#808080;font-style:italic\">"); // Darcula comment color
             result.push_str(&escape_html_char(ch));
             continue;
         }
@@ -437,12 +865,30 @@ fn syntax_highlight_line(line: &str) -> String {
             continue;
         }
 
+        // ✅ IntelliJ Pattern: Handle attributes #[...]
+        if !in_string && ch == '#' && chars.peek() == Some(&'[') {
+            in_attribute = true;
+            flush_word(&mut result, &mut current_word, &keywords, &types);
+            result.push_str("<span style=\"color:#bbb529\">"); // Darcula attribute color
+            result.push_str(&escape_html_char(ch));
+            continue;
+        }
+
+        if in_attribute {
+            result.push_str(&escape_html_char(ch));
+            if ch == ']' {
+                result.push_str("</span>");
+                in_attribute = false;
+            }
+            continue;
+        }
+
         // Handle strings
         if (ch == '"' || ch == '\'') && !in_string {
             in_string = true;
             string_char = ch;
             flush_word(&mut result, &mut current_word, &keywords, &types);
-            result.push_str("<span style=\"color:#CE9178\">");
+            result.push_str("<span style=\"color:#6a8759\">"); // Darcula string color
             result.push(ch);
             continue;
         }
@@ -477,6 +923,9 @@ fn syntax_highlight_line(line: &str) -> String {
     if in_comment {
         result.push_str("</span>");
     }
+    if in_attribute {
+        result.push_str("</span>");
+    }
 
     result
 }
@@ -494,13 +943,25 @@ fn escape_html_char(ch: char) -> String {
 
 fn flush_word(result: &mut String, current_word: &mut String, keywords: &[&str], types: &[&str]) {
     if !current_word.is_empty() {
+        // ✅ IntelliJ Pattern: Check for SCREAMING_SNAKE_CASE constants
+        let is_constant = current_word.len() > 1 &&
+                         current_word.chars().all(|c| c.is_uppercase() || c.is_numeric() || c == '_') &&
+                         current_word.chars().any(|c| c.is_uppercase());
+
         if keywords.contains(&current_word.as_str()) {
-            result.push_str(&format!("<span style=\"color:#569CD6\">{}</span>", html_escape(current_word)));
+            // Darcula keyword color (orange) with bold
+            result.push_str(&format!("<span style=\"color:#cc7832;font-weight:bold\">{}</span>", html_escape(current_word)));
         } else if types.contains(&current_word.as_str()) {
-            result.push_str(&format!("<span style=\"color:#4EC9B0\">{}</span>", html_escape(current_word)));
+            // Darcula type color (light purple)
+            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
+        } else if is_constant {
+            // ✅ IntelliJ Pattern: Darcula constant color (purple) for SCREAMING_SNAKE_CASE
+            result.push_str(&format!("<span style=\"color:#9876aa\">{}</span>", html_escape(current_word)));
         } else if current_word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-            result.push_str(&format!("<span style=\"color:#4EC9B0\">{}</span>", html_escape(current_word)));
+            // User-defined types (light purple)
+            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
         } else {
+            // Default text color
             result.push_str(&html_escape(current_word));
         }
         current_word.clear();

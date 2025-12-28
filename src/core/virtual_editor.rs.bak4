@@ -1,0 +1,2272 @@
+//! Virtual Scroll Editor Component
+//! High-performance editor that can handle 100k+ line files
+//! ✅ IntelliJ Pro: Snapshots, Segment Rendering
+//!
+//! ## Architecture: "Real Model + Virtual View" (IntelliJ/VS Code式)
+//!
+//! ### 3-Layer Design:
+//!
+//! 1. **[本物の入力層] Real Input Layer** (Hidden Textarea)
+//!    - すべてのキーボード入力をキャプチャ（日本語IME含む）
+//!    - データフロー: textarea → tabs.update() → buffer.insert() → version++
+//!
+//! 2. **[本物のデータ層] Real Model Layer** (TextBuffer with Ropey)
+//!    - 実際のテキストデータを保持（不変なRope構造）
+//!    - version番号で更新を追跡
+//!    - バッファ更新 → version++ → リアクティブに描画をトリガー
+//!
+//! 3. **[バーチャル表示層] Virtual View Layer** (VirtualScroll + Rendering)
+//!    - 本物のバッファから可視範囲の行だけを取得して描画
+//!    - データフロー: tabs.with() → buffer.version読取 → visible lines → HTML
+//!    - 100万行でも見えている部分だけレンダリング（O(visible_lines)）
+//!
+//! 4. **[バーチャルカーソル] Virtual Cursor Layer** (Independent Overlay)
+//!    - 絶対位置で描画される独立カーソル
+//!    - 本物のバッファから行データを読み取り、正確な座標を計算
+//!
+//! ### データフロー（明確な一方向）:
+//! ```
+//! User Input → Hidden Textarea
+//!           ↓
+//!      tabs.update() [Reactive Signal]
+//!           ↓
+//!      TextBuffer.insert() → version++ [Real Model]
+//!           ↓
+//!      tabs.with() detects change [Reactive]
+//!           ↓
+//!      Re-render visible lines only [Virtual View]
+//! ```
+
+use leptos::prelude::*;
+use leptos::html;
+use leptos::ev::Event;
+use leptos::task::spawn_local;
+use crate::buffer::TextBuffer;
+use crate::syntax::SyntaxHighlighter;
+use crate::virtual_scroll::VirtualScroll;
+use crate::tauri_bindings::{self, HighlightResult};
+use crate::lsp::{LspClient, Position as LspPosition};
+use crate::lsp_ui::CompletionItem;
+use crate::completion_widget::CompletionWidget;
+use wasm_bindgen::JsCast;
+use web_sys::HtmlElement;
+use std::collections::HashMap;
+use unicode_width::UnicodeWidthChar;
+
+const LINE_HEIGHT: f64 = 20.0; // pixels
+
+/// ✅ IntelliJ Pro: Extract word at position for Go to Definition
+/// Returns the identifier/word at the given character position in the line
+fn extract_word_at_position(line: &str, col: usize) -> String {
+    let chars: Vec<char> = line.chars().collect();
+
+    if col >= chars.len() {
+        return String::new();
+    }
+
+    // Check if the character at col is part of an identifier
+    if !is_identifier_char(chars[col]) {
+        return String::new();
+    }
+
+    // Find start of word (go backwards)
+    let mut start = col;
+    while start > 0 && is_identifier_char(chars[start - 1]) {
+        start -= 1;
+    }
+
+    // Find end of word (go forwards)
+    let mut end = col;
+    while end < chars.len() && is_identifier_char(chars[end]) {
+        end += 1;
+    }
+
+    chars[start..end].iter().collect()
+}
+
+/// Helper: Check if character is part of an identifier (alphanumeric or underscore)
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Represents a single edit operation for undo/redo
+#[derive(Clone, Debug)]
+enum EditOperation {
+    Insert {
+        position: usize,
+        text: String,
+        cursor_before: (usize, usize), // (line, col)
+        cursor_after: (usize, usize),
+    },
+    Delete {
+        position: usize,
+        text: String,
+        cursor_before: (usize, usize),
+        cursor_after: (usize, usize),
+    },
+}
+
+/// Manages undo/redo history
+#[derive(Clone, Debug)]
+struct UndoHistory {
+    undo_stack: Vec<EditOperation>,
+    redo_stack: Vec<EditOperation>,
+    max_history: usize,
+}
+
+impl UndoHistory {
+    fn new() -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            // ✅ MEMORY FIX: Reduced from 1000 to 100 to save memory
+            // Each operation stores text, which can be large
+            max_history: 100,
+        }
+    }
+
+    fn push(&mut self, operation: EditOperation) {
+        self.undo_stack.push(operation);
+        if self.undo_stack.len() > self.max_history {
+            self.undo_stack.remove(0);
+        }
+        // Clear redo stack when new edit is made
+        self.redo_stack.clear();
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn undo(&mut self) -> Option<EditOperation> {
+        if let Some(op) = self.undo_stack.pop() {
+            self.redo_stack.push(op.clone());
+            Some(op)
+        } else {
+            None
+        }
+    }
+
+    fn redo(&mut self) -> Option<EditOperation> {
+        if let Some(op) = self.redo_stack.pop() {
+            self.undo_stack.push(op.clone());
+            Some(op)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EditorTab {
+    path: String,
+    buffer: TextBuffer,
+    highlighter: SyntaxHighlighter,
+    scroll: VirtualScroll,
+    is_modified: bool,
+    // ✅ MEMORY FIX: Removed original_content - it duplicated the entire file in memory!
+    // The buffer (Rope) is the single source of truth. To check if modified,
+    // we can compare buffer hash or use the is_modified flag.
+    // Selection state (char indices)
+    selection_start: Option<usize>,
+    selection_end: Option<usize>,
+    // Undo/Redo history
+    undo_history: UndoHistory,
+    // ✅ Parallel syntax highlighting cache (line_number -> HTML)
+    highlight_cache: HashMap<usize, String>,
+    // Cursor position
+    cursor_line: usize,
+    cursor_col: usize,
+}
+
+#[component]
+pub fn VirtualEditorPanel(
+    selected_file: RwSignal<Option<(String, String)>>,
+) -> impl IntoView {
+    let tabs = RwSignal::new(Vec::<EditorTab>::new());
+    let active_tab_index = RwSignal::new(0usize);
+    let scroll_top = RwSignal::new(0.0);
+    let container_ref = NodeRef::<leptos::html::Div>::new();
+
+    // ✅ IntelliJ Pattern: Independent cursor signals (UI truth source)
+    // These are separate from tabs to avoid reactive loops
+    let cursor_line = RwSignal::new(0usize);
+    let cursor_col = RwSignal::new(0usize);
+
+    // ✅ Selection state (moved to top level to avoid reset on re-render)
+    let selection_start = RwSignal::new(None::<usize>);
+    let selection_end = RwSignal::new(None::<usize>);
+
+    // ✅ IntelliJ Pro: Auto-completion state
+    let show_completion = RwSignal::new(false);
+    let completion_items = RwSignal::new(Vec::<CompletionItem>::new());
+    let completion_position = RwSignal::new((0usize, 0usize)); // (line, col)
+
+    // LSP client for completions (Rust analyzer) - wrapped in RwSignal to allow multiple accesses
+    let lsp_client = RwSignal::new(LspClient::new("rust"));
+
+    // 1. パス「だけ」を保持する独立したシグナル
+    let current_path = RwSignal::new(None::<String>);
+
+    // 2. selected_file を監視し、パスが「本当に」変わった時だけ current_path を更新
+    Effect::new_isomorphic(move |_| {
+        // .with() を使うことで、中身(content)のクローンを避け、依存関係も最小限にする
+        selected_file.with(|file| {
+            if let Some((path, _)) = file {
+                // untracked で比較することで、この Effect 自体がループするのを防ぐ
+                if current_path.get_untracked().as_ref() != Some(path) {
+                    current_path.set(Some(path.clone()));
+                }
+            }
+        });
+    });
+
+    // Effect to watch for file selection changes (for tab management)
+    Effect::new_isomorphic(move |_| {
+        // Use .with() to avoid cloning the entire content
+        selected_file.with(|file_data| {
+
+            if let Some((path, content)) = file_data {
+
+            // Check if tab already exists
+            let current_tabs = tabs.get_untracked();
+            let existing_tab_index = current_tabs.iter().position(|tab| &tab.path == path);
+
+            if let Some(idx) = existing_tab_index {
+                // Switch to existing tab
+                active_tab_index.set(idx);
+                // Force re-render by toggling scroll
+                scroll_top.set(-1.0);
+                scroll_top.set(0.0);
+            } else {
+                // Create new tab
+                let buffer = TextBuffer::from_str(&content);
+                let mut highlighter = SyntaxHighlighter::new();
+
+                // Auto-detect language from file extension
+                if path.ends_with(".rs") {
+                    let _ = highlighter.set_language("rust");
+                } else if path.ends_with(".js") || path.ends_with(".ts") {
+                    let _ = highlighter.set_language("javascript");
+                } else if path.ends_with(".py") {
+                    let _ = highlighter.set_language("python");
+                }
+
+                // Create virtual scroll for this file
+                let line_count = buffer.len_lines();
+                let viewport_height = 800.0; // Will be updated by resize observer
+                let scroll = VirtualScroll::new(line_count, viewport_height, LINE_HEIGHT);
+
+                let tab = EditorTab {
+                    path: path.clone(),
+                    buffer: buffer.clone(),
+                    highlighter,
+                    scroll,
+                    is_modified: false,
+                    // ✅ MEMORY FIX: No original_content clone!
+                    selection_start: None,
+                    selection_end: None,
+                    undo_history: UndoHistory::new(),
+                    highlight_cache: HashMap::new(),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                };
+
+                // ✅ FIX: Use update() to maintain reactive dependency
+                tabs.update(|t| t.push(tab));
+                let new_index = tabs.with_untracked(|t| t.len()).saturating_sub(1);
+                active_tab_index.set(new_index);
+
+                // ✅ Parallel syntax highlighting: Send all lines to Tauri backend
+                let path_for_highlight = path.clone();
+                let line_count = buffer.len_lines();
+                spawn_local(async move {
+                    // Prepare lines for parallel highlighting
+                    let lines_to_highlight: Vec<(usize, String)> = (0..line_count)
+                        .filter_map(|i| {
+                            buffer.line(i).map(|line| (i, line.to_string()))
+                        })
+                        .collect();
+
+                    // Call Tauri parallel highlighter
+                    if let Ok(results) = tauri_bindings::highlight_file_parallel(
+                        &path_for_highlight,
+                        lines_to_highlight,
+                    )
+                    .await
+                    {
+                        // Update cache with results
+                        tabs.update(|t| {
+                            if let Some(tab) = t.get_mut(new_index) {
+                                for result in results {
+                                    let html = highlight_result_to_html(&result);
+                                    tab.highlight_cache.insert(result.line_number, html);
+                                }
+                            }
+                        });
+                    }
+                });
+
+                // ✅ Force re-render by toggling scroll (ensures dependency fires)
+                scroll_top.set(-1.0);
+                scroll_top.set(0.0);
+
+                // ✅ Trigger re-render by incrementing render_trigger
+
+                // ✅ Update current_path to prevent the first Effect from re-triggering
+                current_path.set(Some(path.clone()));
+            }
+            }
+        });
+    });
+
+    // 3. current_path が変わった時だけフォーカスする（ここにはもう content は存在しない）
+    Effect::new(move |_| {
+        if let Some(_) = current_path.get() {
+            // パス変更時の一度きりの処理
+            // DOMのレンダリングが完了してからNodeRefにアクセスする
+            if let Some(window) = web_sys::window() {
+                let _ = window.request_animation_frame(
+                    wasm_bindgen::closure::Closure::once_into_js(move || {
+                        if let Some(el) = container_ref.get() {
+                            el.set_scroll_top(0);
+                            let _ = el.focus();
+                        } else {
+                        }
+                    })
+                    .unchecked_ref()
+                );
+            }
+        }
+    });
+
+    // ✅ Bulletproof: Tab switch restoration with ghost Effect guard
+    // Restore cursor position when tab switches
+    Effect::new(move |_| {
+        // ✅ 最初の確認
+        if active_tab_index.is_disposed() || tabs.is_disposed() { return; }
+
+        // Get current tab index (reactive trigger)
+        let idx = active_tab_index.get();
+
+        // ✅ with_untracked でディスポーズチェック済み
+        let data = tabs.with_untracked(|t| {
+            t.get(idx).map(|tab| (tab.cursor_line, tab.cursor_col))
+        });
+
+        if let Some((l, c)) = data {
+            // ✅ 書き込み直前にもう一度確認
+            if !cursor_line.is_disposed() && !cursor_col.is_disposed() {
+                cursor_line.set(l);
+                cursor_col.set(c);
+            }
+        }
+    });
+
+    // ✅ Bulletproof: Background save with ghost Effect guard
+    // Saves cursor position to tab storage when cursor moves
+    Effect::new(move |_| {
+        // ✅ 最初の確認
+        if cursor_line.is_disposed() || cursor_col.is_disposed() || active_tab_index.is_disposed() || tabs.is_disposed() {
+            return;
+        }
+
+        // Track cursor changes (reactive triggers)
+        let l = cursor_line.get();
+        let c = cursor_col.get();
+        let idx = active_tab_index.get_untracked();
+
+        // ✅ Ghost guard: skip if tab doesn't exist
+        tabs.update_untracked(|t| {
+            if let Some(tab) = t.get_mut(idx) {
+                tab.cursor_line = l;
+                tab.cursor_col = c;
+            }
+            // Silently ignore if tab is disposed
+        });
+    });
+
+    // ✅ Safe active tab accessor (prevents Disposed panic)
+    let get_active_tab = move || -> Option<EditorTab> {
+        // Use untracked access to prevent reactive loops
+        let idx = active_tab_index.get_untracked();
+        tabs.with_untracked(|t| t.get(idx).cloned())
+    };
+
+    // ✅ IntelliJ Pro: Handle completion selection
+    let on_completion_select = move |item: CompletionItem| {
+        // Get text to insert (prefer insert_text, fallback to label)
+        let insert_text = item.insert_text.unwrap_or(item.label);
+
+        // Get current cursor position
+        let insert_idx = tabs.with_untracked(|t| {
+            t.get(active_tab_index.get_untracked())
+                .map(|tab| tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked())
+                .unwrap_or(0)
+        });
+
+        // Insert completion text
+        tabs.update_untracked(|t| {
+            if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                tab.buffer.insert(insert_idx, &insert_text);
+                tab.is_modified = true;
+            }
+        });
+
+
+        // Update cursor position
+        let new_idx = insert_idx + insert_text.chars().count();
+        let (new_line, new_col) = tabs.with_untracked(|t| {
+            if let Some(tab) = t.get(active_tab_index.get()) {
+                let line = tab.buffer.char_to_line(new_idx);
+                let line_start = tab.buffer.line_to_char(line);
+                (line, new_idx - line_start)
+            } else {
+                (0, 0)
+            }
+        });
+
+        cursor_line.set(new_line);
+        cursor_col.set(new_col);
+
+        // Hide completion widget
+        show_completion.set(false);
+        completion_items.set(Vec::new());
+    };
+
+    // Handle scroll event
+    let on_scroll = move |ev: Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(element) = target.dyn_into::<HtmlElement>() {
+                let new_scroll_top = element.scroll_top() as f64;
+                scroll_top.set(new_scroll_top);
+
+                // Update virtual scroll in active tab
+                tabs.update_untracked(|t| {
+                    if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                        tab.scroll.set_scroll_top(new_scroll_top);
+                    }
+                });
+                // No need to trigger re-render for scroll - visual update is handled by scroll_top signal
+            }
+        }
+    };
+
+    // Close tab function
+    let close_tab = move |idx: usize| {
+
+        tabs.update(|t| {
+            if idx < t.len() {
+                t.remove(idx);
+
+                // Adjust active tab index if needed
+                let current_active = active_tab_index.get_untracked();
+                if t.is_empty() {
+                    active_tab_index.set(0);
+                } else if current_active >= t.len() {
+                    active_tab_index.set(t.len() - 1);
+                } else if idx <= current_active && current_active > 0 {
+                    active_tab_index.set(current_active - 1);
+                }
+            }
+        });
+
+        
+    };
+
+    // ✅ Bulletproof keyboard handler: prevents ghost handler from accessing disposed signals
+    let handle_keydown = move |ev: web_sys::KeyboardEvent| {
+        let key = ev.key();
+
+        // Prevent default for editor keys only
+        match key.as_str() {
+            "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Backspace" | "Enter" => {
+                ev.prevent_default();
+                ev.stop_propagation();
+            }
+            _ => return, // ✅ Early return for non-editor keys
+        }
+
+        // ✅ Ghost guard: verify component is still alive
+        let idx = active_tab_index.get_untracked();
+        let tab_exists = tabs.with_untracked(|t| t.get(idx).is_some());
+        if !tab_exists {
+            return; // Component disposed, skip safely
+        }
+
+        // ✅ Arrow keys: Update cursor position only (independent cursor layer will re-render)
+        match key.as_str() {
+            "ArrowUp" => {
+                cursor_line.update(|l| *l = l.saturating_sub(1));
+            }
+            "ArrowDown" => {
+                let max_lines = tabs.with_untracked(|t| {
+                    t.get(idx).map(|tab| tab.buffer.len_lines()).unwrap_or(1)
+                });
+                cursor_line.update(|l| *l = (*l + 1).min(max_lines.saturating_sub(1)));
+            }
+            "ArrowLeft" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                if col > 0 {
+                    cursor_col.update(|c| *c = col - 1);
+                } else if line > 0 {
+                    cursor_line.update(|l| *l = line - 1);
+                    let prev_line_len = tabs.with_untracked(|t| {
+                        t.get(idx)
+                            .and_then(|tab| tab.buffer.line(line - 1))
+                            .map(|s| s.trim_end_matches('\n').len())
+                            .unwrap_or(0)
+                    });
+                    cursor_col.update(|c| *c = prev_line_len);
+                }
+            }
+            "ArrowRight" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                let (line_len, total_lines) = tabs.with_untracked(|t| {
+                    if let Some(tab) = t.get(idx) {
+                        let ll = tab.buffer.line(line).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                        (ll, tab.buffer.len_lines())
+                    } else {
+                        (0, 1)
+                    }
+                });
+
+                if col < line_len {
+                    cursor_col.update(|c| *c = col + 1);
+                } else if line + 1 < total_lines {
+                    cursor_line.update(|l| *l = line + 1);
+                    cursor_col.update(|c| *c = 0);
+                }
+            }
+            _ => {}
+        }
+    };
+
+    view! {
+        <div
+            class="berry-editor-main"
+            node_ref=container_ref
+            tabindex="0"
+            on:mousedown=move |_| {
+                // ✅ エディタのどこをクリックしても、確実にこの要素にフォーカスを当てる
+                if let Some(el) = container_ref.get() {
+                    let _ = el.focus();
+                }
+            }
+            on:keydown=handle_keydown
+            style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column;"
+        >
+            // Tab Bar
+            <div class="berry-editor-tab-bar">
+                {move || {
+                    // ✅ Ensure reactive dependency on tabs
+                    let current_tabs = tabs.get();
+                    // ✅ Read render_trigger to force re-render when tabs change
+                    let current_index = active_tab_index.get();
+
+                    current_tabs.iter().enumerate().map(|(idx, tab)| {
+                        let is_active = idx == current_index;
+                        let filename = tab.path.split('/').last().unwrap_or(&tab.path).to_string();
+                        let is_modified = tab.is_modified;
+                        let tab_class = if is_active {
+                            "berry-editor-tab active"
+                        } else {
+                            "berry-editor-tab"
+                        };
+
+                        view! {
+                            <div class=tab_class>
+                                <span
+                                    class="berry-editor-tab-label"
+                                    on:click=move |_| {
+                                        active_tab_index.set(idx);
+                                        scroll_top.set(0.0);
+                                    }
+                                >
+                                    {if is_modified { "● " } else { "" }}
+                                    {filename}
+                                </span>
+                                <span
+                                    class="berry-editor-tab-close"
+                                    on:click=move |e| {
+                                        e.stop_propagation();
+                                        close_tab(idx);
+                                    }
+                                >
+                                    "×"
+                                </span>
+                            </div>
+                        }
+                    }).collect::<Vec<_>>()
+                }}
+            </div>
+
+            // Editor Pane with Virtual Scrolling
+            <div
+                class="berry-editor-pane"
+                on:scroll=on_scroll
+                style="position: relative; overflow: auto; height: 100%;"
+            >
+                {move || {
+                    // ✅ Disposed check first
+                    if tabs.is_disposed() || active_tab_index.is_disposed() {
+                        return view! { <div></div> }.into_any();
+                    }
+
+                    let idx = active_tab_index.get();
+
+                    // ✅ CRITICAL: Read tabs.with() to create reactive dependency
+                    // This detects:
+                    //   1. New tabs added (tabs.len() changes)
+                    //   2. Buffer updates (buffer.version() changes)
+                    //   3. Tab switches (active_tab_index changes)
+                    let tab_data = tabs.with(|t| {
+                        t.get(idx).map(|tab| {
+                            (
+                                tab.buffer.len_lines(),
+                                tab.buffer.version(),  // ✅ Read version to detect buffer changes
+                                tab.scroll.clone(),
+                            )
+                        })
+                    });
+
+                    let Some((line_count, _buffer_version, scroll_state)) = tab_data else {
+                        return view! { <div class="empty-screen">"Select a file to edit"</div> }.into_any();
+                    };
+
+                    let (line_count, scroll_state) = (line_count, scroll_state);
+
+                    if line_count > 0 {
+                        // ✅ IntelliJ Design: On-demand line getter (NO CLONE!)
+                        // This closure accesses buffer directly when called
+                        let get_visible_line = move |line_idx: usize| -> Option<String> {
+                            tabs.with_untracked(|t| {
+                                t.get(idx)
+                                    .and_then(|tab| tab.buffer.line(line_idx))
+                            })
+                        };
+
+                        let tab_scroll = scroll_state;
+
+                        // ✅ IntelliJ Darcula 標準値に固定
+                        let line_height = 20.0;
+                        let char_width = 7.8125; // JetBrains Mono 13px の正確な値（CSS変数と同期）
+                        let gutter_width = 55.0; // 行番号エリアの幅を少し広げて安定させる
+
+                        // 正確な行数とスペーサー高さ計算（これが大きすぎると下に行きすぎる）
+                        let total_lines = line_count.max(1); // 最低1行
+                        let total_height = total_lines as f64 * line_height;
+
+                        // ✅ IntelliJ Pattern: cursor_line, cursor_col, selection_start, selection_end are now panel-level signals
+                        // No need to recreate them here - they persist across renders
+
+                        // Mouse drag state
+                        let is_mouse_down = RwSignal::new(false);
+
+                        // ✅ NodeRef for editor container to manage focus
+                        let editor_container_ref = NodeRef::<leptos::html::Div>::new();
+
+                        // ✅ 懸念点B修正: Transparent textarea for IME support (IntelliJ/VS Code pattern)
+                        let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
+
+                        // ✅ Removed: Auto-focus is now handled by berry-editor-main's on:mousedown
+                        // No need for animation frame or textarea focus
+
+                        // IME composition state
+                        let is_composing = RwSignal::new(false);
+                        let composition_text = RwSignal::new(String::new());
+
+                        // ✅ Hidden textarea for input capture
+                        let input_ref = NodeRef::<html::Textarea>::new();
+
+                        // 入力フォーカスを維持する関数
+                        let focus_input = move || {
+                            if let Some(el) = input_ref.get() {
+                                let _ = el.focus();
+                            }
+                        };
+
+                        // Clone tab_scroll for line number rendering (before it's moved into closure)
+                        let tab_scroll_for_line_numbers = tab_scroll.clone();
+
+                        // Calculate visible range directly (no Memo to avoid memory leak)
+                        let current_scroll = scroll_top.get();
+                        let mut scroll_calculator = tab_scroll.clone();
+                        scroll_calculator.set_scroll_top(current_scroll);
+                        let (start_line, end_line) = scroll_calculator.visible_range();
+
+                        // ✅ 1. 座標計算ロジックを一本化 (IntelliJ 1:2モデル)
+                        let calc_x_offset = |line_str: &str, char_count: usize| -> f64 {
+                            line_str.chars().take(char_count).map(|ch| {
+                                if ch as u32 > 255 { 15.625 } else { 7.8125 }
+                            }).sum::<f64>()
+                        };
+
+                        view! {
+                            <div
+                                class="berry-editor-main"
+                                style="
+                                    display: flex;
+                                    width: 100%;
+                                    height: 100%;
+                                    background: #2b2b2b;
+                                    position: relative;
+                                    overflow: hidden;
+                                "
+                                on:mousedown=move |_| focus_input()
+                            >
+                                // ===============================================
+                                // [レイヤー1] 本物の入力層 (THE REAL INPUT LAYER)
+                                // ===============================================
+                                // Hidden textarea: すべてのキーボード入力をキャプチャ
+                                // データフロー: textarea → tabs.update() → buffer.insert() → version++ → View再描画
+                                <textarea
+                                    node_ref=input_ref
+                                    class="hidden-input"
+                                    on:compositionstart=move |_| {
+                                        if !is_composing.is_disposed() {
+                                            is_composing.set(true);
+                                        }
+                                    }
+                                    on:compositionend=move |ev: web_sys::CompositionEvent| {
+                                        if is_composing.is_disposed() || active_tab_index.is_disposed() || tabs.is_disposed()
+                                            || cursor_line.is_disposed() || cursor_col.is_disposed() {
+                                            return;
+                                        }
+
+                                        is_composing.set(false);
+
+                                        if let Some(data) = ev.data() {
+                                            let idx = active_tab_index.get_untracked();
+                                            // ✅ CRITICAL: Use tabs.update() to trigger reactive re-render
+                                            // buffer.insert() increments version automatically
+                                            tabs.update(|t| {
+                                                if let Some(tab) = t.get_mut(idx) {
+                                                    let pos = tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked();
+                                                    tab.buffer.insert(pos, &data);
+                                                    tab.is_modified = true;
+                                                    cursor_col.update(|c| *c += data.chars().count());
+                                                }
+                                            });
+                                            // No need for render_trigger - tabs.update() triggers re-render
+                                        }
+
+                                        if let Some(el) = input_ref.get() {
+                                            el.set_value("");
+                                        }
+                                    }
+                                    on:input=move |ev| {
+                                        if is_composing.is_disposed() || active_tab_index.is_disposed() || tabs.is_disposed()
+                                            || cursor_line.is_disposed() || cursor_col.is_disposed() {
+                                            return;
+                                        }
+
+                                        if is_composing.get_untracked() {
+                                            return;
+                                        }
+
+                                        let val = event_target_value(&ev);
+                                        if !val.is_empty() {
+                                            let idx = active_tab_index.get_untracked();
+                                            // ✅ CRITICAL: Use tabs.update() to trigger reactive re-render
+                                            tabs.update(|t| {
+                                                if let Some(tab) = t.get_mut(idx) {
+                                                    let pos = tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked();
+                                                    tab.buffer.insert(pos, &val);
+                                                    tab.is_modified = true;
+                                                    cursor_col.update(|c| *c += val.chars().count());
+                                                }
+                                            });
+                                            // No need for render_trigger - tabs.update() triggers re-render
+
+                                            if let Some(el) = input_ref.get() {
+                                                el.set_value("");
+                                            }
+                                        }
+                                    }
+                                    on:keydown=handle_keydown
+                                ></textarea>
+
+                                // Line numbers (virtual scrolling - synced with text scroll)
+                                <div style="
+                                    min-width: 50px;
+                                    text-align: right;
+                                    padding: 10px 12px 10px 0;
+                                    background: #313335;
+                                    color: #606366;
+                                    font-size: 13px;
+                                    line-height: 20px;
+                                    user-select: none;
+                                    border-right: 1px solid #323232;
+                                    font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+                                    overflow: hidden;
+                                    height: 100%;
+                                    position: sticky;
+                                    left: 0;
+                                    z-index: 10;
+                                ">
+                                    // ✅ IntelliJ Pattern: Sync line numbers with scroll using transform
+                                    <div style=format!("transform: translateY(-{}px);", scroll_top.get())>
+                                        <div style=format!("height: {}px; position: relative;", total_height)>
+                                            // Top spacer
+                                            <div style=format!("height: {}px;", tab_scroll_for_line_numbers.get_line_offset(start_line))></div>
+
+                                            // Only render visible line numbers
+                                            {(start_line..end_line).map(|n| {
+                                                view! {
+                                                    <div style="height: 20px;">{n + 1}</div>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                // ===============================================
+                                // [レイヤー2] バーチャルカーソル (VIRTUAL CURSOR LAYER)
+                                // ===============================================
+                                // 独立した絶対位置のカーソル描画
+                                // データフロー: cursor_line/cursor_col signals → calc position → render
+                                // 本物のバッファから行データを読み取り、正確な座標を計算
+                                <div style=move || {
+                                    // ✅ 全てのシグナルのdisposedチェック
+                                    if active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() || tabs.is_disposed() || scroll_top.is_disposed() {
+                                        return "display: none;".to_string();
+                                    }
+
+                                    let idx = active_tab_index.get();
+                                    let l = cursor_line.get();
+                                    let c = cursor_col.get();
+                                    let s_top = scroll_top.get();
+
+                                    // Read from real buffer (untracked to avoid cursor movement triggering full re-render)
+                                    let x_offset = tabs.with_untracked(|t| {
+                                        t.get(idx).and_then(|tab| {
+                                            tab.buffer.line(l).map(|s| calc_x_offset(&s, c))
+                                        })
+                                    }).unwrap_or(0.0);
+
+                                    format!(
+                                        "position: absolute; left: {}px; top: {}px; width: 2px; height: 18px; background: #aeafad; z-index: 1000; pointer-events: none; animation: blink 1s step-end infinite;",
+                                        67.0 + x_offset,
+                                        (l as f64 * 20.0) - s_top
+                                    )
+                                }></div>
+
+                                // ===============================================
+                                // [レイヤー3] バーチャル表示層 (VIRTUAL VIEW LAYER)
+                                // ===============================================
+                                // 本物のバッファ（Ropey）から可視範囲の行だけを取得して描画
+                                // データフロー: tabs.with() → buffer.version読取 → visible lines → HTML
+                                // IntelliJ/VS Code式: 100万行でも見えている部分だけレンダリング
+                                <div
+                                    class="berry-editor-scroll-container"
+                                    node_ref=editor_container_ref
+                                    style="
+                                        flex: 1;
+                                        height: 100%;
+                                        overflow-y: auto;
+                                        overflow-x: hidden;
+                                        position: relative;
+                                        background: #2b2b2b;
+                                        cursor: text;
+                                        outline: none;
+                                    "
+                                    on:scroll=move |ev: web_sys::Event| {
+                                        if let Some(target) = ev.target() {
+                                            if let Some(element) = target.dyn_ref::<web_sys::HtmlElement>() {
+                                                let current_scroll = element.scroll_top() as f64;
+                                                scroll_top.set(current_scroll);
+
+                                                // ✅ IntelliJ Pro: Async prefetching - log prefetch range
+                                                // Note: Full implementation requires async cache updates
+                                                tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get()) {
+                                                        // Get prefetch range from VirtualScroll
+                                                        let (prefetch_start, prefetch_end) = tab.scroll.prefetch_range();
+
+                                                        // Prefetch ready (logging removed)
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                        // ✅ クリックしてもデフォルトの選択挙動をさせず、フォーカスだけ維持
+                                        ev.prevent_default();
+                                        is_mouse_down.update_untracked(|m| *m = true);
+
+                                        // ✅ エディタコンテナ自身にフォーカスを当てる
+                                        if let Some(el) = editor_container_ref.get() {
+                                            let _ = el.focus();
+                                        }
+
+                                        // Get current target and its bounding rect
+                                        let rect = if let Some(target) = ev.current_target() {
+                                            if let Some(element) = target.dyn_ref::<web_sys::HtmlElement>() {
+                                                element.get_bounding_client_rect()
+                                            } else {
+                                                web_sys::DomRect::new().unwrap()
+                                            }
+                                        } else {
+                                            web_sys::DomRect::new().unwrap()
+                                        };
+
+                                        // ✅ 正確な相対座標計算
+                                        let s_top = scroll_top.get_untracked();
+                                        let rel_x = ev.client_x() as f64 - rect.left();
+                                        let rel_y = ev.client_y() as f64 - rect.top() + s_top;
+
+                                        // ✅ 行・列の算出（ガター幅55px + パディング15pxを考慮）
+                                        let clicked_line = (rel_y / line_height).floor() as usize;
+
+                                        // ✅ 2. 日本語対応のクリック位置特定
+                                        let clicked_col = tabs.with_untracked(|t| {
+                                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                let line_count_val = tab.buffer.len_lines();
+                                                let clamped_line = clicked_line.min(line_count_val.saturating_sub(1));
+
+                                                if let Some(line_str) = tab.buffer.line(clamped_line) {
+                                                    let mut current_x = 67.0; // gutter(55px) + padding(15px) - 3px adjustment
+                                                    let mut best_idx = 0;
+
+                                                    for (i, ch) in line_str.chars().enumerate() {
+                                                        let w = if ch as u32 > 255 { 15.625 } else { 7.8125 };
+                                                        if rel_x < current_x + (w / 2.0) {
+                                                            break;
+                                                        }
+                                                        current_x += w;
+                                                        best_idx = i + 1;
+                                                    }
+
+                                                    // ✅ EOL handling: if click is beyond all characters, set to end of line
+                                                    if rel_x >= current_x {
+                                                        best_idx = line_str.chars().count();
+                                                    }
+
+                                                    best_idx
+                                                } else {
+                                                    0
+                                                }
+                                            } else {
+                                                0
+                                            }
+                                        });
+
+                                        // ✅ MEMORY FIX: Don't clone buffer - access it directly from tabs
+                                        tabs.with_untracked(|t| {
+                                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                // Clamp to valid range
+                                                let line_count_val = tab.buffer.len_lines();
+                                                let clamped_line = clicked_line.min(line_count_val.saturating_sub(1));
+                                                let line_len = tab.buffer.line(clamped_line)
+                                                    .map(|s| s.chars().count())
+                                                    .unwrap_or(0);
+                                                let clamped_col = clicked_col.min(line_len);
+
+                                                // ✅ シグナルを即座に更新（これがUIの再描画を呼ぶ）
+                                                cursor_line.set(clamped_line);
+                                                cursor_col.set(clamped_col);
+
+                                                // Start selection if Shift is pressed
+                                                if ev.shift_key() {
+                                                    if selection_start.get_untracked().is_none() {
+                                                        let char_idx = tab.buffer.line_to_char(clamped_line) + clamped_col;
+                                                        selection_start.update_untracked(|s| *s = Some(char_idx));
+                                                    }
+                                                } else {
+                                                    // Clear selection and start new one
+                                                    let char_idx = tab.buffer.line_to_char(clamped_line) + clamped_col;
+                                                    selection_start.update_untracked(|s| *s = Some(char_idx));
+                                                    selection_end.update_untracked(|e| *e = Some(char_idx));
+                                                }
+                                            }
+                                        });
+                                    }
+                                    on:mousemove=move |ev: web_sys::MouseEvent| {
+                                        if !is_mouse_down.get_untracked() {
+                                            return;
+                                        }
+
+                                        // Get current target and its bounding rect
+                                        let rect = if let Some(target) = ev.current_target() {
+                                            if let Some(element) = target.dyn_ref::<web_sys::HtmlElement>() {
+                                                element.get_bounding_client_rect()
+                                            } else {
+                                                web_sys::DomRect::new().unwrap()
+                                            }
+                                        } else {
+                                            web_sys::DomRect::new().unwrap()
+                                        };
+
+                                        // ✅ 正確な相対座標計算
+                                        let s_top = scroll_top.get_untracked();
+                                        let rel_x = ev.client_x() as f64 - rect.left();
+                                        let rel_y = ev.client_y() as f64 - rect.top() + s_top;
+
+                                        // ✅ 行・列の算出（ガター幅55px + パディング15pxを考慮）
+                                        let clicked_line = (rel_y / line_height).floor() as usize;
+
+                                        // ✅ 2. 日本語対応のクリック位置特定
+                                        let clicked_col = tabs.with_untracked(|t| {
+                                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                let line_count_val = tab.buffer.len_lines();
+                                                let clamped_line = clicked_line.min(line_count_val.saturating_sub(1));
+
+                                                if let Some(line_str) = tab.buffer.line(clamped_line) {
+                                                    let mut current_x = 67.0; // gutter(55px) + padding(15px) - 3px adjustment
+                                                    let mut best_idx = 0;
+
+                                                    for (i, ch) in line_str.chars().enumerate() {
+                                                        let w = if ch as u32 > 255 { 15.625 } else { 7.8125 };
+                                                        if rel_x < current_x + (w / 2.0) {
+                                                            break;
+                                                        }
+                                                        current_x += w;
+                                                        best_idx = i + 1;
+                                                    }
+
+                                                    // ✅ EOL handling: if click is beyond all characters, set to end of line
+                                                    if rel_x >= current_x {
+                                                        best_idx = line_str.chars().count();
+                                                    }
+
+                                                    best_idx
+                                                } else {
+                                                    0
+                                                }
+                                            } else {
+                                                0
+                                            }
+                                        });
+
+                                        // ✅ MEMORY FIX: Don't clone buffer - access it directly from tabs
+                                        tabs.with_untracked(|t| {
+                                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                // Clamp to valid range
+                                                let line_count_val = tab.buffer.len_lines();
+                                                let clamped_line = clicked_line.min(line_count_val.saturating_sub(1));
+                                                let line_len = tab.buffer.line(clamped_line)
+                                                    .map(|s| s.chars().count())
+                                                    .unwrap_or(0);
+                                                let clamped_col = clicked_col.min(line_len);
+
+                                                // ✅ シグナルを即座に更新
+                                                cursor_line.set(clamped_line);
+                                                cursor_col.set(clamped_col);
+
+                                                // Update selection end
+                                                let char_idx = tab.buffer.line_to_char(clamped_line) + clamped_col;
+                                                selection_end.update_untracked(|e| *e = Some(char_idx));
+                                            }
+                                        });
+                                    }
+                                    on:mouseup=move |_ev: web_sys::MouseEvent| {
+                                        is_mouse_down.update_untracked(|m| *m = false);
+
+                                        // If selection start and end are the same, clear selection
+                                        if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                            if start == end {
+                                                selection_start.update_untracked(|s| *s = None);
+                                                selection_end.update_untracked(|e| *e = None);
+                                            }
+                                        }
+                                    }
+                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                        // ✅ 生存確認
+                                        if tabs.is_disposed() || active_tab_index.is_disposed() { return; }
+
+                                        let key = ev.key();
+
+                                        // ✅ IntelliJ Pattern: 入力イベントを確実に奪い取る
+                                        match key.as_str() {
+                                            "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Backspace" | "Enter" => {
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                            }
+                                            _ => {
+                                                // 通常文字入力も prevent_default しないと、ブラウザのショートカットと競合する
+                                                if key.chars().count() == 1 && !ev.ctrl_key() && !ev.meta_key() {
+                                                    // 通常文字は on:input ハンドラで処理されるので、ここでは何もしない
+                                                } else if !ev.ctrl_key() && !ev.meta_key() {
+                                                    // Ctrl/Cmd なしの特殊キーはブラウザに任せる
+                                                }
+                                            }
+                                        }
+
+                                        // Save on Ctrl+S / Cmd+S
+                                        if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "s" {
+                                            ev.prevent_default();
+                                            let current_content = tabs.with_untracked(|t| {
+                                                t.get(active_tab_index.get_untracked())
+                                                    .map(|tab| (tab.path.clone(), tab.buffer.to_string()))
+                                            });
+
+                                            if let Some((path, content)) = current_content {
+                                                use crate::tauri_bindings;
+                                                use leptos::task::spawn_local;
+
+                                                // Clone path for async closure
+                                                let path_for_update = path.clone();
+
+                                                spawn_local(async move {
+                                                    match tauri_bindings::write_file(&path, &content).await {
+                                                        Ok(_) => {
+                                                            // ✅ Tauri-specific guard: I/O completed, but component may be disposed
+                                                            // Use path-based search instead of index (safer across async boundary)
+                                                            tabs.update_untracked(|t| {
+                                                                // Find tab by path (survives tab reordering/closure)
+                                                                if let Some(tab) = t.iter_mut().find(|tab| tab.path == path_for_update) {
+                                                                    tab.is_modified = false;
+                                                                }
+                                                                // Silently ignore if tab no longer exists
+                                                            });
+                                                            // Trigger re-render (safe even if component disposed)
+                                                        }
+                                                        Err(_) => {
+                                                            // Handle error silently (component may be disposed)
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        // Copy (Ctrl+C / Cmd+C)
+                                        else if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "c" {
+                                            ev.prevent_default();
+                                            if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                let (copy_start, copy_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                // ✅ MEMORY FIX: Access buffer directly without clone
+                                                tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                        // Get selected text
+                                                        if let Some(text) = tab.buffer.slice(copy_start, copy_end) {
+                                                            // Copy to clipboard
+                                                            if let Some(window) = web_sys::window() {
+                                                                let clipboard = window.navigator().clipboard();
+                                                                let _ = clipboard.write_text(&text);
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        // Cut (Ctrl+X / Cmd+X)
+                                        else if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "x" {
+                                            ev.prevent_default();
+                                            if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                let (cut_start, cut_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                // ✅ MEMORY FIX: Access buffer directly without clone
+                                                tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                        // Get selected text
+                                                        if let Some(text) = tab.buffer.slice(cut_start, cut_end) {
+                                                            // Copy to clipboard
+                                                            if let Some(window) = web_sys::window() {
+                                                                let clipboard = window.navigator().clipboard();
+                                                                let _ = clipboard.write_text(&text);
+                                                            }
+                                                        }
+                                                    }
+                                                });
+
+                                                // Delete the selection and calculate new cursor position
+                                                let (new_line, new_col) = tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                        let nl = tab.buffer.char_to_line(cut_start);
+                                                        let ls = tab.buffer.line_to_char(nl);
+                                                        (nl, cut_start - ls)
+                                                    } else {
+                                                        (0, 0)
+                                                    }
+                                                });
+
+                                                tabs.update_untracked(|t| {
+                                                    if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                        tab.buffer.remove(cut_start, cut_end);
+                                                        tab.is_modified = true;
+                                                    }
+                                                });
+
+                                                // Move cursor to cut start
+                                                cursor_line.update_untracked(|l| *l = new_line);
+                                                cursor_col.update_untracked(|c| *c = new_col);
+
+                                                // Clear selection
+                                                selection_start.update_untracked(|s| *s = None);
+                                                selection_end.update_untracked(|e| *e = None);
+                                            }
+                                        }
+                                        // Paste (Ctrl+V / Cmd+V)
+                                        else if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "v" {
+                                            ev.prevent_default();
+
+                                            // Get text from clipboard
+                                            if let Some(window) = web_sys::window() {
+                                                let clipboard = window.navigator().clipboard();
+                                                let promise = clipboard.read_text();
+                                                let active_idx = active_tab_index.get_untracked();
+
+                                                    wasm_bindgen_futures::spawn_local(async move {
+                                                        if let Ok(js_value) = wasm_bindgen_futures::JsFuture::from(promise).await {
+                                                            if let Some(text) = js_value.as_string() {
+                                                                // If there's a selection, delete it first
+                                                                let insert_idx = if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                                    let (delete_start, delete_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                                    tabs.update_untracked(|t| {
+                                                                        if let Some(tab) = t.get_mut(active_idx) {
+                                                                            tab.buffer.remove(delete_start, delete_end);
+                                                                            tab.is_modified = true;
+                                                                        }
+                                                                    });
+
+                                                                    // Clear selection
+                                                                    selection_start.update_untracked(|s| *s = None);
+                                                                    selection_end.update_untracked(|e| *e = None);
+
+                                                                    delete_start
+                                                                } else {
+                                                                    let line = cursor_line.get_untracked();
+                                                                    let col = cursor_col.get_untracked();
+
+                                                                    // Get buffer to calculate char index
+                                                                    tabs.with_untracked(|t| {
+                                                                        t.get(active_idx)
+                                                                            .map(|tab| tab.buffer.line_to_char(line) + col)
+                                                                            .unwrap_or(0)
+                                                                    })
+                                                                };
+
+                                                                // Insert text
+                                                                tabs.update_untracked(|t| {
+                                                                    if let Some(tab) = t.get_mut(active_idx) {
+                                                                        tab.buffer.insert(insert_idx, &text);
+                                                                        tab.is_modified = true;
+                                                                    }
+                                                                });
+
+                                                                // Update cursor position
+                                                                let new_idx = insert_idx + text.len();
+                                                                let (new_line, new_col) = tabs.with_untracked(|t| {
+                                                                    if let Some(tab) = t.get(active_idx) {
+                                                                        let line = tab.buffer.char_to_line(new_idx);
+                                                                        let line_start = tab.buffer.line_to_char(line);
+                                                                        let col = new_idx - line_start;
+                                                                        (line, col)
+                                                                    } else {
+                                                                        (0, 0)
+                                                                    }
+                                                                });
+                                                                cursor_line.update_untracked(|l| *l = new_line);
+                                                                cursor_col.update_untracked(|c| *c = new_col);
+                                                            }
+                                                        }
+                                                    });
+                                            }
+                                        }
+                                        // Undo (Ctrl+Z / Cmd+Z)
+                                        else if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "z" && !ev.shift_key() {
+                                            ev.prevent_default();
+
+                                            // Get and apply undo operation
+                                            let mut operation: Option<EditOperation> = None;
+                                            tabs.update_untracked(|t| {
+                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                    operation = tab.undo_history.undo();
+                                                }
+                                            });
+
+                                            if let Some(op) = operation {
+                                                    match op {
+                                                        EditOperation::Insert { position, text, cursor_before, .. } => {
+                                                            // Undo insert: delete the inserted text
+                                                            tabs.update_untracked(|t| {
+                                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                                    tab.buffer.remove(position, position + text.len());
+                                                                    tab.is_modified = true;
+                                                                }
+                                                            });
+
+                                                            // Restore cursor
+                                                            cursor_line.update_untracked(|l| *l = cursor_before.0);
+                                                            cursor_col.update_untracked(|c| *c = cursor_before.1);
+                                                        }
+                                                        EditOperation::Delete { position, text, cursor_before, .. } => {
+                                                            // Undo delete: re-insert the deleted text
+                                                            tabs.update_untracked(|t| {
+                                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                                    tab.buffer.insert(position, &text);
+                                                                    tab.is_modified = true;
+                                                                }
+                                                            });
+
+                                                            // Restore cursor
+                                                            cursor_line.update_untracked(|l| *l = cursor_before.0);
+                                                            cursor_col.update_untracked(|c| *c = cursor_before.1);
+                                                        }
+                                                    }
+                                                }
+                                        }
+                                        // Redo (Ctrl+Y / Ctrl+Shift+Z / Cmd+Shift+Z)
+                                        else if ((ev.ctrl_key() || ev.meta_key()) && ev.key() == "y") ||
+                                                 ((ev.ctrl_key() || ev.meta_key()) && ev.shift_key() && ev.key() == "z") {
+                                            ev.prevent_default();
+
+                                            // Get and apply redo operation
+                                            let mut operation: Option<EditOperation> = None;
+                                            tabs.update_untracked(|t| {
+                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                    operation = tab.undo_history.redo();
+                                                }
+                                            });
+
+                                            if let Some(op) = operation {
+                                                    match op {
+                                                        EditOperation::Insert { position, text, cursor_after, .. } => {
+                                                            // Redo insert: insert the text again
+                                                            tabs.update_untracked(|t| {
+                                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                                    tab.buffer.insert(position, &text);
+                                                                    tab.is_modified = true;
+                                                                }
+                                                            });
+
+                                                            // Restore cursor
+                                                            cursor_line.update_untracked(|l| *l = cursor_after.0);
+                                                            cursor_col.update_untracked(|c| *c = cursor_after.1);
+                                                        }
+                                                        EditOperation::Delete { position, text, cursor_after, .. } => {
+                                                            // Redo delete: delete the text again
+                                                            tabs.update_untracked(|t| {
+                                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                                    tab.buffer.remove(position, position + text.len());
+                                                                    tab.is_modified = true;
+                                                                }
+                                                            });
+
+                                                            // Restore cursor
+                                                            cursor_line.update_untracked(|l| *l = cursor_after.0);
+                                                            cursor_col.update_untracked(|c| *c = cursor_after.1);
+                                                        }
+                                                    }
+                                                }
+                                        }
+                                        // Escape to clear selection
+                                        else if key == "Escape" {
+                                            selection_start.update_untracked(|s| *s = None);
+                                            selection_end.update_untracked(|e| *e = None);
+                                        }
+                                        // Arrow keys for cursor movement
+                                        else if key == "ArrowLeft" {
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ MEMORY FIX: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move cursor
+                                                    if col > 0 {
+                                                        cursor_col.update(|c| *c = col - 1);
+                                                    } else {
+                                                        if line > 0 {
+                                                            cursor_line.update(|l| *l = line - 1);
+                                                            let prev_line_len = tab.buffer.line(line - 1).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                            cursor_col.update(|c| *c = prev_line_len);
+                                                        }
+                                                    }
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_line = cursor_line.get_untracked();
+                                                        let new_col = cursor_col.get_untracked();
+                                                        let new_char_idx = tab.buffer.line_to_char(new_line) + new_col;
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        else if key == "ArrowRight" {
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ MEMORY FIX: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move cursor
+                                                    let line_len = tab.buffer.line(line).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                    let total_lines = tab.buffer.len_lines();
+                                                    if col < line_len {
+                                                        cursor_col.update(|c| *c = col + 1);
+                                                    } else if line + 1 < total_lines {
+                                                        cursor_line.update(|l| *l = line + 1);
+                                                        cursor_col.update(|c| *c = 0);
+                                                    }
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_line = cursor_line.get_untracked();
+                                                        let new_col = cursor_col.get_untracked();
+                                                        let new_char_idx = tab.buffer.line_to_char(new_line) + new_col;
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        else if key == "ArrowUp" {
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ IntelliJ Design: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move cursor
+                                                    if line > 0 {
+                                                        cursor_line.update(|l| *l = line - 1);
+                                                        let prev_line_len = tab.buffer.line(line - 1).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                        cursor_col.update(|c| *c = col.min(prev_line_len));
+                                                    }
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_line = cursor_line.get_untracked();
+                                                        let new_col = cursor_col.get_untracked();
+                                                        let new_char_idx = tab.buffer.line_to_char(new_line) + new_col;
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        else if key == "ArrowDown" {
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ IntelliJ Design: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move cursor
+                                                    if line + 1 < line_count {
+                                                        cursor_line.update(|l| *l = line + 1);
+                                                        let next_line_len = tab.buffer.line(line + 1).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                        cursor_col.update(|c| *c = col.min(next_line_len));
+                                                    }
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_line = cursor_line.get_untracked();
+                                                        let new_col = cursor_col.get_untracked();
+                                                        let new_char_idx = tab.buffer.line_to_char(new_line) + new_col;
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        // Home - move to start of line
+                                        else if key == "Home" {
+                                            ev.prevent_default();
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ IntelliJ Design: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move to start of line
+                                                    cursor_col.update_untracked(|c| *c = 0);
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_char_idx = tab.buffer.line_to_char(line);
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        // End - move to end of line
+                                        else if key == "End" {
+                                            ev.prevent_default();
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let is_shift = ev.shift_key();
+
+                                            // ✅ IntelliJ Design: Access buffer directly from tabs
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    // Calculate current char index
+                                                    let current_char_idx = tab.buffer.line_to_char(line) + col;
+
+                                                    // Start selection if Shift is pressed and no selection exists
+                                                    if is_shift && selection_start.get_untracked().is_none() {
+                                                        selection_start.update_untracked(|s| *s = Some(current_char_idx));
+                                                    }
+
+                                                    // Move to end of line
+                                                    let line_len = tab.buffer.line(line).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                    cursor_col.update_untracked(|c| *c = line_len);
+
+                                                    // Update selection end if Shift is pressed
+                                                    if is_shift {
+                                                        let new_char_idx = tab.buffer.line_to_char(line) + line_len;
+                                                        selection_end.update_untracked(|e| *e = Some(new_char_idx));
+                                                    } else {
+                                                        // Clear selection if Shift is not pressed
+                                                        selection_start.update_untracked(|s| *s = None);
+                                                        selection_end.update_untracked(|e| *e = None);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        // Select All (Ctrl+A / Cmd+A)
+                                        else if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "a" {
+                                            ev.prevent_default();
+                                            // ✅ IntelliJ Design: Select entire buffer
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    selection_start.update_untracked(|s| *s = Some(0));
+                                                    selection_end.update_untracked(|e| *e = Some(tab.buffer.len_chars()));
+                                                }
+                                            });
+                                        }
+                                        // PageDown - scroll down one page
+                                        else if key == "PageDown" {
+                                            ev.prevent_default();
+                                            let line = cursor_line.get_untracked();
+
+                                            // Calculate visible lines (approximate)
+                                            let viewport_height = 600.0; // TODO: Get from actual viewport
+                                            let visible_lines = (viewport_height / line_height).floor() as usize;
+
+                                            // Move cursor down by visible_lines
+                                            let new_line = (line + visible_lines).min(line_count.saturating_sub(1));
+                                            cursor_line.update_untracked(|l| *l = new_line);
+
+                                            // ✅ IntelliJ Design: Keep column position, but clamp to line length
+                                            let col = cursor_col.get_untracked();
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    let line_len = tab.buffer.line(new_line)
+                                                        .map(|s| s.trim_end_matches('\n').len())
+                                                        .unwrap_or(0);
+                                                    cursor_col.update_untracked(|c| *c = col.min(line_len));
+                                                }
+                                            });
+
+                                            // Scroll viewport
+                                            let new_scroll = (new_line as f64 * line_height).max(0.0);
+                                            scroll_top.update_untracked(|s| *s = new_scroll);
+
+                                            // Clear selection
+                                            selection_start.update_untracked(|s| *s = None);
+                                            selection_end.update_untracked(|e| *e = None);
+                                        }
+                                        // PageUp - scroll up one page
+                                        else if key == "PageUp" {
+                                            ev.prevent_default();
+                                            let line = cursor_line.get_untracked();
+
+                                            // Calculate visible lines (approximate)
+                                            let viewport_height = 600.0; // TODO: Get from actual viewport
+                                            let visible_lines = (viewport_height / line_height).floor() as usize;
+
+                                            // Move cursor up by visible_lines
+                                            let new_line = line.saturating_sub(visible_lines);
+                                            cursor_line.update_untracked(|l| *l = new_line);
+
+                                            // ✅ IntelliJ Design: Keep column position, but clamp to line length
+                                            let col = cursor_col.get_untracked();
+                                            tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    let line_len = tab.buffer.line(new_line)
+                                                        .map(|s| s.trim_end_matches('\n').len())
+                                                        .unwrap_or(0);
+                                                    cursor_col.update_untracked(|c| *c = col.min(line_len));
+                                                }
+                                            });
+
+                                            // Scroll viewport
+                                            let new_scroll = (new_line as f64 * line_height).max(0.0);
+                                            scroll_top.update_untracked(|s| *s = new_scroll);
+
+                                            // Clear selection
+                                            selection_start.update_untracked(|s| *s = None);
+                                            selection_end.update_untracked(|e| *e = None);
+                                        }
+                                        // Backspace - delete character before cursor
+                                        else if key == "Backspace" {
+                                            ev.prevent_default();
+
+                                            // If there's a selection, delete it
+                                            if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                let (delete_start, delete_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                // ✅ IntelliJ Design: Calculate cursor position before deletion
+                                                let (new_line, new_col) = tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                        let nl = tab.buffer.char_to_line(delete_start);
+                                                        let ls = tab.buffer.line_to_char(nl);
+                                                        (nl, delete_start - ls)
+                                                    } else {
+                                                        (0, 0)
+                                                    }
+                                                });
+
+                                                tabs.update_untracked(|t| {
+                                                    if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                        tab.buffer.remove(delete_start, delete_end);
+                                                        tab.is_modified = true;
+                                                    }
+                                                });
+
+                                                cursor_line.update(|l| *l = new_line);
+                                                cursor_col.update(|c| *c = new_col);
+
+                                                // Clear selection
+                                                selection_start.update_untracked(|s| *s = None);
+                                                selection_end.update_untracked(|e| *e = None);
+                                            } else {
+                                                // No selection - normal backspace
+                                                let line = cursor_line.get_untracked();
+                                                let col = cursor_col.get_untracked();
+
+                                                if col > 0 {
+                                                    // ✅ IntelliJ Design: Delete character in current line
+                                                    tabs.with_untracked(|t| {
+                                                        if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                            let char_idx = tab.buffer.line_to_char(line) + col;
+                                                            tabs.update_untracked(|t2| {
+                                                                if let Some(tab2) = t2.get_mut(active_tab_index.get_untracked()) {
+                                                                    tab2.buffer.remove(char_idx - 1, char_idx);
+                                                                    tab2.is_modified = true;
+                                                                }
+                                                            });
+                                                        }
+                                                    });
+                                                    cursor_col.update(|c| *c = col - 1);
+                                                } else if line > 0 {
+                                                    // ✅ IntelliJ Design: Join with previous line
+                                                    let (prev_line_len, char_idx) = tabs.with_untracked(|t| {
+                                                        if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                            let pll = tab.buffer.line(line - 1).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                                                            let ci = tab.buffer.line_to_char(line);
+                                                            (pll, ci)
+                                                        } else {
+                                                            (0, 0)
+                                                        }
+                                                    });
+
+                                                    tabs.update_untracked(|t| {
+                                                        if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                            tab.buffer.remove(char_idx - 1, char_idx); // Remove newline
+                                                            tab.is_modified = true;
+                                                        }
+                                                    });
+                                                    cursor_line.update(|l| *l = line - 1);
+                                                    cursor_col.update(|c| *c = prev_line_len);
+                                                }
+                                            }
+                                        }
+                                        // Enter - insert newline
+                                        else if key == "Enter" {
+                                            ev.prevent_default();
+
+                                            // ✅ IntelliJ Design: Calculate insert position
+                                            let insert_idx = if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                let (delete_start, delete_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                tabs.update_untracked(|t| {
+                                                    if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                        tab.buffer.remove(delete_start, delete_end);
+                                                        tab.is_modified = true;
+                                                    }
+                                                });
+
+                                                // Clear selection
+                                                selection_start.update_untracked(|s| *s = None);
+                                                selection_end.update_untracked(|e| *e = None);
+
+                                                delete_start
+                                            } else {
+                                                let line = cursor_line.get_untracked();
+                                                let col = cursor_col.get_untracked();
+                                                tabs.with_untracked(|t| {
+                                                    t.get(active_tab_index.get_untracked())
+                                                        .map(|tab| tab.buffer.line_to_char(line) + col)
+                                                        .unwrap_or(0)
+                                                })
+                                            };
+
+                                            tabs.update_untracked(|t| {
+                                                if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                    tab.buffer.insert(insert_idx, "\n");
+                                                    tab.is_modified = true;
+                                                }
+                                            });
+
+                                            // ✅ IntelliJ Design: Calculate new cursor position
+                                            let (new_line, new_col) = tabs.with_untracked(|t| {
+                                                if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                    let nl = tab.buffer.char_to_line(insert_idx + 1);
+                                                    let ls = tab.buffer.line_to_char(nl);
+                                                    (nl, (insert_idx + 1).saturating_sub(ls))
+                                                } else {
+                                                    (0, 0)
+                                                }
+                                            });
+
+                                            cursor_line.set(new_line);
+                                            cursor_col.set(new_col);
+                                        }
+                                        // ✅ 懸念点B修正: Regular character input is now handled by textarea's input event
+                                        // This allows IME (Japanese input) to work properly
+                                    }
+                                >
+                                    // ✅ 隠しTextArea方式：すべてのキーボードイベント（IME含む）を確実に捕捉
+                                    <textarea
+                                        node_ref=textarea_ref
+                                        style="
+                                            position: absolute;
+                                            opacity: 0;
+                                            width: 1px;
+                                            height: 1px;
+                                            z-index: -1;
+                                            pointer-events: none;
+                                        "
+                                        on:input=move |ev| {
+                                            // Get textarea content
+                                            let target = ev.target().expect("input event should have target");
+                                            let textarea_el = target.dyn_ref::<web_sys::HtmlTextAreaElement>().expect("target should be textarea");
+                                            let input_text = textarea_el.value();
+
+                                            // Clear textarea for next input
+                                            textarea_el.set_value("");
+
+                                            if !input_text.is_empty() {
+                                                // Insert text at cursor position
+                                                let insert_idx = if let (Some(start), Some(end)) = (selection_start.get_untracked(), selection_end.get_untracked()) {
+                                                    // Delete selection first
+                                                    let (delete_start, delete_end) = if start < end { (start, end) } else { (end, start) };
+
+                                                    tabs.update_untracked(|t| {
+                                                        if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                            tab.buffer.remove(delete_start, delete_end);
+                                                            tab.is_modified = true;
+                                                        }
+                                                    });
+
+                                                    selection_start.update_untracked(|s| *s = None);
+                                                    selection_end.update_untracked(|e| *e = None);
+
+                                                    delete_start
+                                                } else {
+                                                    tabs.with_untracked(|t| {
+                                                        t.get(active_tab_index.get_untracked())
+                                                            .map(|tab| tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked())
+                                                            .unwrap_or(0)
+                                                    })
+                                                };
+
+                                                // Insert the text
+                                                tabs.update_untracked(|t| {
+                                                    if let Some(tab) = t.get_mut(active_tab_index.get_untracked()) {
+                                                        tab.buffer.insert(insert_idx, &input_text);
+                                                        tab.is_modified = true;
+                                                    }
+                                                });
+
+                                                // Update cursor position
+                                                let new_idx = insert_idx + input_text.chars().count();
+                                                let (new_line, new_col) = tabs.with_untracked(|t| {
+                                                    if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                        let line = tab.buffer.char_to_line(new_idx);
+                                                        let line_start = tab.buffer.line_to_char(line);
+                                                        (line, new_idx - line_start)
+                                                    } else {
+                                                        (0, 0)
+                                                    }
+                                                });
+                                                cursor_line.update(|l| *l = new_line);
+                                                cursor_col.update(|c| *c = new_col);
+
+                                                // ✅ IntelliJ Pro: Auto-trigger completions on . or ::
+                                                // NOTE: Currently disabled because LSP backend is not fully implemented
+                                                // The UI is ready, but we need to wait for LSP server integration
+
+                                                // Use ends_with() to safely handle multi-byte UTF-8 characters
+                                                let _should_trigger = input_text == "." || input_text.ends_with("::");
+
+                                                // Uncomment when LSP backend is ready:
+                                                // if should_trigger { ... }
+                                            }
+                                        }
+                                        on:compositionstart=move |_| {
+                                            is_composing.set(true);
+                                        }
+                                        on:compositionend=move |_| {
+                                            is_composing.set(false);
+                                        }
+                                        on:keydown=handle_keydown
+                                    ></textarea>
+                                    // Dummy element for scrollbar (total file height)
+                                    <div style=format!("height: {}px;", total_height)>
+                                        // Viewport - transforms based on scroll position
+                                        <div
+                                            class="berry-editor-viewport"
+                                            style=move || {
+                                                // ✅ 懸念点A修正: Pixel-perfect scroll sync (IntelliJ pattern)
+                                                // Use exact scroll_top instead of start_line * line_height to prevent vertical jitter
+                                                let current_scroll = scroll_top.get();
+                                                let start_offset = start_line as f64 * line_height;
+
+                                                format!("
+                                                    position: absolute;
+                                                    top: 0;
+                                                    left: 0;
+                                                    width: 100%;
+                                                    transform: translateY({}px);
+                                                    will-change: transform;
+                                                ", start_offset)
+                                            }
+                                        >
+                                            // ===============================================
+                                            // バーチャルスクロール描画 (VIRTUAL SCROLL RENDERING)
+                                            // ===============================================
+                                            // 本物のバッファ（Ropey）から可視行だけを取得
+                                            // データフロー:
+                                            //   1. tabs.with() でバッファを読み取る（リアクティブ依存）
+                                            //   2. get_visible_line() で必要な行だけ取得（メモリ効率）
+                                            //   3. highlight_cache から pre-rendered HTML を取得
+                                            //   4. inner_html で DOM に挿入
+                                            {(start_line..end_line).filter_map(|line_idx| {
+                                                // Use on-demand line getter (IntelliJ pattern)
+                                                get_visible_line(line_idx).map(|line_text| {
+                                                    // ✅ Parallel highlighting: Try cache first, fallback to WASM highlighter
+                                                    let highlighted_html = tabs.with_untracked(|t| {
+                                                        t.get(idx)
+                                                            .and_then(|tab| tab.highlight_cache.get(&line_idx).cloned())
+                                                    })
+                                                    .unwrap_or_else(|| syntax_highlight_line(&line_text));
+
+                                                    // ✅ IntelliJ Pro: Cmd/Ctrl+Click to jump to definition
+                                                    let line_text_for_click = line_text.clone();
+
+                                                    view! {
+                                                        <div
+                                                            class="berry-editor-line"
+                                                            style="
+                                                                position: relative;
+                                                                height: 20px;
+                                                                line-height: 20px;
+                                                                white-space: pre;
+                                                                font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+                                                                font-size: 13px;
+                                                                font-variant-ligatures: none;
+                                                                letter-spacing: 0px;
+                                                                padding-left: 15px;
+                                                                color: #a9b7c6;
+                                                                cursor: pointer;
+                                                            "
+                                                            inner_html=highlighted_html
+                                                            on:click=move |ev| {
+                                                                // ✅ Only trigger on Cmd/Ctrl + Click (IntelliJ pattern)
+                                                                #[cfg(target_os = "macos")]
+                                                                let modifier_pressed = ev.meta_key();
+                                                                #[cfg(not(target_os = "macos"))]
+                                                                let modifier_pressed = ev.ctrl_key();
+
+                                                                if !modifier_pressed {
+                                                                    return;
+                                                                }
+
+                                                                ev.prevent_default();
+                                                                ev.stop_propagation();
+
+                                                                // Calculate clicked character position
+                                                                let click_x = ev.offset_x() as f64;
+                                                                let char_col = ((click_x - 15.0) / char_width).max(0.0) as usize;
+
+                                                                // Extract word at clicked position
+                                                                let word = extract_word_at_position(&line_text_for_click, char_col);
+
+                                                                if word.is_empty() {
+                                                                    return;
+                                                                }
+
+                                                                // Search for symbol and jump to definition
+                                                                // Use untracked access to avoid reactive disposal issues
+                                                                spawn_local(async move {
+                                                                    match tauri_bindings::search_symbols(&word).await {
+                                                                        Ok(symbols) => {
+                                                                            if let Some(symbol) = symbols.first() {
+                                                                                // Read file content
+                                                                                if let Ok(content) = tauri_bindings::read_file(&symbol.file_path).await {
+                                                                                    // Update selected file (this will trigger component re-render)
+                                                                                    // Use untracked to avoid accessing potentially disposed reactive context
+                                                                                    selected_file.set(Some((symbol.file_path.clone(), content)));
+
+                                                                                    // Jump to line - use untracked updates
+                                                                                    cursor_line.update_untracked(|l| *l = symbol.line_number);
+                                                                                    cursor_col.update_untracked(|c| *c = 0);
+
+                                                                                    // Scroll to line
+                                                                                    let target_scroll = symbol.line_number as f64 * line_height;
+                                                                                    scroll_top.update_untracked(|s| *s = target_scroll);
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        Err(_e) => {
+                                                                            // Symbol not found - silently ignore
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
+                                                        ></div>
+                                                    }
+                                                })
+                                            }).collect::<Vec<_>>()}
+
+                                            // Selection highlight
+                                            {move || {
+                                                if let (Some(sel_start), Some(sel_end)) = (selection_start.get(), selection_end.get()) {
+                                                    let (start, end) = if sel_start < sel_end { (sel_start, sel_end) } else { (sel_end, sel_start) };
+
+                                                    // Get buffer from tabs
+                                                    let buffer = tabs.with_untracked(|t| {
+                                                        t.get(active_tab_index.get()).map(|tab| tab.buffer.clone())
+                                                    });
+
+                                                    if let Some(buffer) = buffer {
+                                                        // Convert char indices to line/col
+                                                        let start_line_idx = buffer.char_to_line(start);
+                                                        let end_line_idx = buffer.char_to_line(end);
+
+                                                    let mut highlights = Vec::new();
+
+                                                    for line_idx in start_line_idx..=end_line_idx {
+                                                        if line_idx >= start_line && line_idx < end_line {
+                                                            let line_start_char = buffer.line_to_char(line_idx);
+                                                            let line_content = buffer.line(line_idx).unwrap_or_default();
+                                                            let line_len = line_content.trim_end_matches('\n').len();
+
+                                                            // Calculate selection range within this line
+                                                            let sel_start_col = if line_idx == start_line_idx {
+                                                                start.saturating_sub(line_start_char)
+                                                            } else {
+                                                                0
+                                                            };
+
+                                                            let sel_end_col = if line_idx == end_line_idx {
+                                                                end.saturating_sub(line_start_char).min(line_len)
+                                                            } else {
+                                                                line_len
+                                                            };
+
+                                                            if sel_start_col < sel_end_col {
+                                                                let y = (line_idx - start_line) as f64 * line_height;
+                                                                let x_start = sel_start_col as f64 * char_width + 10.0;
+                                                                let width = (sel_end_col - sel_start_col) as f64 * char_width;
+
+                                                                highlights.push(view! {
+                                                                    <div
+                                                                        style=format!("
+                                                                            position: absolute;
+                                                                            left: {}px;
+                                                                            top: {}px;
+                                                                            width: {}px;
+                                                                            height: 20px;
+                                                                            background: rgba(51, 153, 255, 0.3);
+                                                                            pointer-events: none;
+                                                                        ", x_start, y, width)
+                                                                    ></div>
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Some(highlights)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
+                                            }}
+
+                                            // ✅ IntelliJ Pro: Completion Widget
+                                            {move || {
+                                                if show_completion.get() {
+                                                    let (comp_line, comp_col) = completion_position.get();
+                                                    let position = crate::canvas_renderer::Position {
+                                                        line: comp_line,
+                                                        column: comp_col,
+                                                    };
+
+                                                    view! {
+                                                        <CompletionWidget
+                                                            items=completion_items
+                                                            position=position
+                                                            on_select=on_completion_select
+                                                        />
+                                                    }.into_any()
+                                                } else {
+                                                    view! { <></> }.into_any()
+                                                }
+                                            }}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#606366;background:#2b2b2b;">
+                                "Click a file to start editing..."
+                            </div>
+                        }.into_any()
+                    }
+                }}
+            </div>
+
+            // Status Bar
+            <div class="berry-editor-status-bar">
+                {move || {
+                    let idx = active_tab_index.get();
+                    if let Some(tab) = tabs.with(|t| t.get(idx).cloned()) {
+                        let lang = tab.highlighter.get_language().unwrap_or("text");
+                        format!("{} | UTF-8 | {} lines", lang, tab.buffer.len_lines())
+                    } else {
+                        "Ready".to_string()
+                    }
+                }}
+            </div>
+        </div>
+    }
+}
+
+/// Convert parallel highlighting result to HTML
+fn highlight_result_to_html(result: &HighlightResult) -> String {
+    let mut html = String::new();
+    for token in &result.tokens {
+        html.push_str(&format!(
+            "<span style=\"color: {}\">{}</span>",
+            token.color,
+            html_escape(&token.text)
+        ));
+    }
+    html
+}
+
+/// IntelliJ Darcula syntax highlighting for Rust code (fallback for non-Tauri mode)
+fn syntax_highlight_line(line: &str) -> String {
+    let keywords = [
+        "fn", "let", "mut", "const", "static", "impl", "trait", "struct", "enum",
+        "mod", "pub", "use", "crate", "self", "super", "async", "await", "move",
+        "if", "else", "match", "loop", "while", "for", "in", "return", "break",
+        "continue", "as", "ref", "where", "unsafe", "extern", "type", "dyn",
+    ];
+
+    let types = ["String", "str", "usize", "isize", "f64", "f32", "i32", "u32",
+                 "i64", "u64", "bool", "Vec", "Option", "Result", "Some", "None",
+                 "Ok", "Err", "Box", "Rc", "Arc", "RefCell", "RwSignal"];
+
+    let mut result = String::new();
+    let mut chars = line.chars().peekable();
+    let mut current_word = String::new();
+    let mut in_string = false;
+    let mut in_comment = false;
+    let mut in_attribute = false;
+    let mut string_char = ' ';
+
+    while let Some(ch) = chars.next() {
+        // Handle comments
+        if !in_string && !in_attribute && ch == '/' && chars.peek() == Some(&'/') {
+            in_comment = true;
+            flush_word(&mut result, &mut current_word, &keywords, &types);
+            result.push_str("<span style=\"color:#808080;font-style:italic\">"); // Darcula comment color
+            result.push_str(&escape_html_char(ch));
+            continue;
+        }
+
+        if in_comment {
+            result.push_str(&escape_html_char(ch));
+            continue;
+        }
+
+        // ✅ IntelliJ Pattern: Handle attributes #[...]
+        if !in_string && ch == '#' && chars.peek() == Some(&'[') {
+            in_attribute = true;
+            flush_word(&mut result, &mut current_word, &keywords, &types);
+            result.push_str("<span style=\"color:#bbb529\">"); // Darcula attribute color
+            result.push_str(&escape_html_char(ch));
+            continue;
+        }
+
+        if in_attribute {
+            result.push_str(&escape_html_char(ch));
+            if ch == ']' {
+                result.push_str("</span>");
+                in_attribute = false;
+            }
+            continue;
+        }
+
+        // Handle strings
+        if (ch == '"' || ch == '\'') && !in_string {
+            in_string = true;
+            string_char = ch;
+            flush_word(&mut result, &mut current_word, &keywords, &types);
+            result.push_str("<span style=\"color:#6a8759\">"); // Darcula string color
+            result.push(ch);
+            continue;
+        }
+
+        if in_string {
+            if ch == string_char {
+                result.push(ch);
+                result.push_str("</span>");
+                in_string = false;
+            } else {
+                result.push_str(&escape_html_char(ch));
+            }
+            continue;
+        }
+
+        // Handle word boundaries
+        if ch.is_alphanumeric() || ch == '_' {
+            current_word.push(ch);
+        } else {
+            flush_word(&mut result, &mut current_word, &keywords, &types);
+            // Preserve spaces explicitly as &nbsp;
+            if ch == ' ' {
+                result.push_str("&nbsp;");
+            } else {
+                result.push_str(&escape_html_char(ch));
+            }
+        }
+    }
+
+    flush_word(&mut result, &mut current_word, &keywords, &types);
+
+    if in_comment {
+        result.push_str("</span>");
+    }
+    if in_attribute {
+        result.push_str("</span>");
+    }
+
+    result
+}
+
+fn escape_html_char(ch: char) -> String {
+    match ch {
+        '<' => "&lt;".to_string(),
+        '>' => "&gt;".to_string(),
+        '&' => "&amp;".to_string(),
+        '"' => "&quot;".to_string(),
+        '\'' => "&#39;".to_string(),
+        _ => ch.to_string(),
+    }
+}
+
+fn flush_word(result: &mut String, current_word: &mut String, keywords: &[&str], types: &[&str]) {
+    if !current_word.is_empty() {
+        // ✅ IntelliJ Pattern: Check for SCREAMING_SNAKE_CASE constants
+        let is_constant = current_word.len() > 1 &&
+                         current_word.chars().all(|c| c.is_uppercase() || c.is_numeric() || c == '_') &&
+                         current_word.chars().any(|c| c.is_uppercase());
+
+        if keywords.contains(&current_word.as_str()) {
+            // Darcula keyword color (orange) with bold
+            result.push_str(&format!("<span style=\"color:#cc7832;font-weight:bold\">{}</span>", html_escape(current_word)));
+        } else if types.contains(&current_word.as_str()) {
+            // Darcula type color (light purple)
+            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
+        } else if is_constant {
+            // ✅ IntelliJ Pattern: Darcula constant color (purple) for SCREAMING_SNAKE_CASE
+            result.push_str(&format!("<span style=\"color:#9876aa\">{}</span>", html_escape(current_word)));
+        } else if current_word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            // User-defined types (light purple)
+            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
+        } else {
+            // Default text color
+            result.push_str(&html_escape(current_word));
+        }
+        current_word.clear();
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+        .replace(' ', "&nbsp;")
+}

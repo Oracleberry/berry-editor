@@ -4,7 +4,10 @@
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{MouseEvent, window};
+use web_sys::MouseEvent;
+
+#[cfg(target_arch = "wasm32")]
+use crate::common::storage::{EditorStorage, WebStorage};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Orientation {
@@ -34,11 +37,18 @@ pub fn ResizableSplitter(
     storage_key: Option<String>,
 ) -> impl IntoView {
     // Load size from storage or use initial
-    let stored_size = storage_key.as_ref().and_then(|key| {
-        window()
-            .and_then(|w| w.local_storage().ok().flatten())
-            .and_then(|storage| storage.get_item(key).ok().flatten())
-            .and_then(|s| s.parse::<f64>().ok())
+    let stored_size = storage_key.as_ref().and_then(|_key| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let storage = WebStorage::new();
+            storage.get_item(_key).ok()
+                .flatten()
+                .and_then(|s| s.parse::<f64>().ok())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            None // For native, we could use NativeStorage here
+        }
     });
 
     let size = RwSignal::new(stored_size.unwrap_or(initial_size));
@@ -49,10 +59,16 @@ pub fn ResizableSplitter(
     // Save size to storage
     let save_size = move |new_size: f64| {
         if let Some(key) = &storage_key {
-            if let Some(storage) = window()
-                .and_then(|w| w.local_storage().ok().flatten())
+            #[cfg(target_arch = "wasm32")]
             {
+                let storage = WebStorage::new();
                 let _ = storage.set_item(key, &new_size.to_string());
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                // For native, we could use NativeStorage here
+                let _ = key;
+                let _ = new_size;
             }
         }
     };

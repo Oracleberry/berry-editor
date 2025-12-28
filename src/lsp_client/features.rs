@@ -121,21 +121,21 @@ mod tests {
         let items = vec![
             CompletionItem {
                 label: "println".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,
             },
             CompletionItem {
                 label: "print".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,
             },
             CompletionItem {
                 label: "format".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,
@@ -153,21 +153,21 @@ mod tests {
         let items = vec![
             CompletionItem {
                 label: "println".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,
             },
             CompletionItem {
                 label: "print".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,
             },
             CompletionItem {
                 label: "format".to_string(),
-                kind: Some(3),
+                kind: 3,
                 detail: None,
                 documentation: None,
                 insert_text: None,

@@ -13,7 +13,6 @@ use crate::common::splitter::{ResizableSplitter, Orientation};
 
 #[component]
 pub fn EditorApp() -> impl IntoView {
-    web_sys::console::log_1(&"[EditorApp] Component function called".into());
 
     // Debug session
     let debug_session = DebugSession::new();
@@ -28,7 +27,6 @@ pub fn EditorApp() -> impl IntoView {
     let show_debug_panels = RwSignal::new(false);
     let selected_frame = RwSignal::new(None);
 
-    web_sys::console::log_1(&"[EditorApp] Rendering view...".into());
 
     view! {
         <div class="berry-editor-container" style="border: 5px solid red; background: #1e1e1e;">
@@ -57,7 +55,6 @@ pub fn EditorApp() -> impl IntoView {
                         diagnostics=diagnostics
                         on_click=move |line, character| {
                             // Jump to diagnostic location
-                            web_sys::console::log_1(&format!("Jump to {}:{}", line, character).into());
                         }
                     />
                 </div>

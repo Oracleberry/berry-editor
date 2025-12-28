@@ -7,7 +7,6 @@ use crate::core::virtual_editor::VirtualEditorPanel;
 
 #[component]
 pub fn EditorAppTauri() -> impl IntoView {
-    web_sys::console::log_1(&"[EditorAppTauri] Component function called".into());
 
     // File selection state (shared between FileTree and Editor)
     let selected_file = RwSignal::new(Option::<(String, String)>::None); // (path, content)
@@ -15,8 +14,6 @@ pub fn EditorAppTauri() -> impl IntoView {
     // In WASM, we need to use a default path or get it from Tauri
     // For now, use the current project directory
     let root_path = "/Users/kyosukeishizu/oracleberry/berrcode/gui-editor".to_string();
-
-    web_sys::console::log_1(&format!("[EditorAppTauri] Root path: {}", root_path).into());
 
     view! {
         <div class="berry-editor-container">

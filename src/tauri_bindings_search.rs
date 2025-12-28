@@ -1,4 +1,7 @@
 //! Tauri bindings for search functionality
+//!
+//! Pure Rust implementation - no JavaScript required!
+//! Uses wasm-bindgen to directly call Tauri's window.__TAURI__.core.invoke
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -36,17 +39,20 @@ impl Default for SearchOptions {
     }
 }
 
-#[wasm_bindgen(module = "/src/tauri-bindings.js")]
+// ========================================
+// Direct Tauri Invoke Binding (100% Rust)
+// ========================================
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(catch, js_name = "tauri_search_in_files")]
-    pub async fn tauri_search_in_files(
-        query: String,
-        root_path: String,
-        options: JsValue,
-    ) -> Result<JsValue, JsValue>;
+    /// Direct access to Tauri's invoke function: window.__TAURI__.core.invoke
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = invoke)]
+    async fn tauri_invoke(cmd: &str, args: JsValue) -> JsValue;
 }
 
 /// Search in files using Tauri command
+#[cfg(target_arch = "wasm32")]
 pub async fn search_in_files(
     query: &str,
     root_path: &str,
@@ -57,14 +63,24 @@ pub async fn search_in_files(
     }
 
     let opts = options.unwrap_or_default();
-    let opts_js = serde_wasm_bindgen::to_value(&opts)
-        .map_err(|e| format!("Failed to serialize options: {}", e))?;
+    let args = serde_wasm_bindgen::to_value(&serde_json::json!({
+        "query": query,
+        "rootPath": root_path,
+        "options": opts
+    }))
+    .map_err(|e| format!("Failed to serialize options: {}", e))?;
 
-    match tauri_search_in_files(query.to_string(), root_path.to_string(), opts_js).await {
-        Ok(val) => {
-            serde_wasm_bindgen::from_value(val)
-                .map_err(|e| format!("Failed to deserialize results: {}", e))
-        }
-        Err(e) => Err(format!("{:?}", e)),
-    }
+    let result = tauri_invoke("search_in_files", args).await;
+
+    serde_wasm_bindgen::from_value(result)
+        .map_err(|e| format!("Failed to deserialize results: {}", e))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn search_in_files(
+    _query: &str,
+    _root_path: &str,
+    _options: Option<SearchOptions>,
+) -> Result<Vec<SearchResult>, String> {
+    Err("search_in_files only available in WASM context".to_string())
 }

@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
-use web_sys::console;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
@@ -40,6 +39,7 @@ pub struct Diagnostic {
     pub source: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct LspClient {
     language: String,
     server_url: Option<String>,
@@ -71,7 +71,6 @@ impl LspClient {
 
         match serde_wasm_bindgen::from_value::<bool>(result) {
             Ok(true) => {
-                console::log_1(&format!("LSP initialized for {}", self.language).into());
                 Ok(())
             }
             Ok(false) => Err(format!("LSP initialization failed for {}", self.language)),

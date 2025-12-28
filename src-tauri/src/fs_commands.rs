@@ -18,10 +18,79 @@ pub struct FileMetadata {
     pub is_readonly: bool,
 }
 
-/// Read file contents
+/// ⚠️ DEPRECATED: Use read_file_partial instead to avoid memory issues
+/// This command has a 10MB safety limit. For larger files, use read_file_partial.
 #[tauri::command]
 pub async fn read_file(path: String) -> Result<String, String> {
+    // ✅ Safety check: Prevent reading files larger than 10MB at once
+    const MAX_SAFE_SIZE: u64 = 10_000_000; // 10MB
+
+    let metadata = fs::metadata(&path)
+        .map_err(|e| format!("Failed to get file size: {}", e))?;
+
+    if metadata.len() > MAX_SAFE_SIZE {
+        return Err(format!(
+            "File too large ({} bytes). Use read_file_partial for files > 10MB",
+            metadata.len()
+        ));
+    }
+
     fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
+}
+
+/// ✅ IntelliJ Pro: Read file with partial loading (first N bytes only)
+/// Returns: (content, is_partial, total_size)
+#[tauri::command]
+pub async fn read_file_partial(
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<(String, bool, u64), String> {
+    use std::io::Read;
+
+    let metadata = fs::metadata(&path).map_err(|e| format!("Failed to get file size: {}", e))?;
+    let total_size = metadata.len();
+    let max_bytes = max_bytes.unwrap_or(10_000_000); // Default 10MB
+
+    if total_size <= max_bytes as u64 {
+        // File is small, read entirely
+        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+        Ok((content, false, total_size))
+    } else {
+        // File is large, read only first N bytes
+        let mut file = fs::File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
+        let mut buffer = vec![0; max_bytes];
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        buffer.truncate(bytes_read);
+        let content = String::from_utf8_lossy(&buffer).to_string();
+        Ok((content, true, total_size))
+    }
+}
+
+/// ✅ IntelliJ Pro: Read file chunk (for streaming large files)
+/// offset: byte offset, length: bytes to read
+#[tauri::command]
+pub async fn read_file_chunk(
+    path: String,
+    offset: u64,
+    length: usize,
+) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("Failed to seek: {}", e))?;
+
+    let mut buffer = vec![0; length];
+    let bytes_read = file
+        .read(&mut buffer)
+        .map_err(|e| format!("Failed to read chunk: {}", e))?;
+
+    buffer.truncate(bytes_read);
+    let content = String::from_utf8_lossy(&buffer).to_string();
+    Ok(content)
 }
 
 /// Write file contents

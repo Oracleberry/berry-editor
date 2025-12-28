@@ -145,7 +145,6 @@ impl MinimapBuilder {
 
         // Store in global state or return handle
         // For now, just log success
-        web_sys::console::log_1(&"Minimap created successfully".into());
 
         Ok(())
     }

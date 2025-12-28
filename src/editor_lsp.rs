@@ -44,14 +44,12 @@ pub fn LspEditorPanel(
     // Cursor position
     let cursor_position = RwSignal::new(Position::new(0, 0));
 
-    web_sys::console::log_1(&"[LspEditorPanel] Component initialized".into());
 
     // Effect: Watch for file selection changes
     Effect::new_isomorphic(move |_| {
         let file_data = selected_file.get();
 
         if let Some((path, content)) = file_data {
-            web_sys::console::log_1(&format!("[LspEditorPanel] File selected: {}", path).into());
 
             // Update LSP file path
             lsp.set_file_path(path.clone());
@@ -121,11 +119,9 @@ pub fn LspEditorPanel(
 
     // Handler: Completion selected
     let on_completion_select = move |item: CompletionItem| {
-        web_sys::console::log_1(&format!("[LspEditorPanel] Completion selected: {}", item.label).into());
 
         // TODO: Insert completion into buffer
         let insert_text = item.insert_text.unwrap_or(item.label);
-        web_sys::console::log_1(&format!("[LspEditorPanel] Inserting: {}", insert_text).into());
 
         // Hide completion widget
         show_completion.set(false);

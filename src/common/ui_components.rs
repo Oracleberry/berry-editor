@@ -64,6 +64,34 @@ pub fn IconButton(
     }
 }
 
+/// SVG Icon button with tooltip (IntelliJ-style flat icons)
+#[component]
+pub fn SvgIconButton<IV>(
+    /// SVG icon view
+    icon: IV,
+    /// Tooltip text
+    tooltip: &'static str,
+    /// Click handler
+    on_click: impl Fn() + 'static,
+    /// Disabled state
+    #[prop(optional, default = false)]
+    disabled: bool,
+) -> impl IntoView
+where
+    IV: IntoView + 'static,
+{
+    view! {
+        <button
+            class="berry-icon-button"
+            title=tooltip
+            disabled=disabled
+            on:click=move |_| on_click()
+        >
+            {icon}
+        </button>
+    }
+}
+
 /// Generic list view component
 #[component]
 pub fn ListView<T, F, IV>(

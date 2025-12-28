@@ -2,6 +2,13 @@
 //!
 //! This module contains reusable functionality to ensure zero code duplication.
 
+// Platform abstraction layer
+pub mod platform;
+pub mod storage;
+pub mod events;
+pub mod tauri_bridge;
+
+// Existing modules
 pub mod async_bridge;
 pub mod context_menu;
 pub mod dialogs;

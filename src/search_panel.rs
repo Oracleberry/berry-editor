@@ -40,7 +40,6 @@ pub fn SearchPanel(
 
         // In a real implementation, this would call the Tauri search command
         // For now, we just log it
-        web_sys::console::log_1(&format!("[SearchPanel] Searching for '{}' in {}", query, root).into());
 
         // Simulated search results for demonstration
         let demo_results = vec![

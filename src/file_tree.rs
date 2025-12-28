@@ -218,29 +218,23 @@ fn FileTreeNode(
                 class="berry-editor-file-item"
                 style:padding-left=format!("{}px", base_padding + level * indent_step)
                 on:click=move |_| {
-                    web_sys::console::log_1(&format!("[FileTreeNode] Clicked: {} (is_dir={})", node_clone.name, node_clone.is_dir).into());
 
                     if node_clone.is_dir {
-                        web_sys::console::log_1(&"[FileTreeNode] Toggling folder".into());
                         expanded.update(|e| *e = !*e);
                     } else {
                         // File clicked - load content
-                        web_sys::console::log_1(&format!("[FileTreeNode] Loading file: {}", node_clone.path).into());
 
                         let path = node_clone.path.clone();
                         let name = node_clone.name.clone();
 
                         if let Some(session_id) = get_session_id() {
                             // Session mode: fetch real file content from API
-                            web_sys::console::log_1(&format!("[FileTreeNode] Fetching real content for: {}", path).into());
                             spawn_local(async move {
                                 match fetch_file_content(&session_id, &path).await {
                                     Ok(content) => {
-                                        web_sys::console::log_1(&format!("[FileTreeNode] Loaded {} bytes from API", content.len()).into());
                                         on_file_select.set(Some((path, content)));
                                     }
                                     Err(e) => {
-                                        web_sys::console::log_1(&format!("[FileTreeNode] Error loading file: {}", e).into());
                                         let error_content = format!("// Error loading file: {}\n// {}", path, e);
                                         on_file_select.set(Some((path, error_content)));
                                     }
@@ -248,17 +242,14 @@ fn FileTreeNode(
                             });
                         } else {
                             // Standalone mode: use mock content
-                            web_sys::console::log_1(&"[FileTreeNode] Standalone mode: using mock content".into());
                             let mock_content = format!(
                                 "// {}\n// This is a placeholder for file content\n\nfn main() {{\n    println!(\"File: {}\");\n}}",
                                 path,
                                 name
                             );
-                            web_sys::console::log_1(&format!("[FileTreeNode] Setting signal with {} bytes", mock_content.len()).into());
                             on_file_select.set(Some((path, mock_content)));
                         }
 
-                        web_sys::console::log_1(&"[FileTreeNode] Signal set successfully".into());
                     }
                 }
             >
@@ -310,17 +301,13 @@ fn FileTreeNode(
 pub fn FileTreePanel(
     on_file_select: RwSignal<Option<(String, String)>>,
 ) -> impl IntoView {
-    web_sys::console::log_1(&"[FileTree] Component mounting...".into());
 
     // Check session mode
     let session_id = get_session_id();
-    web_sys::console::log_1(&format!("[FileTree] session_id: {:?}", session_id).into());
 
     // Initialize with mock data immediately for standalone mode
     let initial_data = if session_id.is_none() {
-        web_sys::console::log_1(&"[FileTree] Standalone mode: loading mock data immediately".into());
         let mock_data = get_mock_file_tree();
-        web_sys::console::log_1(&format!("[FileTree] Mock data has {} files", mock_data.len()).into());
         mock_data
     } else {
         Vec::new()
@@ -330,20 +317,16 @@ pub fn FileTreePanel(
     let loading = RwSignal::new(session_id.is_some());
     let error = RwSignal::new(Option::<String>::None);
 
-    web_sys::console::log_1(&format!("[FileTree] Initial tree size: {}", tree.get_untracked().len()).into());
 
     // Load from API only in session mode
     if let Some(sid) = session_id {
-        web_sys::console::log_1(&format!("[FileTree] Session mode: will load from API for session {}", sid).into());
         spawn_local(async move {
             match fetch_file_tree(&sid).await {
                 Ok(nodes) => {
-                    web_sys::console::log_1(&format!("[FileTree] Loaded {} nodes from API", nodes.len()).into());
                     tree.set(nodes);
                     loading.set(false);
                 }
                 Err(e) => {
-                    web_sys::console::log_1(&format!("[FileTree] API Error: {}", e).into());
                     error.set(Some(format!("Failed to load file tree: {}", e)));
                     loading.set(false);
                 }
@@ -351,7 +334,6 @@ pub fn FileTreePanel(
         });
     }
 
-    web_sys::console::log_1(&"[FileTree Panel] Starting render...".into());
 
     view! {
         <div class="berry-editor-sidebar" style="border: 5px solid green; background: #1e1e1e; width: 250px; height: 100vh;">
@@ -361,29 +343,23 @@ pub fn FileTreePanel(
                     class="berry-editor-refresh-btn"
                     style="background: none; border: none; color: #cccccc; cursor: pointer; font-size: 16px;"
                     on:click=move |_| {
-                        web_sys::console::log_1(&"[FileTree] Refresh button clicked".into());
                         loading.set(true);
                         error.set(None);
                         if let Some(session_id) = get_session_id() {
-                            web_sys::console::log_1(&format!("[FileTree] Refreshing from API for session {}", session_id).into());
                             spawn_local(async move {
                                 match fetch_file_tree(&session_id).await {
                                     Ok(nodes) => {
-                                        web_sys::console::log_1(&format!("[FileTree] Refresh: Loaded {} nodes", nodes.len()).into());
                                         tree.set(nodes);
                                         loading.set(false);
                                     }
                                     Err(e) => {
-                                        web_sys::console::log_1(&format!("[FileTree] Refresh error: {}", e).into());
                                         error.set(Some(format!("Failed to load: {}", e)));
                                         loading.set(false);
                                     }
                                 }
                             });
                         } else {
-                            web_sys::console::log_1(&"[FileTree] Refreshing mock data".into());
                             let mock_data = get_mock_file_tree();
-                            web_sys::console::log_1(&format!("[FileTree] Refresh: Loaded {} mock files", mock_data.len()).into());
                             tree.set(mock_data);
                             loading.set(false);
                         }
@@ -397,10 +373,8 @@ pub fn FileTreePanel(
                 {
                     // 初期レンダリング時に即座に実行
                     let nodes = tree.get_untracked();
-                    web_sys::console::log_1(&format!("[FileTree View IMMEDIATE] Rendering {} nodes", nodes.len()).into());
 
                     nodes.into_iter().enumerate().map(|(idx, node)| {
-                        web_sys::console::log_1(&format!("[FileTree View IMMEDIATE] Rendering node {}: {}", idx, node.name).into());
                         view! {
                             <FileTreeNode node=node level=0 on_file_select=on_file_select />
                         }

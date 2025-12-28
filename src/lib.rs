@@ -30,6 +30,12 @@ pub mod common;
 pub mod tauri_bindings;
 pub mod tauri_bindings_search;
 
+// ✅ Web Workers for background processing
+pub mod web_worker;
+pub mod syntax_worker;  // ✅ Strategy 1: Non-blocking syntax analysis
+pub mod tree_sitter_engine;  // ✅ Strategy 2: Deep contextual analysis
+// pub mod webgpu_renderer;  // ✅ Strategy 4: GPU-accelerated DOM-free rendering (requires web-sys WebGPU support)
+
 // Core modules (Editor Engine)
 pub mod core;
 
@@ -40,6 +46,7 @@ pub mod search_panel;
 pub mod virtual_scroll;
 pub mod debounce;
 pub mod canvas_renderer;
+pub mod highlight_job;  // ✅ IntelliJ Pro: Async syntax highlighting
 
 // Phase 1: LSP UI Integration
 pub mod lsp_ui;
@@ -56,7 +63,8 @@ pub mod debugger;
 // Phase 3: Refactoring Integration
 pub mod refactoring;
 
-// Phase 4: Git UI Integration
+// Phase 4: Git UI Integration (disabled in WASM - requires std::time)
+#[cfg(not(target_arch = "wasm32"))]
 pub mod git_ui;
 
 use components::EditorApp;
@@ -84,7 +92,6 @@ pub fn init_berry_editor() {
     // Set up better panic messages in development
     console_error_panic_hook::set_once();
 
-    web_sys::console::log_1(&"[BerryEditor] Initializing WASM module...".into());
 
     // Get the root element
     // In test environments (like jsdom), web_sys::window() might not work properly
@@ -103,32 +110,22 @@ pub fn init_berry_editor() {
         .dyn_into::<HtmlElement>()
         .expect("root element is not an HtmlElement");
 
-    web_sys::console::log_1(&"[BerryEditor] Mounting Leptos app...".into());
-    web_sys::console::log_1(&format!("[BerryEditor] Root element HTML before clear: {}", root.inner_html()).into());
 
     // Clear loading message
     root.set_inner_html("");
 
-    web_sys::console::log_1(&format!("[BerryEditor] Root element HTML after clear: {}", root.inner_html()).into());
-    web_sys::console::log_1(&"[BerryEditor] Creating EditorApp component...".into());
 
     // Mount the Leptos app to the specific element
     // Use Tauri version if available, otherwise use Web version
     let mount_handle = leptos::mount::mount_to(root.clone(), || {
-        web_sys::console::log_1(&"[BerryEditor] EditorApp view! macro executing...".into());
 
         if tauri_bindings::is_tauri_context() {
-            web_sys::console::log_1(&"[BerryEditor] Using Tauri version".into());
             view! { <EditorAppTauri/> }.into_any()
         } else {
-            web_sys::console::log_1(&"[BerryEditor] Using Web version".into());
             view! { <EditorApp/> }.into_any()
         }
     });
 
-    web_sys::console::log_1(&"[BerryEditor] mount_to() called, disposing handle...".into());
     mount_handle.forget();
 
-    web_sys::console::log_1(&format!("[BerryEditor] Root element HTML after mount: {}", root.inner_html()).into());
-    web_sys::console::log_1(&"[BerryEditor] UI mounted successfully!".into());
 }

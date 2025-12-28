@@ -5,7 +5,63 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use super::session::{DebugSession, DebugState};
-use crate::common::ui_components::IconButton;
+use crate::common::ui_components::SvgIconButton;
+
+/// IntelliJ-style Continue/Play icon
+fn continue_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M4 3L12 8L4 13V3Z" fill="#6AAB73"/>
+        </svg>
+    }
+}
+
+/// IntelliJ-style Step Over icon
+fn step_over_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 4L12 8L8 12V9H4V7H8V4Z" fill="#6897BB"/>
+            <circle cx="3" cy="8" r="1.5" fill="#6897BB"/>
+        </svg>
+    }
+}
+
+/// IntelliJ-style Step Into icon
+fn step_into_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3L12 7H9V13H7V7H4L8 3Z" fill="#6897BB"/>
+        </svg>
+    }
+}
+
+/// IntelliJ-style Step Out icon
+fn step_out_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 13L4 9H7V3H9V9H12L8 13Z" fill="#6897BB"/>
+        </svg>
+    }
+}
+
+/// IntelliJ-style Stop icon
+fn stop_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="4" y="4" width="8" height="8" rx="1" fill="#C75450"/>
+        </svg>
+    }
+}
+
+/// IntelliJ-style Restart icon
+fn restart_icon() -> impl IntoView {
+    view! {
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3V1L5 4L8 7V5C10.21 5 12 6.79 12 9C12 9.79 11.75 10.52 11.33 11.12L12.38 12.17C13.04 11.3 13.5 10.19 13.5 9C13.5 5.96 11.04 3.5 8 3.5V3Z" fill="#9876AA"/>
+            <path d="M8 13C5.79 13 4 11.21 4 9C4 8.21 4.25 7.48 4.67 6.88L3.62 5.83C2.96 6.7 2.5 7.81 2.5 9C2.5 12.04 4.96 14.5 8 14.5V16L11 13L8 10V13Z" fill="#9876AA"/>
+        </svg>
+    }
+}
 
 /// Debug toolbar component
 #[component]
@@ -19,7 +75,6 @@ pub fn DebugToolbar(
     let handle_continue = move || {
         spawn_local(async move {
             if let Err(e) = session.continue_execution().await {
-                web_sys::console::error_1(&format!("Continue failed: {}", e).into());
             }
         });
     };
@@ -28,7 +83,6 @@ pub fn DebugToolbar(
     let handle_step_over = move || {
         spawn_local(async move {
             if let Err(e) = session.step_over().await {
-                web_sys::console::error_1(&format!("Step over failed: {}", e).into());
             }
         });
     };
@@ -37,7 +91,6 @@ pub fn DebugToolbar(
     let handle_step_into = move || {
         spawn_local(async move {
             if let Err(e) = session.step_into().await {
-                web_sys::console::error_1(&format!("Step into failed: {}", e).into());
             }
         });
     };
@@ -46,7 +99,6 @@ pub fn DebugToolbar(
     let handle_step_out = move || {
         spawn_local(async move {
             if let Err(e) = session.step_out().await {
-                web_sys::console::error_1(&format!("Step out failed: {}", e).into());
             }
         });
     };
@@ -55,7 +107,6 @@ pub fn DebugToolbar(
     let handle_stop = move || {
         spawn_local(async move {
             if let Err(e) = session.stop().await {
-                web_sys::console::error_1(&format!("Stop failed: {}", e).into());
             }
         });
     };
@@ -65,13 +116,11 @@ pub fn DebugToolbar(
         spawn_local(async move {
             // Stop current session
             if let Err(e) = session.stop().await {
-                web_sys::console::error_1(&format!("Stop failed: {}", e).into());
                 return;
             }
 
             // Start new session (would need program path - simplified here)
             // In real implementation, we'd store the program path
-            web_sys::console::log_1(&"Restart not yet fully implemented".into());
         });
     };
 
@@ -84,38 +133,38 @@ pub fn DebugToolbar(
 
                 view! {
                     <div class="berry-debug-toolbar-buttons">
-                        <IconButton
-                            icon="▶"
+                        <SvgIconButton
+                            icon=continue_icon()
                             tooltip="Continue (F5)"
                             on_click=handle_continue
                             disabled=is_stopped
                         />
-                        <IconButton
-                            icon="⤵"
+                        <SvgIconButton
+                            icon=step_over_icon()
                             tooltip="Step Over (F10)"
                             on_click=handle_step_over
                             disabled=!is_paused
                         />
-                        <IconButton
-                            icon="↓"
+                        <SvgIconButton
+                            icon=step_into_icon()
                             tooltip="Step Into (F11)"
                             on_click=handle_step_into
                             disabled=!is_paused
                         />
-                        <IconButton
-                            icon="↑"
+                        <SvgIconButton
+                            icon=step_out_icon()
                             tooltip="Step Out (Shift+F11)"
                             on_click=handle_step_out
                             disabled=!is_paused
                         />
-                        <IconButton
-                            icon="■"
+                        <SvgIconButton
+                            icon=stop_icon()
                             tooltip="Stop"
                             on_click=handle_stop
                             disabled=is_stopped
                         />
-                        <IconButton
-                            icon="↻"
+                        <SvgIconButton
+                            icon=restart_icon()
                             tooltip="Restart"
                             on_click=handle_restart
                             disabled=is_stopped

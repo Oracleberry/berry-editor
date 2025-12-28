@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 leptos = { version = "0.7", features = ["csr"] }
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
@@ -17,23 +18,30 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "HtmlInputElement",
     "HtmlTextAreaElement",
+    "Event",
     "KeyboardEvent",
     "MouseEvent",
     "WheelEvent",
+    "CompositionEvent",
     "ResizeObserver",
     "ResizeObserverEntry",
     "DomRect",
     "CanvasRenderingContext2d",
     "HtmlCanvasElement",
     "CssStyleDeclaration",
-    "Request",
-    "RequestInit",
-    "RequestMode",
-    "Response",
-    "Location",
-    "NodeList",
-    "Storage",
     "EventTarget",
+    "Navigator",
+    "Clipboard",
+    "Storage",
+    "Worker",
+    "MessageEvent",
+    "GpuDevice",
+    "GpuQueue",
+    "GpuRenderPipeline",
+    "GpuBuffer",
+    "GpuTexture",
+    "GpuTextureView",
+    "GpuCommandEncoder",
 ] }
 wasm-bindgen-futures = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -41,6 +49,7 @@ serde_json = "1.0"
 serde-wasm-bindgen = "0.6"
 ropey = "1.6"
 unicode-segmentation = "1.11"
+unicode-width = "0.1"
 indexmap = "2.0"
 regex = "1.10"
 anyhow = "1.0"

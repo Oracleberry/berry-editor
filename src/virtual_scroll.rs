@@ -15,8 +15,13 @@ pub struct VirtualScroll {
     scroll_top: f64,
     /// Cached visible range (start_line, end_line)
     visible_range: (usize, usize),
-    /// Overscan lines (render extra lines above/below for smooth scrolling)
+    /// ✅ IntelliJ Pro: Fixed overscan for WASM compatibility
     overscan: usize,
+    /// ✅ Track scroll position for prefetch calculation
+    last_scroll_pos: f64,
+    scroll_velocity: f64,  // Estimated lines per second
+    /// ✅ IntelliJ Pro: Prefetch range for async syntax highlighting
+    prefetch_range: (usize, usize),
 }
 
 impl VirtualScroll {
@@ -28,16 +33,28 @@ impl VirtualScroll {
             line_height,
             scroll_top: 0.0,
             visible_range: (0, 0),
-            overscan: 5,
+            overscan: 10,  // Fixed overscan for WASM compatibility
+            last_scroll_pos: 0.0,
+            scroll_velocity: 0.0,
+            prefetch_range: (0, 0),
         };
         vs.calculate_visible_range();
         vs
     }
 
-    /// Update the scroll position and recalculate visible range
+    /// Update scroll position (WASM-compatible version)
     pub fn set_scroll_top(&mut self, scroll_top: f64) {
-        self.scroll_top = scroll_top.max(0.0);
+        let new_scroll = scroll_top.max(0.0);
+
+        // Estimate scroll velocity based on delta (simplified for WASM)
+        let scroll_delta = (new_scroll - self.last_scroll_pos) / self.line_height;
+        self.scroll_velocity = scroll_delta;
+
+        self.last_scroll_pos = new_scroll;
+        self.scroll_top = new_scroll;
+
         self.calculate_visible_range();
+        self.calculate_prefetch_range();
     }
 
     /// Update the viewport height
@@ -73,9 +90,50 @@ impl VirtualScroll {
         self.visible_range = (start, end);
     }
 
+
+    /// ✅ IntelliJ Pro: Calculate prefetch range for async syntax highlighting
+    /// Prefetches lines ahead in scroll direction for zero-latency rendering
+    fn calculate_prefetch_range(&mut self) {
+        if self.total_lines == 0 {
+            self.prefetch_range = (0, 0);
+            return;
+        }
+
+        let (vis_start, vis_end) = self.visible_range;
+
+        // Determine scroll direction and prefetch ahead
+        if self.scroll_velocity > 5.0 {
+            // Scrolling down: prefetch lines below
+            let prefetch_amount = (self.scroll_velocity.abs() * 0.5).ceil() as usize;
+            let prefetch_start = vis_end;
+            let prefetch_end = (vis_end + prefetch_amount).min(self.total_lines);
+            self.prefetch_range = (prefetch_start, prefetch_end);
+        } else if self.scroll_velocity < -5.0 {
+            // Scrolling up: prefetch lines above
+            let prefetch_amount = (self.scroll_velocity.abs() * 0.5).ceil() as usize;
+            let prefetch_start = vis_start.saturating_sub(prefetch_amount);
+            let prefetch_end = vis_start;
+            self.prefetch_range = (prefetch_start, prefetch_end);
+        } else {
+            // Not scrolling: no prefetch needed
+            self.prefetch_range = (0, 0);
+        }
+    }
+
     /// Get the current visible range (inclusive start, exclusive end)
     pub fn visible_range(&self) -> (usize, usize) {
         self.visible_range
+    }
+
+    /// ✅ IntelliJ Pro: Get prefetch range for async syntax highlighting
+    /// Returns lines that should be prefetched ahead of visible range
+    pub fn prefetch_range(&self) -> (usize, usize) {
+        self.prefetch_range
+    }
+
+    /// ✅ IntelliJ Pro: Get current scroll velocity (lines per second)
+    pub fn scroll_velocity(&self) -> f64 {
+        self.scroll_velocity
     }
 
     /// Get the Y offset for a specific line number
