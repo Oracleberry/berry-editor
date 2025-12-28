@@ -799,13 +799,14 @@ pub fn VirtualEditorPanel(
                                 class="berry-editor-lines-container"
                                 style="flex: 1; position: relative; height: 100%; cursor: text;"
                                 on:mousedown=move |ev| {
-                                    // ✅ Calculate click position from client coordinates
-                                    // Since berry-editor-pane is the scroll container, coordinates are already scroll-adjusted
+                                    // ✅ Calculate click position - MUST add scroll_top for correct line calculation
                                     if let Some(target) = ev.current_target() {
                                         let element = target.dyn_into::<web_sys::HtmlElement>().unwrap();
                                         let rect = element.get_bounding_client_rect();
+                                        let s_top = scroll_top.get_untracked();
+
                                         let rel_x = ev.client_x() as f64 - rect.left();
-                                        let rel_y = ev.client_y() as f64 - rect.top(); // No need to add scroll_top!
+                                        let rel_y = ev.client_y() as f64 - rect.top() + s_top; // Add scroll position!
 
                                         let line = (rel_y / LINE_HEIGHT).floor() as usize;
                                         let x_in_text = (rel_x - TEXT_PADDING).max(0.0);
@@ -866,23 +867,24 @@ pub fn VirtualEditorPanel(
                                     }
                                 }
                             >
-                                // ✅ Monaco Editor approach: 1x1px textarea positioned at cursor
-                                // This allows IME popups to appear at the correct location
+                                // ✅ Input capture textarea - positioned at cursor for IME
                                 <textarea
                                     node_ref=input_ref
                                     class="hidden-input"
                                     style=move || {
                                         let l = cursor_line.get();
                                         let c = cursor_col.get();
+                                        let current_idx = active_tab_index.get();
                                         let x_offset = tabs.with(|t| {
-                                            t.get(idx).and_then(|tab| {
+                                            t.get(current_idx).and_then(|tab| {
                                                 tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
                                             })
                                         }).unwrap_or(0.0);
                                         format!(
-                                            "position: absolute; left: {}px; top: {}px; width: 1px; height: 1px; opacity: 0; z-index: 40; pointer-events: none; resize: none; border: none; outline: none;",
+                                            "position: absolute; left: {}px; top: {}px; width: 10px; height: {}px; opacity: 0; z-index: 40; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent;",
                                             TEXT_PADDING + x_offset,
-                                            l as f64 * LINE_HEIGHT
+                                            l as f64 * LINE_HEIGHT,
+                                            LINE_HEIGHT
                                         )
                                     }
                                     on:input=move |ev| {
@@ -942,9 +944,10 @@ pub fn VirtualEditorPanel(
 
                                     let l = cursor_line.get();
                                     let c = cursor_col.get();
+                                    let current_idx = active_tab_index.get();
 
                                     let x_offset = tabs.with(|t| {
-                                        t.get(idx).and_then(|tab| {
+                                        t.get(current_idx).and_then(|tab| {
                                             tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
                                         })
                                     }).unwrap_or(0.0);
