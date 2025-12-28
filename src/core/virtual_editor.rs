@@ -191,6 +191,7 @@ pub fn VirtualEditorPanel(
     let active_tab_index = RwSignal::new(0usize);
     let scroll_top = RwSignal::new(0.0);
     let container_ref = NodeRef::<leptos::html::Div>::new();
+    let input_ref = NodeRef::<html::Textarea>::new();
 
     // ✅ IntelliJ Pattern: Independent cursor signals (UI truth source)
     // These are separate from tabs to avoid reactive loops
@@ -555,6 +556,50 @@ pub fn VirtualEditorPanel(
                     cursor_col.update(|c| *c = 0);
                 }
             }
+            "Backspace" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                tabs.update(|t| {
+                    if let Some(tab) = t.get_mut(idx) {
+                        if col > 0 {
+                            // Delete character before cursor
+                            let pos = tab.buffer.line_to_char(line) + col;
+                            tab.buffer.remove(pos - 1, pos);
+                            tab.is_modified = true;
+                            cursor_col.update(|c| *c = col - 1);
+                            tab.highlight_cache.remove(&line);
+                        } else if line > 0 {
+                            // Delete newline, merge with previous line
+                            let prev_line_len = tab.buffer.line(line - 1)
+                                .map(|s| s.trim_end_matches('\n').len())
+                                .unwrap_or(0);
+                            let pos = tab.buffer.line_to_char(line);
+                            if pos > 0 {
+                                tab.buffer.remove(pos - 1, pos);
+                                tab.is_modified = true;
+                                cursor_line.update(|l| *l = line - 1);
+                                cursor_col.update(|c| *c = prev_line_len);
+                                tab.highlight_cache.remove(&(line - 1));
+                                tab.highlight_cache.remove(&line);
+                            }
+                        }
+                    }
+                });
+            }
+            "Enter" => {
+                let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
+                tabs.update(|t| {
+                    if let Some(tab) = t.get_mut(idx) {
+                        let pos = tab.buffer.line_to_char(line) + col;
+                        tab.buffer.insert(pos, "\n");
+                        tab.is_modified = true;
+                        cursor_line.update(|l| *l = line + 1);
+                        cursor_col.update(|c| *c = 0);
+                        // Clear cache for current and next line
+                        tab.highlight_cache.remove(&line);
+                        tab.highlight_cache.remove(&(line + 1));
+                    }
+                });
+            }
             _ => {}
         }
     };
@@ -565,8 +610,8 @@ pub fn VirtualEditorPanel(
             node_ref=container_ref
             tabindex="0"
             on:mousedown=move |_| {
-                // ✅ エディタのどこをクリックしても、確実にこの要素にフォーカスを当てる
-                if let Some(el) = container_ref.get() {
+                // ✅ Focus the hidden textarea for keyboard input
+                if let Some(el) = input_ref.get() {
                     let _ = el.focus();
                 }
             }
@@ -622,6 +667,53 @@ pub fn VirtualEditorPanel(
             <div
                 class="berry-editor-pane"
                 on:scroll=on_scroll
+                on:mousedown=move |ev| {
+                    // ✅ Calculate cursor position from click coordinates
+                    if let Some(target) = ev.current_target() {
+                        let element = target.dyn_into::<web_sys::HtmlElement>().unwrap();
+                        let rect = element.get_bounding_client_rect();
+                        let s_top = scroll_top.get_untracked();
+
+                        // Relative coordinates (including scroll)
+                        let rel_x = ev.client_x() as f64 - rect.left();
+                        let rel_y = ev.client_y() as f64 - rect.top() + s_top;
+
+                        let clicked_line = (rel_y / 20.0).floor() as usize;
+                        // Subtract gutter width (55px) to get text position
+                        let x_in_text = (rel_x - 55.0).max(0.0);
+
+                        tabs.with_untracked(|t| {
+                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                let clamped_line = clicked_line.min(tab.buffer.len_lines().saturating_sub(1));
+                                let line_str = tab.buffer.line(clamped_line).unwrap_or_default();
+
+                                // Find character position from x coordinate
+                                let mut current_x = 15.0; // padding-left
+                                let mut col = 0;
+                                for (i, ch) in line_str.chars().enumerate() {
+                                    if ch == '\n' { break; }
+                                    let w = if ch as u32 > 255 { 15.625 } else { 7.8125 };
+                                    if x_in_text < current_x + (w / 2.0) { break; }
+                                    current_x += w;
+                                    col = i + 1;
+                                }
+
+                                cursor_line.set(clamped_line);
+                                cursor_col.set(col);
+
+                                // Initialize selection range
+                                let char_idx = tab.buffer.line_to_char(clamped_line) + col;
+                                selection_start.set(Some(char_idx));
+                                selection_end.set(Some(char_idx));
+
+                                // Focus the textarea
+                                if let Some(el) = input_ref.get() {
+                                    let _ = el.focus();
+                                }
+                            }
+                        });
+                    }
+                }
                 style="position: relative; overflow: auto; height: 100%;"
             >
                 {move || {
@@ -698,9 +790,6 @@ pub fn VirtualEditorPanel(
                     // ✅ Calculate total height
                     let total_height = line_count_val.max(1) as f64 * 20.0;
 
-                    // ✅ Hidden input NodeRef for keyboard capture
-                    let input_ref = NodeRef::<html::Textarea>::new();
-
                     // ✅ Helper function for character width calculation
                     let calc_x_offset = |line_str: &str, char_count: usize| -> f64 {
                         line_str.chars().take(char_count).map(|ch| {
@@ -735,11 +824,35 @@ pub fn VirtualEditorPanel(
 
                             // [Layer 2] Text Display Area
                             <div class="berry-editor-lines-container" style="flex: 1; position: relative; height: 100%;">
-                                // Hidden input for keyboard capture
+                                // Hidden input for keyboard capture (transparent, full-screen, on top)
                                 <textarea
                                     node_ref=input_ref
                                     class="hidden-input"
-                                    style="position: absolute; opacity: 0; pointer-events: none; z-index: -1;"
+                                    style="position: absolute; opacity: 0; left: 0; top: 0; width: 100%; height: 100%; z-index: 50; cursor: text; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent;"
+                                    on:input=move |ev| {
+                                        let val = event_target_value(&ev);
+                                        if !val.is_empty() {
+                                            let idx = active_tab_index.get_untracked();
+                                            tabs.update(|t| {
+                                                if let Some(tab) = t.get_mut(idx) {
+                                                    let line = cursor_line.get_untracked();
+                                                    let col = cursor_col.get_untracked();
+                                                    let pos = tab.buffer.line_to_char(line) + col;
+                                                    tab.buffer.insert(pos, &val);
+                                                    tab.is_modified = true;
+                                                    // Move cursor forward
+                                                    cursor_col.update(|c| *c += val.chars().count());
+                                                    // Clear highlight cache for modified line
+                                                    tab.highlight_cache.remove(&line);
+                                                }
+                                            });
+                                            // Clear textarea
+                                            if let Some(el) = input_ref.get() {
+                                                el.set_value("");
+                                            }
+                                        }
+                                    }
+                                    on:keydown=handle_keydown
                                 ></textarea>
 
                                 // Virtual Cursor
