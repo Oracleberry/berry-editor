@@ -39,7 +39,7 @@
         body {
             /* JetBrains Mono - IntelliJ's official font */
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
-            background: #2b2b2b; /* Darcula background */
+            background: #1E1E1E; /* Darcula background */
             color: #a9b7c6; /* Darcula text color */
             overflow: hidden;
             /* フォントレンダリング最適化 */
@@ -209,7 +209,7 @@
 
         .berry-editor-pane {
             flex: 1;
-            background: #2b2b2b; /* Darcula editor background */
+            background: #1E1E1E; /* Darcula editor background */
             overflow: auto;
             tab-size: 4; /* タブをスペース4つ分に固定 */
             -moz-tab-size: 4;
@@ -298,16 +298,16 @@
         }
 
         /* Darcula Syntax Highlighting - IntelliJ IDEA colors */
-        .syntax-keyword { color: #cc7832; font-weight: bold; } /* Orange - IntelliJ keywords */
-        .syntax-function { color: #ffc66d; } /* Yellow - IntelliJ functions */
-        .syntax-type { color: #b9bcd1; } /* Light purple - IntelliJ types */
-        .syntax-string { color: #6a8759; } /* Green - IntelliJ strings */
-        .syntax-number { color: #6897bb; } /* Blue - IntelliJ numbers */
-        .syntax-comment { color: #808080; font-style: italic; } /* Gray - IntelliJ comments */
-        .syntax-operator { color: #a9b7c6; } /* Default text */
-        .syntax-identifier { color: #a9b7c6; } /* Default text */
-        .syntax-attribute { color: #bbb529; } /* Yellow-brown - IntelliJ attributes like #[derive] */
-        .syntax-constant { color: #9876aa; } /* Purple - IntelliJ constants and enums */
+        .syntax-keyword { color: #CC7832; font-weight: bold; } /* Orange - IntelliJ keywords */
+        .syntax-function { color: #FFC66D; } /* Yellow - IntelliJ functions */
+        .syntax-type { color: #A9B7C6; } /* Light gray - IntelliJ types */
+        .syntax-string { color: #6A8759; } /* Green - IntelliJ strings */
+        .syntax-number { color: #6897BB; } /* Blue - IntelliJ numbers */
+        .syntax-comment { color: #629755; font-style: italic; } /* Green - IntelliJ comments */
+        .syntax-operator { color: #A9B7C6; } /* Default text */
+        .syntax-identifier { color: #A9B7C6; } /* Default text */
+        .syntax-attribute { color: #BBB529; } /* Yellow-brown - IntelliJ attributes like #[derive] */
+        .syntax-constant { color: #9876AA; } /* Purple - IntelliJ constants and enums */
 
         /* Main editor area layout */
         .berry-editor-main-area {
@@ -321,7 +321,7 @@
         .berry-editor-bottom-panel {
             height: 200px;
             border-top: 1px solid #323232; /* Darcula border */
-            background: #2b2b2b; /* Darcula background */
+            background: #1E1E1E; /* Darcula background */
             overflow-y: auto;
         }
 
@@ -1041,17 +1041,17 @@
         ::-webkit-scrollbar {
             width: 10px;
             height: 10px;
-            background: #2b2b2b; /* Matches editor background */
+            background: #1E1E1E; /* Matches editor background */
         }
 
         ::-webkit-scrollbar-track {
-            background: #2b2b2b;
+            background: #1E1E1E;
         }
 
         ::-webkit-scrollbar-thumb {
             background: #4e5254; /* Subtle gray thumb */
             border-radius: 5px;
-            border: 2px solid #2b2b2b; /* Creates padding effect */
+            border: 2px solid #1E1E1E; /* Creates padding effect */
         }
 
         ::-webkit-scrollbar-thumb:hover {
@@ -1064,13 +1064,13 @@
 
         /* Horizontal scrollbar */
         ::-webkit-scrollbar-corner {
-            background: #2b2b2b;
+            background: #1E1E1E;
         }
 
         /* Firefox scrollbar styling */
         * {
             scrollbar-width: thin;
-            scrollbar-color: #4e5254 #2b2b2b;
+            scrollbar-color: #4e5254 #1E1E1E;
         }
     </style>
     <script>

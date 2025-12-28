@@ -19,14 +19,15 @@ pub enum TokenType {
 impl TokenType {
     pub fn to_color(&self) -> &'static str {
         match self {
-            TokenType::Keyword => "#569cd6",
-            TokenType::Function => "#dcdcaa",
-            TokenType::Type => "#4ec9b0",
-            TokenType::String => "#ce9178",
-            TokenType::Number => "#b5cea8",
-            TokenType::Comment => "#6a9955",
-            TokenType::Operator => "#d4d4d4",
-            TokenType::Identifier => "#9cdcfe",
+            // IntelliJ IDEA / RustRover Darcula color scheme
+            TokenType::Keyword => "#CC7832", // Orange (pub, struct, impl, fn)
+            TokenType::Function => "#FFC66D", // Yellow-orange (function names)
+            TokenType::Type => "#A9B7C6",    // Light gray (Position, usize, Self)
+            TokenType::String => "#6A8759",  // Green (string literals)
+            TokenType::Number => "#6897BB",  // Blue (numeric literals)
+            TokenType::Comment => "#629755", // Green (comments)
+            TokenType::Operator => "#A9B7C6", // Light gray (operators)
+            TokenType::Identifier => "#A9B7C6", // Light gray (identifiers)
         }
     }
 
@@ -155,17 +156,16 @@ impl SyntaxHighlighter {
 
     fn add_basic_tokens(&self, tokens: &mut Vec<SyntaxToken>, text: &str, offset: usize) {
         let keywords = [
-            "fn", "let", "mut", "const", "pub", "use", "mod", "impl", "struct",
-            "enum", "trait", "type", "if", "else", "match", "for", "while", "loop",
-            "return", "async", "await", "move", "self", "Self", "super", "crate",
-            "where", "unsafe", "extern", "static", "ref", "dyn", "as", "in",
-            "function", "var", "class", "import", "export", "from", "def", "class",
-            "return", "yield", "lambda", "with", "try", "except", "finally",
+            "fn", "let", "mut", "const", "pub", "use", "mod", "impl", "struct", "enum", "trait",
+            "type", "if", "else", "match", "for", "while", "loop", "return", "async", "await",
+            "move", "self", "Self", "super", "crate", "where", "unsafe", "extern", "static", "ref",
+            "dyn", "as", "in", "function", "var", "class", "import", "export", "from", "def",
+            "class", "return", "yield", "lambda", "with", "try", "except", "finally",
         ];
 
         let types = [
-            "String", "str", "Vec", "Option", "Result", "Box", "Rc", "Arc",
-            "i32", "i64", "u32", "u64", "f32", "f64", "bool", "char", "usize",
+            "String", "str", "Vec", "Option", "Result", "Box", "Rc", "Arc", "i32", "i64", "u32",
+            "u64", "f32", "f64", "bool", "char", "usize",
         ];
 
         let mut current_pos = 0;
@@ -186,7 +186,9 @@ impl SyntaxHighlighter {
                     });
                 }
                 // Check if it's a type
-                else if types.contains(&word) || (word.len() > 0 && word.chars().next().unwrap().is_uppercase()) {
+                else if types.contains(&word)
+                    || (word.len() > 0 && word.chars().next().unwrap().is_uppercase())
+                {
                     tokens.push(SyntaxToken {
                         token_type: TokenType::Type,
                         text: word.to_string(),
@@ -205,7 +207,8 @@ impl SyntaxHighlighter {
                 }
                 // Check if it's a number (strip trailing punctuation)
                 else if {
-                    let stripped = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.');
+                    let stripped =
+                        word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.');
                     !stripped.is_empty() && stripped.chars().all(|c| c.is_numeric() || c == '.')
                 } {
                     tokens.push(SyntaxToken {
@@ -260,7 +263,9 @@ mod tests {
         highlighter.set_language("rust").unwrap();
 
         let tokens = highlighter.highlight_line("fn main() {");
-        assert!(tokens.iter().any(|t| t.token_type == TokenType::Keyword && t.text == "fn"));
+        assert!(tokens
+            .iter()
+            .any(|t| t.token_type == TokenType::Keyword && t.text == "fn"));
     }
 
     #[wasm_bindgen_test]
@@ -279,7 +284,9 @@ mod tests {
         highlighter.set_language("rust").unwrap();
 
         let tokens = highlighter.highlight_line("let x: String = String::new();");
-        assert!(tokens.iter().any(|t| t.token_type == TokenType::Type && t.text == "String"));
+        assert!(tokens
+            .iter()
+            .any(|t| t.token_type == TokenType::Type && t.text == "String"));
     }
 
     #[wasm_bindgen_test]

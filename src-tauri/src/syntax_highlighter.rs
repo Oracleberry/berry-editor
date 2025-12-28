@@ -100,7 +100,7 @@ impl SyntaxHighlighter {
 
                 tokens.push(HighlightedToken {
                     text: string_content,
-                    color: "#CE9178".to_string(), // IntelliJ string color
+                    color: "#6A8759".to_string(), // IntelliJ Darcula string color
                     start,
                     end: current_pos,
                 });
@@ -115,7 +115,7 @@ impl SyntaxHighlighter {
 
                 tokens.push(HighlightedToken {
                     text: comment,
-                    color: "#6A9955".to_string(), // IntelliJ comment color
+                    color: "#629755".to_string(), // IntelliJ Darcula comment color
                     start,
                     end: current_pos,
                 });
@@ -138,11 +138,11 @@ impl SyntaxHighlighter {
                 }
 
                 let color = if keywords.contains(&word) {
-                    "#CC7832".to_string() // IntelliJ keyword color
+                    "#CC7832".to_string() // IntelliJ Darcula keyword color (orange)
                 } else if word.chars().next().unwrap().is_uppercase() {
-                    "#4EC9B0".to_string() // IntelliJ type color
+                    "#A9B7C6".to_string() // IntelliJ Darcula type color (light gray)
                 } else {
-                    "#A9B7C6".to_string() // IntelliJ default text
+                    "#A9B7C6".to_string() // IntelliJ Darcula default text
                 };
 
                 tokens.push(HighlightedToken {
@@ -171,7 +171,7 @@ impl SyntaxHighlighter {
 
                 tokens.push(HighlightedToken {
                     text: number,
-                    color: "#B5CEA8".to_string(), // IntelliJ number color
+                    color: "#6897BB".to_string(), // IntelliJ Darcula number color (blue)
                     start,
                     end: current_pos,
                 });

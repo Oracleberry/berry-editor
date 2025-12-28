@@ -37,21 +37,21 @@
 //!      Re-render visible lines only [Virtual View]
 //! ```
 
-use leptos::prelude::*;
-use leptos::html;
-use leptos::ev::Event;
-use leptos::task::spawn_local;
 use crate::buffer::TextBuffer;
-use crate::syntax::SyntaxHighlighter;
-use crate::virtual_scroll::VirtualScroll;
-use crate::tauri_bindings::{self, HighlightResult};
+use crate::completion_widget::CompletionWidget;
 use crate::lsp::{LspClient, Position as LspPosition};
 use crate::lsp_ui::CompletionItem;
-use crate::completion_widget::CompletionWidget;
-use wasm_bindgen::JsCast;
-use web_sys::HtmlElement;
+use crate::syntax::SyntaxHighlighter;
+use crate::tauri_bindings::{self, HighlightResult};
+use crate::virtual_scroll::VirtualScroll;
+use leptos::ev::Event;
+use leptos::html;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar;
+use wasm_bindgen::JsCast;
+use web_sys::HtmlElement;
 
 // ✅ Coordinate system constants - synchronized with CSS and MEASURED from actual browser rendering
 const LINE_HEIGHT: f64 = 20.0; // pixels
@@ -63,9 +63,17 @@ const TEXT_PADDING: f64 = 15.0; // Left padding for text content
 /// ✅ Calculate horizontal position for cursor based on character count
 /// This is the single source of truth for x-position calculation
 fn calculate_x_position(line_str: &str, char_col: usize) -> f64 {
-    line_str.chars().take(char_col).map(|ch| {
-        if ch as u32 > 255 { CHAR_WIDTH_WIDE } else { CHAR_WIDTH_ASCII }
-    }).sum::<f64>()
+    line_str
+        .chars()
+        .take(char_col)
+        .map(|ch| {
+            if ch as u32 > 255 {
+                CHAR_WIDTH_WIDE
+            } else {
+                CHAR_WIDTH_ASCII
+            }
+        })
+        .sum::<f64>()
 }
 
 /// ✅ IntelliJ Pro: Extract word at position for Go to Definition
@@ -197,9 +205,7 @@ struct EditorTab {
 }
 
 #[component]
-pub fn VirtualEditorPanel(
-    selected_file: RwSignal<Option<(String, String)>>,
-) -> impl IntoView {
+pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> impl IntoView {
     let tabs = RwSignal::new(Vec::<EditorTab>::new());
     let active_tab_index = RwSignal::new(0usize);
     let scroll_top = RwSignal::new(0.0);
@@ -214,6 +220,14 @@ pub fn VirtualEditorPanel(
     // ✅ Selection state (moved to top level to avoid reset on re-render)
     let selection_start = RwSignal::new(None::<usize>);
     let selection_end = RwSignal::new(None::<usize>);
+
+    // ✅ CRITICAL: IME composition state to prevent double input
+    // When true, ignore input events (they'll be handled on compositionend)
+    let is_composing = RwSignal::new(false);
+    // Composition preview text (what user is currently typing in IME)
+    let composition_text = RwSignal::new(String::new());
+    // Composition start position (line, col) - fixed during composition
+    let composition_start_pos = RwSignal::new((0usize, 0usize));
 
     // ✅ IntelliJ Pro: Auto-completion state
     let show_completion = RwSignal::new(false);
@@ -237,7 +251,9 @@ pub fn VirtualEditorPanel(
                 log("🚀 Initializing empty tab for editor startup");
             }
 
-            let empty_buffer = TextBuffer::from_str("// Welcome to BerryEditor\n// Start typing or open a file...\n");
+            let empty_buffer = TextBuffer::from_str(
+                "// Welcome to BerryEditor\n// Start typing or open a file...\n",
+            );
             let mut highlighter = SyntaxHighlighter::new();
             let _ = highlighter.set_language("rust");
             let line_count = empty_buffer.len_lines();
@@ -262,6 +278,41 @@ pub fn VirtualEditorPanel(
         }
     });
 
+    // ✅ CRITICAL: Auto-focus textarea on mount so keyboard input works immediately
+    // Use Effect (Leptos reactive system) to set focus when textarea is mounted
+    Effect::new_isomorphic(move |_| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen::JsCast;
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_namespace = console)]
+                fn log(s: &str);
+            }
+
+            if let Some(el) = input_ref.get() {
+                log("⌨️ Auto-focusing textarea on mount");
+
+                // Use setTimeout to ensure DOM is fully ready
+                let el_clone = el.clone();
+                let _ = web_sys::window().and_then(|win| {
+                    let closure = Closure::wrap(Box::new(move || {
+                        let _ = el_clone.focus();
+                        log("✅ Textarea focused via Effect!");
+                    }) as Box<dyn FnMut()>);
+                    win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        closure.as_ref().unchecked_ref(),
+                        100,
+                    )
+                    .ok()?;
+                    closure.forget();
+                    Some(())
+                });
+            }
+        }
+    });
+
     // ✅ FIX: Direct file selection handling - use .get() to clone and establish dependency
     Effect::new_isomorphic(move |_| {
         // Use .get() to clone the data and establish reactive dependency
@@ -274,7 +325,11 @@ pub fn VirtualEditorPanel(
                     #[wasm_bindgen(js_namespace = console)]
                     fn log(s: &str);
                 }
-                log(&format!("🔥 Effect: Opening file: {}, length: {}", path, content.len()));
+                log(&format!(
+                    "🔥 Effect: Opening file: {}, length: {}",
+                    path,
+                    content.len()
+                ));
             }
 
             // ✅ Use .get() to establish dependency on tabs (not .get_untracked())
@@ -289,7 +344,11 @@ pub fn VirtualEditorPanel(
                     #[wasm_bindgen(js_namespace = console)]
                     fn log(s: &str);
                 }
-                log(&format!("Tab check: existing={:?}, current_tabs_len={}", existing_tab_index, current_tabs.len()));
+                log(&format!(
+                    "Tab check: existing={:?}, current_tabs_len={}",
+                    existing_tab_index,
+                    current_tabs.len()
+                ));
             }
 
             if let Some(idx) = existing_tab_index {
@@ -319,93 +378,94 @@ pub fn VirtualEditorPanel(
                     log("Creating new tab...");
                 }
                 // Create new tab
-                    let buffer = TextBuffer::from_str(&content);
-                    let mut highlighter = SyntaxHighlighter::new();
+                let buffer = TextBuffer::from_str(&content);
+                let mut highlighter = SyntaxHighlighter::new();
 
-                    // Auto-detect language from file extension
-                    if path.ends_with(".rs") {
-                        let _ = highlighter.set_language("rust");
-                    } else if path.ends_with(".js") || path.ends_with(".ts") {
-                        let _ = highlighter.set_language("javascript");
-                    } else if path.ends_with(".py") {
-                        let _ = highlighter.set_language("python");
+                // Auto-detect language from file extension
+                if path.ends_with(".rs") {
+                    let _ = highlighter.set_language("rust");
+                } else if path.ends_with(".js") || path.ends_with(".ts") {
+                    let _ = highlighter.set_language("javascript");
+                } else if path.ends_with(".py") {
+                    let _ = highlighter.set_language("python");
+                }
+
+                // Create virtual scroll for this file
+                let line_count = buffer.len_lines();
+                let viewport_height = 800.0; // Will be updated by resize observer
+                let scroll = VirtualScroll::new(line_count, viewport_height, LINE_HEIGHT);
+
+                let tab = EditorTab {
+                    path: path.clone(),
+                    buffer: buffer.clone(),
+                    highlighter,
+                    scroll,
+                    is_modified: false,
+                    // ✅ MEMORY FIX: No original_content clone!
+                    selection_start: None,
+                    selection_end: None,
+                    undo_history: UndoHistory::new(),
+                    highlight_cache: HashMap::new(),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                };
+
+                // ✅ Add tab and set active index
+                tabs.update(|t| t.push(tab));
+                let new_index = current_tabs.len(); // Use the cloned value from tabs.get()
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    use wasm_bindgen::prelude::*;
+                    #[wasm_bindgen]
+                    extern "C" {
+                        #[wasm_bindgen(js_namespace = console)]
+                        fn log(s: &str);
                     }
+                    log(&format!(
+                        "✅ Tab added! new_index: {}, total tabs: {}",
+                        new_index,
+                        new_index + 1
+                    ));
+                }
 
-                    // Create virtual scroll for this file
-                    let line_count = buffer.len_lines();
-                    let viewport_height = 800.0; // Will be updated by resize observer
-                    let scroll = VirtualScroll::new(line_count, viewport_height, LINE_HEIGHT);
+                active_tab_index.set(new_index);
 
-                    let tab = EditorTab {
-                        path: path.clone(),
-                        buffer: buffer.clone(),
-                        highlighter,
-                        scroll,
-                        is_modified: false,
-                        // ✅ MEMORY FIX: No original_content clone!
-                        selection_start: None,
-                        selection_end: None,
-                        undo_history: UndoHistory::new(),
-                        highlight_cache: HashMap::new(),
-                        cursor_line: 0,
-                        cursor_col: 0,
-                    };
+                // ✅ CRITICAL FIX: Reset scroll position for new tab
+                // Without this, scroll_top signal retains value from previous tab
+                scroll_top.set(0.0);
 
-                    // ✅ Add tab and set active index
-                    tabs.update(|t| t.push(tab));
-                    let new_index = current_tabs.len(); // Use the cloned value from tabs.get()
+                // ✅ Parallel syntax highlighting: Send all lines to Tauri backend
+                let path_for_highlight = path.clone();
+                let line_count = buffer.len_lines();
+                spawn_local(async move {
+                    // Prepare lines for parallel highlighting
+                    let lines_to_highlight: Vec<(usize, String)> = (0..line_count)
+                        .filter_map(|i| buffer.line(i).map(|line| (i, line.to_string())))
+                        .collect();
 
-                    #[cfg(target_arch = "wasm32")]
+                    // Call Tauri parallel highlighter
+                    if let Ok(results) = tauri_bindings::highlight_file_parallel(
+                        &path_for_highlight,
+                        lines_to_highlight,
+                    )
+                    .await
                     {
-                        use wasm_bindgen::prelude::*;
-                        #[wasm_bindgen]
-                        extern "C" {
-                            #[wasm_bindgen(js_namespace = console)]
-                            fn log(s: &str);
-                        }
-                        log(&format!("✅ Tab added! new_index: {}, total tabs: {}", new_index, new_index + 1));
-                    }
-
-                    active_tab_index.set(new_index);
-
-                    // ✅ CRITICAL FIX: Reset scroll position for new tab
-                    // Without this, scroll_top signal retains value from previous tab
-                    scroll_top.set(0.0);
-
-                    // ✅ Parallel syntax highlighting: Send all lines to Tauri backend
-                    let path_for_highlight = path.clone();
-                    let line_count = buffer.len_lines();
-                    spawn_local(async move {
-                        // Prepare lines for parallel highlighting
-                        let lines_to_highlight: Vec<(usize, String)> = (0..line_count)
-                            .filter_map(|i| {
-                                buffer.line(i).map(|line| (i, line.to_string()))
-                            })
-                            .collect();
-
-                        // Call Tauri parallel highlighter
-                        if let Ok(results) = tauri_bindings::highlight_file_parallel(
-                            &path_for_highlight,
-                            lines_to_highlight,
-                        )
-                        .await
-                        {
-                            // Update cache with results
-                            tabs.update(|t| {
-                                if let Some(tab) = t.get_mut(new_index) {
-                                    for result in results {
-                                        let html = highlight_result_to_html(&result);
-                                        tab.highlight_cache.insert(result.line_number, html);
-                                    }
+                        // Update cache with results
+                        tabs.update(|t| {
+                            if let Some(tab) = t.get_mut(new_index) {
+                                for result in results {
+                                    let html = highlight_result_to_html(&result);
+                                    tab.highlight_cache.insert(result.line_number, html);
                                 }
-                            });
-                        }
-                    });
+                            }
+                        });
+                    }
+                });
 
-                    // ✅ Force re-render by toggling scroll (ensures dependency fires)
-                    scroll_top.set(-1.0);
-                    scroll_top.set(0.0);
-
+                // ✅ Force re-render by toggling scroll (ensures dependency fires)
+                scroll_top.set(-1.0);
+                scroll_top.set(0.0);
             }
         }
     });
@@ -414,15 +474,15 @@ pub fn VirtualEditorPanel(
     // Restore cursor position when tab switches
     Effect::new(move |_| {
         // ✅ 最初の確認
-        if active_tab_index.is_disposed() || tabs.is_disposed() { return; }
+        if active_tab_index.is_disposed() || tabs.is_disposed() {
+            return;
+        }
 
         // Get current tab index (reactive trigger)
         let idx = active_tab_index.get();
 
         // ✅ with_untracked でディスポーズチェック済み
-        let data = tabs.with_untracked(|t| {
-            t.get(idx).map(|tab| (tab.cursor_line, tab.cursor_col))
-        });
+        let data = tabs.with_untracked(|t| t.get(idx).map(|tab| (tab.cursor_line, tab.cursor_col)));
 
         if let Some((l, c)) = data {
             // ✅ 書き込み直前にもう一度確認
@@ -437,7 +497,11 @@ pub fn VirtualEditorPanel(
     // Saves cursor position to tab storage when cursor moves
     Effect::new(move |_| {
         // ✅ 最初の確認
-        if cursor_line.is_disposed() || cursor_col.is_disposed() || active_tab_index.is_disposed() || tabs.is_disposed() {
+        if cursor_line.is_disposed()
+            || cursor_col.is_disposed()
+            || active_tab_index.is_disposed()
+            || tabs.is_disposed()
+        {
             return;
         }
 
@@ -471,7 +535,10 @@ pub fn VirtualEditorPanel(
         // Get current cursor position
         let insert_idx = tabs.with_untracked(|t| {
             t.get(active_tab_index.get_untracked())
-                .map(|tab| tab.buffer.line_to_char(cursor_line.get_untracked()) + cursor_col.get_untracked())
+                .map(|tab| {
+                    tab.buffer.line_to_char(cursor_line.get_untracked())
+                        + cursor_col.get_untracked()
+                })
                 .unwrap_or(0)
         });
 
@@ -482,7 +549,6 @@ pub fn VirtualEditorPanel(
                 tab.is_modified = true;
             }
         });
-
 
         // Update cursor position
         let new_idx = insert_idx + insert_text.chars().count();
@@ -524,7 +590,6 @@ pub fn VirtualEditorPanel(
 
     // Close tab function
     let close_tab = move |idx: usize| {
-
         tabs.update(|t| {
             if idx < t.len() {
                 t.remove(idx);
@@ -540,13 +605,103 @@ pub fn VirtualEditorPanel(
                 }
             }
         });
-
-        
     };
 
     // ✅ Bulletproof keyboard handler: prevents ghost handler from accessing disposed signals
     let handle_keydown = move |ev: web_sys::KeyboardEvent| {
         let key = ev.key();
+
+        // ✅ Handle Cmd+Z (macOS) / Ctrl+Z (Windows/Linux) for Undo
+        // ✅ Handle Cmd+Shift+Z (macOS) / Ctrl+Y (Windows/Linux) for Redo
+        // Check both meta_key (Cmd on Mac) and ctrl_key (Ctrl on Windows/Linux)
+        let is_undo = (ev.meta_key() || ev.ctrl_key()) && key == "z" && !ev.shift_key();
+
+        if is_undo {
+            // Undo
+            ev.prevent_default();
+            ev.stop_propagation();
+
+            let idx = active_tab_index.get_untracked();
+            tabs.update(|t| {
+                if let Some(tab) = t.get_mut(idx) {
+                    if let Some(op) = tab.undo_history.undo() {
+                        match op {
+                            EditOperation::Insert {
+                                position,
+                                text,
+                                cursor_before,
+                                ..
+                            } => {
+                                // Undo insert: remove the inserted text
+                                tab.buffer.remove(position, position + text.len());
+                                cursor_line.set(cursor_before.0);
+                                cursor_col.set(cursor_before.1);
+                                tab.highlight_cache.remove(&cursor_before.0);
+                            }
+                            EditOperation::Delete {
+                                position,
+                                text,
+                                cursor_before,
+                                ..
+                            } => {
+                                // Undo delete: re-insert the deleted text
+                                tab.buffer.insert(position, &text);
+                                cursor_line.set(cursor_before.0);
+                                cursor_col.set(cursor_before.1);
+                                tab.highlight_cache.remove(&cursor_before.0);
+                            }
+                        }
+                        tab.is_modified = true;
+                    }
+                }
+            });
+            return;
+        }
+
+        let is_redo =
+            (ev.meta_key() || ev.ctrl_key()) && ((key == "z" && ev.shift_key()) || key == "y");
+
+        if is_redo {
+            // Redo
+            ev.prevent_default();
+            ev.stop_propagation();
+
+            let idx = active_tab_index.get_untracked();
+            tabs.update(|t| {
+                if let Some(tab) = t.get_mut(idx) {
+                    if let Some(op) = tab.undo_history.redo() {
+                        match op {
+                            EditOperation::Insert {
+                                position,
+                                text,
+                                cursor_after,
+                                ..
+                            } => {
+                                // Redo insert: re-insert the text
+                                tab.buffer.insert(position, &text);
+                                cursor_line.set(cursor_after.0);
+                                cursor_col.set(cursor_after.1);
+                                tab.highlight_cache.remove(&cursor_after.0);
+                            }
+                            EditOperation::Delete {
+                                position,
+                                text,
+                                cursor_after,
+                                ..
+                            } => {
+                                // Redo delete: remove the text again
+                                tab.buffer.remove(position, position + text.len());
+                                cursor_line.set(cursor_after.0);
+                                cursor_col.set(cursor_after.1);
+                                tab.highlight_cache.remove(&cursor_after.0);
+                            }
+                        }
+                        tab.is_modified = true;
+                    }
+                }
+            });
+            return;
+        }
 
         // Prevent default for editor keys only
         match key.as_str() {
@@ -570,9 +725,8 @@ pub fn VirtualEditorPanel(
                 cursor_line.update(|l| *l = l.saturating_sub(1));
             }
             "ArrowDown" => {
-                let max_lines = tabs.with_untracked(|t| {
-                    t.get(idx).map(|tab| tab.buffer.len_lines()).unwrap_or(1)
-                });
+                let max_lines = tabs
+                    .with_untracked(|t| t.get(idx).map(|tab| tab.buffer.len_lines()).unwrap_or(1));
                 cursor_line.update(|l| *l = (*l + 1).min(max_lines.saturating_sub(1)));
             }
             "ArrowLeft" => {
@@ -594,7 +748,11 @@ pub fn VirtualEditorPanel(
                 let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
                 let (line_len, total_lines) = tabs.with_untracked(|t| {
                     if let Some(tab) = t.get(idx) {
-                        let ll = tab.buffer.line(line).map(|s| s.trim_end_matches('\n').len()).unwrap_or(0);
+                        let ll = tab
+                            .buffer
+                            .line(line)
+                            .map(|s| s.trim_end_matches('\n').len())
+                            .unwrap_or(0);
                         (ll, tab.buffer.len_lines())
                     } else {
                         (0, 1)
@@ -615,17 +773,38 @@ pub fn VirtualEditorPanel(
                         if col > 0 {
                             // Delete character before cursor
                             let pos = tab.buffer.line_to_char(line) + col;
+                            // ✅ Record operation for undo
+                            let deleted_text = tab.buffer.slice(pos - 1, pos).unwrap_or_default();
+                            tab.undo_history.push(EditOperation::Delete {
+                                position: pos - 1,
+                                text: deleted_text,
+                                cursor_before: (line, col),
+                                cursor_after: (line, col - 1),
+                            });
+
                             tab.buffer.remove(pos - 1, pos);
                             tab.is_modified = true;
                             cursor_col.update(|c| *c = col - 1);
                             tab.highlight_cache.remove(&line);
                         } else if line > 0 {
                             // Delete newline, merge with previous line
-                            let prev_line_len = tab.buffer.line(line - 1)
+                            let prev_line_len = tab
+                                .buffer
+                                .line(line - 1)
                                 .map(|s| s.trim_end_matches('\n').len())
                                 .unwrap_or(0);
                             let pos = tab.buffer.line_to_char(line);
                             if pos > 0 {
+                                // ✅ Record operation for undo
+                                let deleted_text =
+                                    tab.buffer.slice(pos - 1, pos).unwrap_or_default();
+                                tab.undo_history.push(EditOperation::Delete {
+                                    position: pos - 1,
+                                    text: deleted_text,
+                                    cursor_before: (line, col),
+                                    cursor_after: (line - 1, prev_line_len),
+                                });
+
                                 tab.buffer.remove(pos - 1, pos);
                                 tab.is_modified = true;
                                 cursor_line.update(|l| *l = line - 1);
@@ -642,6 +821,14 @@ pub fn VirtualEditorPanel(
                 tabs.update(|t| {
                     if let Some(tab) = t.get_mut(idx) {
                         let pos = tab.buffer.line_to_char(line) + col;
+                        // ✅ Record operation for undo
+                        tab.undo_history.push(EditOperation::Insert {
+                            position: pos,
+                            text: "\n".to_string(),
+                            cursor_before: (line, col),
+                            cursor_after: (line + 1, 0),
+                        });
+
                         tab.buffer.insert(pos, "\n");
                         tab.is_modified = true;
                         cursor_line.update(|l| *l = line + 1);
@@ -732,7 +919,7 @@ pub fn VirtualEditorPanel(
                         }
                     }
                 }
-                style="position: relative; overflow: auto; height: 100%; background: #2b2b2b; display: flex;"
+                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex;"
             >
                 {move || {
                     // ✅ Disposed check first
@@ -837,10 +1024,10 @@ pub fn VirtualEditorPanel(
                             <div
                                 class="berry-editor-lines-container"
                                 style="flex: 1; position: relative; height: 100%; cursor: text;"
-                                on:mousedown=move |ev| {
+                                on:mousedown=move |ev: web_sys::MouseEvent| {
                                     // ✅ Calculate click position - MUST add scroll_top for correct line calculation
                                     if let Some(target) = ev.current_target() {
-                                        let element = target.dyn_into::<web_sys::HtmlElement>().unwrap();
+                                        let element: web_sys::HtmlElement = target.dyn_into().unwrap();
                                         let rect = element.get_bounding_client_rect();
                                         let s_top = scroll_top.get_untracked();
 
@@ -910,6 +1097,7 @@ pub fn VirtualEditorPanel(
                                 <textarea
                                     node_ref=input_ref
                                     class="hidden-input"
+                                    autofocus=true
                                     style=move || {
                                         let l = cursor_line.get();
                                         let c = cursor_col.get();
@@ -926,7 +1114,113 @@ pub fn VirtualEditorPanel(
                                             LINE_HEIGHT
                                         )
                                     }
+                                    on:compositionstart=move |_ev| {
+                                        is_composing.set(true);
+                                        composition_text.set(String::new());
+                                        // ✅ Save cursor position at composition start
+                                        let line = cursor_line.get_untracked();
+                                        let col = cursor_col.get_untracked();
+                                        composition_start_pos.set((line, col));
+                                        #[cfg(target_arch = "wasm32")]
+                                        {
+                                            use wasm_bindgen::prelude::*;
+                                            #[wasm_bindgen]
+                                            extern "C" {
+                                                #[wasm_bindgen(js_namespace = console)]
+                                                fn log(s: &str);
+                                            }
+                                            log(&format!("🎌 compositionstart: IME composition started at line={}, col={}", line, col));
+                                        }
+                                    }
+                                    on:compositionupdate=move |ev| {
+                                        // Update preview text during composition
+                                        use leptos::ev::CompositionEvent;
+                                        let comp_ev: &CompositionEvent = ev.as_ref();
+                                        let data = comp_ev.data().unwrap_or_default();
+                                        composition_text.set(data.clone());
+                                        #[cfg(target_arch = "wasm32")]
+                                        {
+                                            use wasm_bindgen::prelude::*;
+                                            #[wasm_bindgen]
+                                            extern "C" {
+                                                #[wasm_bindgen(js_namespace = console)]
+                                                fn log(s: &str);
+                                            }
+                                            log(&format!("🎌 compositionupdate: {:?}", data));
+                                        }
+                                    }
+                                    on:compositionend=move |ev| {
+                                        is_composing.set(false);
+                                        composition_text.set(String::new());
+                                        composition_start_pos.set((0, 0));
+
+                                        // ✅ CRITICAL: Use CompositionEvent.data, NOT textarea.value
+                                        // textarea.value may contain newlines from browser behavior
+                                        use leptos::ev::CompositionEvent;
+                                        let comp_ev: &CompositionEvent = ev.as_ref();
+                                        let val = comp_ev.data().unwrap_or_default();
+
+                                        #[cfg(target_arch = "wasm32")]
+                                        {
+                                            use wasm_bindgen::prelude::*;
+                                            #[wasm_bindgen]
+                                            extern "C" {
+                                                #[wasm_bindgen(js_namespace = console)]
+                                                fn log(s: &str);
+                                            }
+                                            log(&format!("🎌 compositionend data: {:?}", val));
+                                        }
+
+                                        if !val.is_empty() {
+                                            let idx = active_tab_index.get_untracked();
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+                                            let char_count = val.chars().count();
+
+                                            tabs.update(|t| {
+                                                if let Some(tab) = t.get_mut(idx) {
+                                                    let pos = tab.buffer.line_to_char(line) + col;
+
+                                                    // ✅ Record operation for undo
+                                                    tab.undo_history.push(EditOperation::Insert {
+                                                        position: pos,
+                                                        text: val.clone(),
+                                                        cursor_before: (line, col),
+                                                        cursor_after: (line, col + char_count),
+                                                    });
+
+                                                    tab.buffer.insert(pos, &val);
+                                                    tab.is_modified = true;
+                                                    tab.highlight_cache.remove(&line);
+                                                }
+                                            });
+
+                                            // ✅ CRITICAL: Update cursor OUTSIDE tabs.update() for reactivity
+                                            cursor_col.update(|c| *c += char_count);
+                                        }
+
+                                        // Clear textarea after processing
+                                        if let Some(el) = input_ref.get() {
+                                            el.set_value("");
+                                        }
+                                    }
                                     on:input=move |ev| {
+                                        // ✅ CRITICAL FIX: Ignore input events during IME composition
+                                        // This prevents double input for Japanese/Chinese/Korean
+                                        if is_composing.get_untracked() {
+                                            #[cfg(target_arch = "wasm32")]
+                                            {
+                                                use wasm_bindgen::prelude::*;
+                                                #[wasm_bindgen]
+                                                extern "C" {
+                                                    #[wasm_bindgen(js_namespace = console)]
+                                                    fn log(s: &str);
+                                                }
+                                                log("⌨️ Input: IGNORED (composition in progress)");
+                                            }
+                                            return;
+                                        }
+
                                         let val = event_target_value(&ev);
                                         #[cfg(target_arch = "wasm32")]
                                         {
@@ -941,10 +1235,19 @@ pub fn VirtualEditorPanel(
 
                                         if !val.is_empty() {
                                             let idx = active_tab_index.get_untracked();
+                                            let line = cursor_line.get_untracked();
+                                            let col = cursor_col.get_untracked();
+
+                                            // ✅ CRITICAL: Count newlines in the input text
+                                            let newline_count = val.matches('\n').count();
+                                            let last_line_len = if newline_count > 0 {
+                                                val.lines().last().unwrap_or("").chars().count()
+                                            } else {
+                                                val.chars().count()
+                                            };
+
                                             tabs.update(|t| {
                                                 if let Some(tab) = t.get_mut(idx) {
-                                                    let line = cursor_line.get_untracked();
-                                                    let col = cursor_col.get_untracked();
                                                     let pos = tab.buffer.line_to_char(line) + col;
 
                                                     #[cfg(target_arch = "wasm32")]
@@ -955,17 +1258,38 @@ pub fn VirtualEditorPanel(
                                                             #[wasm_bindgen(js_namespace = console)]
                                                             fn log(s: &str);
                                                         }
-                                                        log(&format!("📝 Insert: line={}, col={}, pos={}, val={:?}", line, col, pos, val));
+                                                        log(&format!("📝 Insert: line={}, col={}, pos={}, val={:?}, newlines={}", line, col, pos, val, newline_count));
                                                     }
+
+                                                    // ✅ Record operation for undo
+                                                    let cursor_after = if newline_count > 0 {
+                                                        (line + newline_count, last_line_len)
+                                                    } else {
+                                                        (line, col + last_line_len)
+                                                    };
+
+                                                    tab.undo_history.push(EditOperation::Insert {
+                                                        position: pos,
+                                                        text: val.clone(),
+                                                        cursor_before: (line, col),
+                                                        cursor_after,
+                                                    });
 
                                                     tab.buffer.insert(pos, &val);
                                                     tab.is_modified = true;
-                                                    // Move cursor forward
-                                                    cursor_col.update(|c| *c += val.chars().count());
                                                     // Clear highlight cache for modified line
                                                     tab.highlight_cache.remove(&line);
                                                 }
                                             });
+
+                                            // ✅ CRITICAL: Move cursor forward correctly for multiline text
+                                            if newline_count > 0 {
+                                                cursor_line.update(|l| *l += newline_count);
+                                                cursor_col.set(last_line_len);
+                                            } else {
+                                                cursor_col.update(|c| *c += last_line_len);
+                                            }
+
                                             // Clear textarea
                                             if let Some(el) = input_ref.get() {
                                                 el.set_value("");
@@ -997,6 +1321,62 @@ pub fn VirtualEditorPanel(
                                         l as f64 * LINE_HEIGHT
                                     )
                                 }></div>
+
+                                // ✅ IME Composition Preview Layer (z-index: 31)
+                                // Shows preview text while typing with IME (Japanese/Chinese/Korean)
+                                {move || {
+                                    let comp_text = composition_text.get();
+
+                                    // ✅ Use saved composition start position (not current cursor position)
+                                    let (l, c) = composition_start_pos.get();
+                                    let current_idx = active_tab_index.get();
+
+                                    let x_offset = tabs.with(|t| {
+                                        t.get(current_idx).and_then(|tab| {
+                                            tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
+                                        })
+                                    }).unwrap_or(0.0);
+
+                                    let style = if !comp_text.is_empty() {
+                                        format!(
+                                            "position: absolute; left: {}px; top: {}px; color: #aeafad; background: #1e1e1e; text-decoration: underline; pointer-events: none; z-index: 31; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: {}px; white-space: pre; padding: 0 2px;",
+                                            TEXT_PADDING + x_offset,
+                                            l as f64 * LINE_HEIGHT,
+                                            LINE_HEIGHT
+                                        )
+                                    } else {
+                                        "display: none;".to_string()
+                                    };
+
+                                    view! {
+                                        <span style=style>
+                                            {comp_text}
+                                        </span>
+                                    }
+                                }}
+
+                                // ✅ E2E Test API: Hidden debug element for automated tests
+                                <div
+                                    id="berry-test-api"
+                                    data-testid="buffer-state"
+                                    style="display: none;"
+                                    data-buffer-content=move || {
+                                        tabs.with(|t| {
+                                            t.get(active_tab_index.get()).map(|tab| {
+                                                tab.buffer.to_string()
+                                            }).unwrap_or_default()
+                                        })
+                                    }
+                                    data-cursor-line=move || cursor_line.get().to_string()
+                                    data-cursor-col=move || cursor_col.get().to_string()
+                                    data-line-count=move || {
+                                        tabs.with(|t| {
+                                            t.get(active_tab_index.get()).map(|tab| {
+                                                tab.buffer.len_lines()
+                                            }).unwrap_or(0).to_string()
+                                        })
+                                    }
+                                ></div>
 
                                 // ✅ Visible Lines Viewport (z-index: 10)
                                 {move || {
@@ -1066,15 +1446,16 @@ fn highlight_result_to_html(result: &HighlightResult) -> String {
 /// IntelliJ Darcula syntax highlighting for Rust code (fallback for non-Tauri mode)
 fn syntax_highlight_line(line: &str) -> String {
     let keywords = [
-        "fn", "let", "mut", "const", "static", "impl", "trait", "struct", "enum",
-        "mod", "pub", "use", "crate", "self", "super", "async", "await", "move",
-        "if", "else", "match", "loop", "while", "for", "in", "return", "break",
-        "continue", "as", "ref", "where", "unsafe", "extern", "type", "dyn",
+        "fn", "let", "mut", "const", "static", "impl", "trait", "struct", "enum", "mod", "pub",
+        "use", "crate", "self", "super", "async", "await", "move", "if", "else", "match", "loop",
+        "while", "for", "in", "return", "break", "continue", "as", "ref", "where", "unsafe",
+        "extern", "type", "dyn",
     ];
 
-    let types = ["String", "str", "usize", "isize", "f64", "f32", "i32", "u32",
-                 "i64", "u64", "bool", "Vec", "Option", "Result", "Some", "None",
-                 "Ok", "Err", "Box", "Rc", "Arc", "RefCell", "RwSignal"];
+    let types = [
+        "String", "str", "usize", "isize", "f64", "f32", "i32", "u32", "i64", "u64", "bool", "Vec",
+        "Option", "Result", "Some", "None", "Ok", "Err", "Box", "Rc", "Arc", "RefCell", "RwSignal",
+    ];
 
     let mut result = String::new();
     let mut chars = line.chars().peekable();
@@ -1089,7 +1470,7 @@ fn syntax_highlight_line(line: &str) -> String {
         if !in_string && !in_attribute && ch == '/' && chars.peek() == Some(&'/') {
             in_comment = true;
             flush_word(&mut result, &mut current_word, &keywords, &types);
-            result.push_str("<span style=\"color:#808080;font-style:italic\">"); // Darcula comment color
+            result.push_str("<span style=\"color:#629755;font-style:italic\">"); // IntelliJ Darcula comment color
             result.push_str(&escape_html_char(ch));
             continue;
         }
@@ -1178,22 +1559,41 @@ fn escape_html_char(ch: char) -> String {
 fn flush_word(result: &mut String, current_word: &mut String, keywords: &[&str], types: &[&str]) {
     if !current_word.is_empty() {
         // ✅ IntelliJ Pattern: Check for SCREAMING_SNAKE_CASE constants
-        let is_constant = current_word.len() > 1 &&
-                         current_word.chars().all(|c| c.is_uppercase() || c.is_numeric() || c == '_') &&
-                         current_word.chars().any(|c| c.is_uppercase());
+        let is_constant = current_word.len() > 1
+            && current_word
+                .chars()
+                .all(|c| c.is_uppercase() || c.is_numeric() || c == '_')
+            && current_word.chars().any(|c| c.is_uppercase());
 
         if keywords.contains(&current_word.as_str()) {
             // Darcula keyword color (orange) with bold
-            result.push_str(&format!("<span style=\"color:#cc7832;font-weight:bold\">{}</span>", html_escape(current_word)));
+            result.push_str(&format!(
+                "<span style=\"color:#cc7832;font-weight:bold\">{}</span>",
+                html_escape(current_word)
+            ));
         } else if types.contains(&current_word.as_str()) {
-            // Darcula type color (light purple)
-            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
+            // IntelliJ Darcula type color (light gray)
+            result.push_str(&format!(
+                "<span style=\"color:#A9B7C6\">{}</span>",
+                html_escape(current_word)
+            ));
         } else if is_constant {
             // ✅ IntelliJ Pattern: Darcula constant color (purple) for SCREAMING_SNAKE_CASE
-            result.push_str(&format!("<span style=\"color:#9876aa\">{}</span>", html_escape(current_word)));
-        } else if current_word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-            // User-defined types (light purple)
-            result.push_str(&format!("<span style=\"color:#b9bcd1\">{}</span>", html_escape(current_word)));
+            result.push_str(&format!(
+                "<span style=\"color:#9876aa\">{}</span>",
+                html_escape(current_word)
+            ));
+        } else if current_word
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
+            // User-defined types (IntelliJ Darcula light gray)
+            result.push_str(&format!(
+                "<span style=\"color:#A9B7C6\">{}</span>",
+                html_escape(current_word)
+            ));
         } else {
             // Default text color
             result.push_str(&html_escape(current_word));
