@@ -680,7 +680,20 @@ pub fn VirtualEditorPanel(
             <div
                 class="berry-editor-pane"
                 on:scroll=on_scroll
-                style="position: relative; overflow: auto; height: 100%;"
+                on:mousedown=move |ev| {
+                    // ✅ Check if clicking on background (not scrollbar or other elements)
+                    if let Some(target) = ev.target() {
+                        if let Ok(element) = target.dyn_into::<web_sys::HtmlElement>() {
+                            if element.class_list().contains("berry-editor-pane") {
+                                // Background click - focus textarea
+                                if let Some(el) = input_ref.get() {
+                                    let _ = el.focus();
+                                }
+                            }
+                        }
+                    }
+                }
+                style="position: relative; overflow: auto; height: 100%; background: #2b2b2b; display: flex;"
             >
                 {move || {
                     // ✅ Disposed check first
@@ -781,18 +794,18 @@ pub fn VirtualEditorPanel(
                                 }}
                             </div>
 
-                            // [Layer 2] Text Display Area
-                            <div class="berry-editor-lines-container" style="flex: 1; position: relative; height: 100%;">
-                                // ✅ Real Input Layer (THE TRUTH) - handles all input and click events
-                                <textarea
-                                    node_ref=input_ref
-                                    class="hidden-input"
-                                    style="position: absolute; opacity: 0; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; cursor: text; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent;"
-                                    on:mousedown=move |ev| {
-                                        // ✅ Use offset_x/offset_y for accurate coordinates within this element
-                                        let s_top = scroll_top.get_untracked();
-                                        let rel_x = ev.offset_x() as f64;
-                                        let rel_y = ev.offset_y() as f64 + s_top;
+                            // [Layer 2] Text Display Area (receives click events)
+                            <div
+                                class="berry-editor-lines-container"
+                                style="flex: 1; position: relative; height: 100%; cursor: text;"
+                                on:mousedown=move |ev| {
+                                    // ✅ Calculate click position from client coordinates
+                                    // Since berry-editor-pane is the scroll container, coordinates are already scroll-adjusted
+                                    if let Some(target) = ev.current_target() {
+                                        let element = target.dyn_into::<web_sys::HtmlElement>().unwrap();
+                                        let rect = element.get_bounding_client_rect();
+                                        let rel_x = ev.client_x() as f64 - rect.left();
+                                        let rel_y = ev.client_y() as f64 - rect.top(); // No need to add scroll_top!
 
                                         let line = (rel_y / LINE_HEIGHT).floor() as usize;
                                         let x_in_text = (rel_x - TEXT_PADDING).max(0.0);
@@ -805,8 +818,8 @@ pub fn VirtualEditorPanel(
                                                 #[wasm_bindgen(js_namespace = console)]
                                                 fn log(s: &str);
                                             }
-                                            log(&format!("🖱️ Click: offset=({}, {}), scroll={}, line={}, x_in_text={}",
-                                                rel_x, rel_y, s_top, line, x_in_text));
+                                            log(&format!("🖱️ Click: client=({}, {}), rect=({}, {}), rel=({}, {}), line={}, x_in_text={}",
+                                                ev.client_x(), ev.client_y(), rect.left(), rect.top(), rel_x, rel_y, line, x_in_text));
                                         }
 
                                         tabs.with_untracked(|t| {
@@ -814,7 +827,7 @@ pub fn VirtualEditorPanel(
                                                 let clamped_line = line.min(tab.buffer.len_lines().saturating_sub(1));
                                                 let line_str = tab.buffer.line(clamped_line).unwrap_or_default();
 
-                                                // ✅ Find character position using calculate_x_position logic
+                                                // ✅ Find character position
                                                 let mut current_x = 0.0;
                                                 let mut col = 0;
                                                 for (i, ch) in line_str.chars().enumerate() {
@@ -845,6 +858,32 @@ pub fn VirtualEditorPanel(
                                                 selection_end.set(Some(char_idx));
                                             }
                                         });
+
+                                        // ✅ Focus textarea after setting cursor position
+                                        if let Some(el) = input_ref.get() {
+                                            let _ = el.focus();
+                                        }
+                                    }
+                                }
+                            >
+                                // ✅ Monaco Editor approach: 1x1px textarea positioned at cursor
+                                // This allows IME popups to appear at the correct location
+                                <textarea
+                                    node_ref=input_ref
+                                    class="hidden-input"
+                                    style=move || {
+                                        let l = cursor_line.get();
+                                        let c = cursor_col.get();
+                                        let x_offset = tabs.with(|t| {
+                                            t.get(idx).and_then(|tab| {
+                                                tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
+                                            })
+                                        }).unwrap_or(0.0);
+                                        format!(
+                                            "position: absolute; left: {}px; top: {}px; width: 1px; height: 1px; opacity: 0; z-index: 40; pointer-events: none; resize: none; border: none; outline: none;",
+                                            TEXT_PADDING + x_offset,
+                                            l as f64 * LINE_HEIGHT
+                                        )
                                     }
                                     on:input=move |ev| {
                                         let val = event_target_value(&ev);
