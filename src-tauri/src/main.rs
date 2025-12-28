@@ -32,6 +32,7 @@ fn main() {
         .manage(git_manager)
         .manage(symbol_index)  // ✅ IntelliJ Pro: Manage symbol index state
         .invoke_handler(tauri::generate_handler![
+            fs_commands::get_current_dir,
             fs_commands::read_file,
             fs_commands::read_file_partial,  // ✅ IntelliJ Pro: Lazy file loading
             fs_commands::read_file_chunk,    // ✅ IntelliJ Pro: Streaming large files

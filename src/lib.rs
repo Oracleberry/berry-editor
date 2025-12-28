@@ -8,20 +8,20 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{window, HtmlElement};
 
+pub mod buffer;
 mod components;
 pub mod components_tauri;
+mod cursor;
 pub mod editor;
 pub mod editor_lsp;
 pub mod file_tree;
 pub mod file_tree_tauri;
-mod syntax;
-pub mod buffer;
+mod git;
 mod lsp;
 pub mod lsp_client;
-mod cursor;
 mod minimap;
 mod search;
-mod git;
+mod syntax;
 
 // Common utilities (zero duplication)
 pub mod common;
@@ -31,10 +31,10 @@ pub mod tauri_bindings;
 pub mod tauri_bindings_search;
 
 // ✅ Web Workers for background processing
-pub mod web_worker;
-pub mod syntax_worker;  // ✅ Strategy 1: Non-blocking syntax analysis
-pub mod tree_sitter_engine;  // ✅ Strategy 2: Deep contextual analysis
-// pub mod webgpu_renderer;  // ✅ Strategy 4: GPU-accelerated DOM-free rendering (requires web-sys WebGPU support)
+pub mod syntax_worker; // ✅ Strategy 1: Non-blocking syntax analysis
+pub mod tree_sitter_engine;
+pub mod web_worker; // ✅ Strategy 2: Deep contextual analysis
+                    // pub mod webgpu_renderer;  // ✅ Strategy 4: GPU-accelerated DOM-free rendering (requires web-sys WebGPU support)
 
 // Core modules (Editor Engine)
 pub mod core;
@@ -43,16 +43,16 @@ pub mod core;
 pub mod search_panel;
 
 // Phase 1: High-performance rendering
-pub mod virtual_scroll;
-pub mod debounce;
 pub mod canvas_renderer;
-pub mod highlight_job;  // ✅ IntelliJ Pro: Async syntax highlighting
+pub mod debounce;
+pub mod highlight_job;
+pub mod virtual_scroll; // ✅ IntelliJ Pro: Async syntax highlighting
 
 // Phase 1: LSP UI Integration
-pub mod lsp_ui;
 pub mod completion_widget;
 pub mod diagnostics_panel;
 pub mod hover_tooltip;
+pub mod lsp_ui;
 
 // Phase 5: UX Polishing
 pub mod command_palette;
@@ -92,7 +92,6 @@ pub fn init_berry_editor() {
     // Set up better panic messages in development
     console_error_panic_hook::set_once();
 
-
     // Get the root element
     // In test environments (like jsdom), web_sys::window() might not work properly
     // So we try to get the document directly from JavaScript global scope
@@ -110,22 +109,15 @@ pub fn init_berry_editor() {
         .dyn_into::<HtmlElement>()
         .expect("root element is not an HtmlElement");
 
-
     // Clear loading message
     root.set_inner_html("");
 
-
     // Mount the Leptos app to the specific element
-    // Use Tauri version if available, otherwise use Web version
+    // ✅ UNIFIED: Always use Tauri version for consistent behavior
+    // Desktop and Web now have identical functionality
     let mount_handle = leptos::mount::mount_to(root.clone(), || {
-
-        if tauri_bindings::is_tauri_context() {
-            view! { <EditorAppTauri/> }.into_any()
-        } else {
-            view! { <EditorApp/> }.into_any()
-        }
+        view! { <EditorAppTauri/> }
     });
 
     mount_handle.forget();
-
 }

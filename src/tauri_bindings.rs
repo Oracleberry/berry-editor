@@ -89,8 +89,7 @@ extern "C" {
 #[cfg(target_arch = "wasm32")]
 pub fn is_tauri_context() -> bool {
     if let Some(window) = web_sys::window() {
-        js_sys::Reflect::has(&window, &JsValue::from_str("berry_invoke"))
-            .unwrap_or(false)
+        js_sys::Reflect::has(&window, &JsValue::from_str("berry_invoke")).unwrap_or(false)
     } else {
         false
     }
@@ -106,12 +105,37 @@ pub fn is_tauri_context() -> bool {
 // File Operations
 // ========================================
 
+/// Get current working directory
+#[cfg(target_arch = "wasm32")]
+pub async fn get_current_dir() -> Result<String, String> {
+    if !is_tauri_context() {
+        // Web mode: return a default path
+        return Ok(".".to_string());
+    }
+
+    let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
+        .map_err(|e| format!("Failed to serialize args: {}", e))?;
+
+    let result = tauri_invoke("get_current_dir", args).await;
+
+    serde_wasm_bindgen::from_value(result)
+        .map_err(|e| format!("Failed to deserialize result: {}", e))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn get_current_dir() -> Result<String, String> {
+    Err("get_current_dir only available in WASM context".to_string())
+}
+
 /// Read file contents
 #[cfg(target_arch = "wasm32")]
 pub async fn read_file(path: &str) -> Result<String, String> {
     if !is_tauri_context() {
         // Web mode: return dummy data to prevent infinite retry loops
-        return Ok(format!("// Content of {}\n// (Running in Web Mode - Tauri integration pending)", path));
+        return Ok(format!(
+            "// Content of {}\n// (Running in Web Mode - Tauri integration pending)",
+            path
+        ));
     }
 
     let args = serde_wasm_bindgen::to_value(&serde_json::json!({
@@ -133,7 +157,10 @@ pub async fn read_file(_path: &str) -> Result<String, String> {
 /// ✅ IntelliJ Pro: Read file with partial loading (first N bytes only)
 /// Returns: (content, is_partial, total_size)
 #[cfg(target_arch = "wasm32")]
-pub async fn read_file_partial(path: &str, max_bytes: Option<usize>) -> Result<(String, bool, u64), String> {
+pub async fn read_file_partial(
+    path: &str,
+    max_bytes: Option<usize>,
+) -> Result<(String, bool, u64), String> {
     if !is_tauri_context() {
         return Ok((format!("// Web mode: {}", path), false, 0));
     }
@@ -151,7 +178,10 @@ pub async fn read_file_partial(path: &str, max_bytes: Option<usize>) -> Result<(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn read_file_partial(_path: &str, _max_bytes: Option<usize>) -> Result<(String, bool, u64), String> {
+pub async fn read_file_partial(
+    _path: &str,
+    _max_bytes: Option<usize>,
+) -> Result<(String, bool, u64), String> {
     Err("read_file_partial only available in WASM context".to_string())
 }
 

@@ -18,6 +18,16 @@ pub struct FileMetadata {
     pub is_readonly: bool,
 }
 
+/// Get current working directory
+#[tauri::command]
+pub async fn get_current_dir() -> Result<String, String> {
+    std::env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {}", e))?
+        .to_str()
+        .ok_or_else(|| "Invalid UTF-8 in path".to_string())
+        .map(|s| s.to_string())
+}
+
 /// ⚠️ DEPRECATED: Use read_file_partial instead to avoid memory issues
 /// This command has a 10MB safety limit. For larger files, use read_file_partial.
 #[tauri::command]
