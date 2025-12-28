@@ -138,6 +138,81 @@ fn test_click_beyond_line_end() {
 }
 
 // ========================================
+// CRITICAL: Strict Coordinate Fidelity Test
+// ========================================
+// This is the mathematical foundation - if this breaks, everything breaks
+
+#[wasm_bindgen_test]
+fn test_strict_coordinate_fidelity_all_cases() {
+    let test_cases = vec![
+        // Pure ASCII
+        "Rust",
+        "fn main() {",
+        "let x = 42;",
+
+        // Pure Japanese
+        "こんにちは",
+        "日本語入力",
+        "世界",
+
+        // Mixed content
+        "Hello 世界",
+        "Rust は最高",
+        "🦀 Ferris",
+
+        // Edge cases
+        "\t\tTab",  // Tabs
+        "  spaces",  // Leading spaces
+        "",  // Empty string
+        "a",  // Single char
+    ];
+
+    for text in test_cases {
+        let char_count = text.chars().count();
+        for col in 0..=char_count {
+            let x = calculate_x_position(text, col);
+            let back_col = get_col_from_x(text, x);
+
+            assert_eq!(
+                col, back_col,
+                "❌ COORDINATE FIDELITY BROKEN!\n\
+                 Text: '{}'\n\
+                 Original Col: {}\n\
+                 X Position: {:.2}\n\
+                 Back Col: {}\n\
+                 This breaks cursor positioning!",
+                text, col, x, back_col
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+fn test_emoji_coordinate_fidelity() {
+    let test_cases = vec![
+        "🦀",
+        "🦀Rust",
+        "Rust🦀",
+        "🦀カニ",
+        "Hello👋世界",
+    ];
+
+    for text in test_cases {
+        let char_count = text.chars().count();
+        for col in 0..=char_count {
+            let x = calculate_x_position(text, col);
+            let back_col = get_col_from_x(text, x);
+
+            assert_eq!(
+                col, back_col,
+                "Emoji coordinate fidelity broken at col {} in '{}'",
+                col, text
+            );
+        }
+    }
+}
+
+// ========================================
 // Character Width Accuracy Tests
 // ========================================
 
