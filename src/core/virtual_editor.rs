@@ -223,6 +223,45 @@ pub fn VirtualEditorPanel(
     // LSP client for completions (Rust analyzer) - wrapped in RwSignal to allow multiple accesses
     let lsp_client = RwSignal::new(LspClient::new("rust"));
 
+    // ✅ CRITICAL FIX: Initialize with an empty tab so input works immediately
+    Effect::new_isomorphic(move |_| {
+        if tabs.with_untracked(|t| t.is_empty()) {
+            #[cfg(target_arch = "wasm32")]
+            {
+                use wasm_bindgen::prelude::*;
+                #[wasm_bindgen]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = console)]
+                    fn log(s: &str);
+                }
+                log("🚀 Initializing empty tab for editor startup");
+            }
+
+            let empty_buffer = TextBuffer::from_str("// Welcome to BerryEditor\n// Start typing or open a file...\n");
+            let mut highlighter = SyntaxHighlighter::new();
+            let _ = highlighter.set_language("rust");
+            let line_count = empty_buffer.len_lines();
+            let scroll = VirtualScroll::new(line_count, 800.0, LINE_HEIGHT);
+
+            let initial_tab = EditorTab {
+                path: String::from("Untitled"),
+                buffer: empty_buffer,
+                highlighter,
+                scroll,
+                is_modified: false,
+                selection_start: None,
+                selection_end: None,
+                undo_history: UndoHistory::new(),
+                highlight_cache: HashMap::new(),
+                cursor_line: 0,
+                cursor_col: 0,
+            };
+
+            tabs.update(|t| t.push(initial_tab));
+            active_tab_index.set(0);
+        }
+    });
+
     // ✅ FIX: Direct file selection handling - use .get() to clone and establish dependency
     Effect::new_isomorphic(move |_| {
         // Use .get() to clone the data and establish reactive dependency
@@ -881,7 +920,7 @@ pub fn VirtualEditorPanel(
                                             })
                                         }).unwrap_or(0.0);
                                         format!(
-                                            "position: absolute; left: {}px; top: {}px; width: 10px; height: {}px; opacity: 0; z-index: 40; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent;",
+                                            "position: absolute; left: {}px; top: {}px; width: 200px; height: {}px; opacity: 0; z-index: 999; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent;",
                                             TEXT_PADDING + x_offset,
                                             l as f64 * LINE_HEIGHT,
                                             LINE_HEIGHT
