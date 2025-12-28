@@ -12,9 +12,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-// Constants must match src/core/virtual_editor.rs
-const CHAR_WIDTH_ASCII: f64 = 7.8125;
-const CHAR_WIDTH_WIDE: f64 = 15.625;
+// Constants must match src/core/virtual_editor.rs - MEASURED from browser rendering
+const CHAR_WIDTH_ASCII: f64 = 8.0; // E2E measured
+const CHAR_WIDTH_WIDE: f64 = 13.0; // E2E measured
 const TEXT_PADDING: f64 = 15.0;
 
 /// Calculate x position from column (should match virtual_editor.rs::calculate_x_position)

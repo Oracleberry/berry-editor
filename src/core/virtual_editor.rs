@@ -53,10 +53,10 @@ use web_sys::HtmlElement;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar;
 
-// ✅ Coordinate system constants - synchronized with CSS
+// ✅ Coordinate system constants - synchronized with CSS and MEASURED from actual browser rendering
 const LINE_HEIGHT: f64 = 20.0; // pixels
-const CHAR_WIDTH_ASCII: f64 = 7.8125; // JetBrains Mono 13px (half-width)
-const CHAR_WIDTH_WIDE: f64 = 15.625; // JetBrains Mono 13px (full-width)
+const CHAR_WIDTH_ASCII: f64 = 8.0; // JetBrains Mono 13px (half-width) - E2E measured: 8.0px
+const CHAR_WIDTH_WIDE: f64 = 13.0; // JetBrains Mono 13px (full-width) - E2E measured: 13.0px
 const GUTTER_WIDTH: f64 = 55.0; // Line number gutter width
 const TEXT_PADDING: f64 = 15.0; // Left padding for text content
 

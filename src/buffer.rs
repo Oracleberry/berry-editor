@@ -225,8 +225,9 @@ mod tests {
         // Instead, it shares the internal data structure (copy-on-write)
         let cloned_buffer = buffer.clone();
 
-        assert_eq!(buffer.len_lines(), start_lines);
-        assert_eq!(cloned_buffer.len_lines(), start_lines);
+        // Note: 100000 lines with \n creates 100001 lines (last empty line)
+        assert_eq!(buffer.len_lines(), start_lines + 1);
+        assert_eq!(cloned_buffer.len_lines(), start_lines + 1);
 
         // Verify operations work correctly on large files
         let line_0 = buffer.line(0);
@@ -258,9 +259,10 @@ mod tests {
         let _clone5 = buffer.clone();
 
         // All clones should work correctly
-        assert_eq!(buffer.len_lines(), 10000);
-        assert_eq!(_clone1.len_lines(), 10000);
-        assert_eq!(_clone5.len_lines(), 10000);
+        // Note: 10000 lines with \n creates 10001 lines (last empty line)
+        assert_eq!(buffer.len_lines(), 10001);
+        assert_eq!(_clone1.len_lines(), 10001);
+        assert_eq!(_clone5.len_lines(), 10001);
 
         // Memory should NOT increase by 5x due to Ropey's internal sharing
     }
