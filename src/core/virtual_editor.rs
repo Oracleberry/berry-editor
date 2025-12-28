@@ -53,7 +53,20 @@ use web_sys::HtmlElement;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar;
 
+// ✅ Coordinate system constants - synchronized with CSS
 const LINE_HEIGHT: f64 = 20.0; // pixels
+const CHAR_WIDTH_ASCII: f64 = 7.8125; // JetBrains Mono 13px (half-width)
+const CHAR_WIDTH_WIDE: f64 = 15.625; // JetBrains Mono 13px (full-width)
+const GUTTER_WIDTH: f64 = 55.0; // Line number gutter width
+const TEXT_PADDING: f64 = 15.0; // Left padding for text content
+
+/// ✅ Calculate horizontal position for cursor based on character count
+/// This is the single source of truth for x-position calculation
+fn calculate_x_position(line_str: &str, char_col: usize) -> f64 {
+    line_str.chars().take(char_col).map(|ch| {
+        if ch as u32 > 255 { CHAR_WIDTH_WIDE } else { CHAR_WIDTH_ASCII }
+    }).sum::<f64>()
+}
 
 /// ✅ IntelliJ Pro: Extract word at position for Go to Definition
 /// Returns the identifier/word at the given character position in the line
@@ -667,53 +680,6 @@ pub fn VirtualEditorPanel(
             <div
                 class="berry-editor-pane"
                 on:scroll=on_scroll
-                on:mousedown=move |ev| {
-                    // ✅ Calculate cursor position from click coordinates
-                    if let Some(target) = ev.current_target() {
-                        let element = target.dyn_into::<web_sys::HtmlElement>().unwrap();
-                        let rect = element.get_bounding_client_rect();
-                        let s_top = scroll_top.get_untracked();
-
-                        // Relative coordinates (including scroll)
-                        let rel_x = ev.client_x() as f64 - rect.left();
-                        let rel_y = ev.client_y() as f64 - rect.top() + s_top;
-
-                        let clicked_line = (rel_y / 20.0).floor() as usize;
-                        // Subtract gutter width (55px) to get text position
-                        let x_in_text = (rel_x - 55.0).max(0.0);
-
-                        tabs.with_untracked(|t| {
-                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
-                                let clamped_line = clicked_line.min(tab.buffer.len_lines().saturating_sub(1));
-                                let line_str = tab.buffer.line(clamped_line).unwrap_or_default();
-
-                                // Find character position from x coordinate
-                                let mut current_x = 15.0; // padding-left
-                                let mut col = 0;
-                                for (i, ch) in line_str.chars().enumerate() {
-                                    if ch == '\n' { break; }
-                                    let w = if ch as u32 > 255 { 15.625 } else { 7.8125 };
-                                    if x_in_text < current_x + (w / 2.0) { break; }
-                                    current_x += w;
-                                    col = i + 1;
-                                }
-
-                                cursor_line.set(clamped_line);
-                                cursor_col.set(col);
-
-                                // Initialize selection range
-                                let char_idx = tab.buffer.line_to_char(clamped_line) + col;
-                                selection_start.set(Some(char_idx));
-                                selection_end.set(Some(char_idx));
-
-                                // Focus the textarea
-                                if let Some(el) = input_ref.get() {
-                                    let _ = el.focus();
-                                }
-                            }
-                        });
-                    }
-                }
                 style="position: relative; overflow: auto; height: 100%;"
             >
                 {move || {
@@ -788,31 +754,24 @@ pub fn VirtualEditorPanel(
                     }
 
                     // ✅ Calculate total height
-                    let total_height = line_count_val.max(1) as f64 * 20.0;
-
-                    // ✅ Helper function for character width calculation
-                    let calc_x_offset = |line_str: &str, char_count: usize| -> f64 {
-                        line_str.chars().take(char_count).map(|ch| {
-                            if ch as u32 > 255 { 15.625 } else { 7.8125 }
-                        }).sum::<f64>()
-                    };
+                    let total_height = line_count_val.max(1) as f64 * LINE_HEIGHT;
 
                     // ✅ NEW STRUCTURE: Simple, reactive layout
                     return view! {
                         <div class="berry-editor-scroll-content" style=format!("height: {}px; width: 100%; position: relative; display: flex;", total_height)>
 
-                            // [Layer 1] Line Number Gutter (Sticky)
-                            <div class="berry-editor-gutter" style="width: 55px; background: #313335; border-right: 1px solid #323232; position: sticky; left: 0; z-index: 10; height: 100%;">
+                            // [Layer 1] Line Number Gutter (Sticky, z-index: 20)
+                            <div class="berry-editor-gutter" style=format!("width: {}px; background: #313335; border-right: 1px solid #323232; position: sticky; left: 0; z-index: 20; height: 100%;", GUTTER_WIDTH)>
                                 {move || {
                                     let current_scroll = scroll_top.get();
-                                    let start_line = (current_scroll / 20.0).floor() as usize;
+                                    let start_line = (current_scroll / LINE_HEIGHT).floor() as usize;
                                     let end_line = (start_line + 50).min(line_count_val);
 
                                     view! {
-                                        <div style=format!("position: absolute; top: {}px; width: 100%;", start_line as f64 * 20.0)>
+                                        <div style=format!("position: absolute; top: {}px; width: 100%;", start_line as f64 * LINE_HEIGHT)>
                                             {(start_line..end_line).map(|n| {
                                                 view! {
-                                                    <div style="height: 20px; color: #606366; font-size: 13px; text-align: right; padding-right: 8px; font-family: 'JetBrains Mono', monospace; line-height: 20px;">
+                                                    <div style=format!("height: {}px; color: #606366; font-size: 13px; text-align: right; padding-right: 8px; font-family: 'JetBrains Mono', monospace; line-height: {}px;", LINE_HEIGHT, LINE_HEIGHT)>
                                                         {n + 1}
                                                     </div>
                                                 }
@@ -824,13 +783,82 @@ pub fn VirtualEditorPanel(
 
                             // [Layer 2] Text Display Area
                             <div class="berry-editor-lines-container" style="flex: 1; position: relative; height: 100%;">
-                                // Hidden input for keyboard capture (transparent, full-screen, on top)
+                                // ✅ Real Input Layer (THE TRUTH) - handles all input and click events
                                 <textarea
                                     node_ref=input_ref
                                     class="hidden-input"
-                                    style="position: absolute; opacity: 0; left: 0; top: 0; width: 100%; height: 100%; z-index: 50; cursor: text; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent;"
+                                    style="position: absolute; opacity: 0; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; cursor: text; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent;"
+                                    on:mousedown=move |ev| {
+                                        // ✅ Use offset_x/offset_y for accurate coordinates within this element
+                                        let s_top = scroll_top.get_untracked();
+                                        let rel_x = ev.offset_x() as f64;
+                                        let rel_y = ev.offset_y() as f64 + s_top;
+
+                                        let line = (rel_y / LINE_HEIGHT).floor() as usize;
+                                        let x_in_text = (rel_x - TEXT_PADDING).max(0.0);
+
+                                        #[cfg(target_arch = "wasm32")]
+                                        {
+                                            use wasm_bindgen::prelude::*;
+                                            #[wasm_bindgen]
+                                            extern "C" {
+                                                #[wasm_bindgen(js_namespace = console)]
+                                                fn log(s: &str);
+                                            }
+                                            log(&format!("🖱️ Click: offset=({}, {}), scroll={}, line={}, x_in_text={}",
+                                                rel_x, rel_y, s_top, line, x_in_text));
+                                        }
+
+                                        tabs.with_untracked(|t| {
+                                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                                let clamped_line = line.min(tab.buffer.len_lines().saturating_sub(1));
+                                                let line_str = tab.buffer.line(clamped_line).unwrap_or_default();
+
+                                                // ✅ Find character position using calculate_x_position logic
+                                                let mut current_x = 0.0;
+                                                let mut col = 0;
+                                                for (i, ch) in line_str.chars().enumerate() {
+                                                    if ch == '\n' { break; }
+                                                    let w = if ch as u32 > 255 { CHAR_WIDTH_WIDE } else { CHAR_WIDTH_ASCII };
+                                                    if x_in_text < current_x + (w / 2.0) { break; }
+                                                    current_x += w;
+                                                    col = i + 1;
+                                                }
+
+                                                #[cfg(target_arch = "wasm32")]
+                                                {
+                                                    use wasm_bindgen::prelude::*;
+                                                    #[wasm_bindgen]
+                                                    extern "C" {
+                                                        #[wasm_bindgen(js_namespace = console)]
+                                                        fn log(s: &str);
+                                                    }
+                                                    log(&format!("📍 Cursor: line={}, col={}, line_text={:?}", clamped_line, col, line_str.chars().take(50).collect::<String>()));
+                                                }
+
+                                                cursor_line.set(clamped_line);
+                                                cursor_col.set(col);
+
+                                                // Initialize selection range
+                                                let char_idx = tab.buffer.line_to_char(clamped_line) + col;
+                                                selection_start.set(Some(char_idx));
+                                                selection_end.set(Some(char_idx));
+                                            }
+                                        });
+                                    }
                                     on:input=move |ev| {
                                         let val = event_target_value(&ev);
+                                        #[cfg(target_arch = "wasm32")]
+                                        {
+                                            use wasm_bindgen::prelude::*;
+                                            #[wasm_bindgen]
+                                            extern "C" {
+                                                #[wasm_bindgen(js_namespace = console)]
+                                                fn log(s: &str);
+                                            }
+                                            log(&format!("⌨️ Input: val={:?}", val));
+                                        }
+
                                         if !val.is_empty() {
                                             let idx = active_tab_index.get_untracked();
                                             tabs.update(|t| {
@@ -838,6 +866,18 @@ pub fn VirtualEditorPanel(
                                                     let line = cursor_line.get_untracked();
                                                     let col = cursor_col.get_untracked();
                                                     let pos = tab.buffer.line_to_char(line) + col;
+
+                                                    #[cfg(target_arch = "wasm32")]
+                                                    {
+                                                        use wasm_bindgen::prelude::*;
+                                                        #[wasm_bindgen]
+                                                        extern "C" {
+                                                            #[wasm_bindgen(js_namespace = console)]
+                                                            fn log(s: &str);
+                                                        }
+                                                        log(&format!("📝 Insert: line={}, col={}, pos={}, val={:?}", line, col, pos, val));
+                                                    }
+
                                                     tab.buffer.insert(pos, &val);
                                                     tab.is_modified = true;
                                                     // Move cursor forward
@@ -855,7 +895,7 @@ pub fn VirtualEditorPanel(
                                     on:keydown=handle_keydown
                                 ></textarea>
 
-                                // Virtual Cursor
+                                // ✅ Virtual Cursor Layer (z-index: 30)
                                 <div style=move || {
                                     if cursor_line.is_disposed() || cursor_col.is_disposed() {
                                         return "display: none;".to_string();
@@ -866,21 +906,21 @@ pub fn VirtualEditorPanel(
 
                                     let x_offset = tabs.with(|t| {
                                         t.get(idx).and_then(|tab| {
-                                            tab.buffer.line(l).map(|s| calc_x_offset(&s, c))
+                                            tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
                                         })
                                     }).unwrap_or(0.0);
 
                                     format!(
-                                        "position: absolute; left: {}px; top: {}px; width: 2px; height: 18px; background: #aeafad; z-index: 100; pointer-events: none; animation: blink 1s step-end infinite;",
-                                        15.0 + x_offset,
-                                        l as f64 * 20.0
+                                        "position: absolute; left: {}px; top: {}px; width: 2px; height: 18px; background: #aeafad; z-index: 30; pointer-events: none; animation: blink 1s step-end infinite;",
+                                        TEXT_PADDING + x_offset,
+                                        l as f64 * LINE_HEIGHT
                                     )
                                 }></div>
 
-                                // Visible Lines Viewport
+                                // ✅ Visible Lines Viewport (z-index: 10)
                                 {move || {
                                     let current_scroll = scroll_top.get();
-                                    let start_line = (current_scroll / 20.0).floor() as usize;
+                                    let start_line = (current_scroll / LINE_HEIGHT).floor() as usize;
                                     let end_line = (start_line + 50).min(line_count_val);
 
                                     // ✅ Re-establish dependency on tabs for highlighting
@@ -888,7 +928,7 @@ pub fn VirtualEditorPanel(
                                         let tab = &t[idx];
 
                                         view! {
-                                            <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%;", start_line as f64 * 20.0)>
+                                            <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%; z-index: 10;", start_line as f64 * LINE_HEIGHT)>
                                                 {(start_line..end_line).filter_map(|line_idx| {
                                                     buffer_clone.line(line_idx).map(|line_text| {
                                                         let html = tab.highlight_cache.get(&line_idx).cloned()
@@ -897,7 +937,7 @@ pub fn VirtualEditorPanel(
                                                         view! {
                                                             <div
                                                                 class="berry-editor-line"
-                                                                style="height: 20px; line-height: 20px; padding-left: 15px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px;"
+                                                                style=format!("height: {}px; line-height: {}px; padding-left: {}px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px;", LINE_HEIGHT, LINE_HEIGHT, TEXT_PADDING)
                                                                 inner_html=html
                                                             ></div>
                                                         }
