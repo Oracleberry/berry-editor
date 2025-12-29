@@ -44,9 +44,20 @@ impl SyntaxHighlighter {
     fn rust_keywords() -> Vec<String> {
         vec![
             "fn", "let", "mut", "const", "static", "impl", "trait", "struct",
-            "enum", "mod", "pub", "use", "crate", "self", "super", "async",
+            "enum", "mod", "pub", "use", "crate", "super", "async",
             "await", "move", "if", "else", "match", "loop", "while", "for",
             "in", "return", "break", "continue", "as", "ref", "where", "unsafe",
+            "extern", "type", "dyn",
+        ].iter().map(|s| s.to_string()).collect()
+    }
+
+    fn rust_types() -> Vec<String> {
+        vec![
+            "String", "str", "usize", "isize", "i8", "i16", "i32", "i64", "i128",
+            "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool", "char",
+            "Vec", "Option", "Result", "Some", "None", "Ok", "Err",
+            "Box", "Rc", "Arc", "RefCell", "Cell", "Mutex", "RwLock",
+            "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Self",
         ].iter().map(|s| s.to_string()).collect()
     }
 
@@ -77,6 +88,7 @@ impl SyntaxHighlighter {
     fn highlight_line(&self, line_number: usize, text: &str) -> HighlightResult {
         let mut tokens = Vec::new();
         let keywords = self.keywords.read();
+        let types = Self::rust_types();
 
         let mut chars = text.chars().peekable();
         let mut current_pos = 0;
@@ -100,7 +112,7 @@ impl SyntaxHighlighter {
 
                 tokens.push(HighlightedToken {
                     text: string_content,
-                    color: "#6A8759".to_string(), // IntelliJ Darcula string color
+                    color: "#6A8759".to_string(), // IntelliJ Darcula string color (green)
                     start,
                     end: current_pos,
                 });
@@ -115,11 +127,35 @@ impl SyntaxHighlighter {
 
                 tokens.push(HighlightedToken {
                     text: comment,
-                    color: "#629755".to_string(), // IntelliJ Darcula comment color
+                    color: "#629755".to_string(), // IntelliJ Darcula comment color (green)
                     start,
                     end: current_pos,
                 });
                 break;
+            }
+
+            // Numbers
+            if ch.is_ascii_digit() {
+                let start = current_pos;
+                let mut number = String::new();
+
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_digit() || c == '.' || c == '_' {
+                        chars.next();
+                        current_pos += 1;
+                        number.push(c);
+                    } else {
+                        break;
+                    }
+                }
+
+                tokens.push(HighlightedToken {
+                    text: number,
+                    color: "#6897BB".to_string(), // IntelliJ Darcula number color (blue)
+                    start,
+                    end: current_pos,
+                });
+                continue;
             }
 
             // Identifiers and keywords
@@ -137,12 +173,23 @@ impl SyntaxHighlighter {
                     }
                 }
 
-                let color = if keywords.contains(&word) {
+                // Check what comes after the word to determine context
+                let next_char = chars.peek().copied();
+
+                let color = if word == "self" || word == "Self" {
+                    "#94558D".to_string() // IntelliJ Darcula self color (purple)
+                } else if keywords.contains(&word) {
                     "#CC7832".to_string() // IntelliJ Darcula keyword color (orange)
+                } else if types.contains(&word) {
+                    "#FFC66D".to_string() // IntelliJ Darcula type color (yellow)
+                } else if next_char == Some(':') && chars.clone().nth(1) != Some(':') {
+                    // Field name (followed by : but not ::)
+                    "#9876AA".to_string() // IntelliJ Darcula field color (purple)
                 } else if word.chars().next().unwrap().is_uppercase() {
-                    "#A9B7C6".to_string() // IntelliJ Darcula type color (light gray)
+                    // User-defined types (start with uppercase)
+                    "#FFC66D".to_string() // IntelliJ Darcula type color (yellow)
                 } else {
-                    "#A9B7C6".to_string() // IntelliJ Darcula default text
+                    "#A9B7C6".to_string() // IntelliJ Darcula default text (light gray)
                 };
 
                 tokens.push(HighlightedToken {

@@ -1398,50 +1398,38 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                                     let start_line = (current_scroll / LINE_HEIGHT).floor() as usize;
                                     let end_line = (start_line + 50).min(line_count_val);
 
-                                    // ✅ Re-establish dependency on tabs for highlighting
-                                    tabs.with(|t| {
-                                        let tab = &t[idx];
+                                    // ✅ Force reactivity: get tabs version to trigger re-render on cache updates
+                                    let _ = tabs.get();
 
-                                        view! {
-                                            <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%; z-index: 10;", start_line as f64 * LINE_HEIGHT)>
-                                                {(start_line..end_line).filter_map(|line_idx| {
-                                                    buffer_clone.line(line_idx).map(|line_text| {
-                                                        let raw_html = tab.highlight_cache.get(&line_idx).cloned();
+                                    view! {
+                                        <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%; z-index: 10; user-select: text; cursor: text;", start_line as f64 * LINE_HEIGHT)>
+                                            {(start_line..end_line).filter_map(|line_idx| {
+                                                tabs.with(|t| {
+                                                    if let Some(tab) = t.get(idx) {
+                                                        tab.buffer.line(line_idx).map(|line_text| {
+                                                            let text = line_text.to_string();
+                                                            let cached_html = tab.highlight_cache.get(&line_idx).cloned();
 
-                                                        let final_content = match raw_html {
-                                                            Some(html) if !html.is_empty() => {
-                                                                // ✅ Use cached HTML directly (already properly escaped by highlight_result_to_html)
-                                                                if line_idx < 3 {
-                                                                    web_sys::console::log_1(&format!("✅ Line {} using CACHE", line_idx).into());
-                                                                }
-                                                                html
-                                                            },
-                                                            _ => {
-                                                                // Fallback: syntax_highlight_line
-                                                                if line_idx < 3 {
-                                                                    web_sys::console::log_1(&format!("⚠️ Line {} using FALLBACK", line_idx).into());
-                                                                }
-                                                                syntax_highlight_line(&line_text)
+                                                            let final_html = match cached_html {
+                                                                Some(html) if !html.is_empty() => html,
+                                                                _ => syntax_highlight_line(&text),
+                                                            };
+
+                                                            view! {
+                                                                <div
+                                                                    class="berry-editor-line"
+                                                                    style=format!("height: {}px; line-height: {}px; padding-left: {}px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px; user-select: text;", LINE_HEIGHT, LINE_HEIGHT, TEXT_PADDING)
+                                                                    inner_html=final_html
+                                                                ></div>
                                                             }
-                                                        };
-
-                                                        // Debug: Log first few lines to verify HTML format
-                                                        if line_idx < 3 {
-                                                            web_sys::console::log_1(&format!("🔍 Rendering line {}: {}", line_idx, &final_content[..final_content.len().min(100)]).into());
-                                                        }
-
-                                                        view! {
-                                                            <div
-                                                                class="berry-editor-line"
-                                                                style=format!("height: {}px; line-height: {}px; padding-left: {}px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px;", LINE_HEIGHT, LINE_HEIGHT, TEXT_PADDING)
-                                                                inner_html=final_content
-                                                            ></div>
-                                                        }
-                                                    })
-                                                }).collect::<Vec<_>>()}
-                                            </div>
-                                        }
-                                    })
+                                                        })
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    }
                                 }}
                             </div>
                         </div>
