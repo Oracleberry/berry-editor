@@ -25,16 +25,20 @@
 //!    - 本物のバッファから行データを読み取り、正確な座標を計算
 //!
 //! ### データフロー（明確な一方向）:
-//! ```
-//! User Input → Hidden Textarea
-//!           ↓
-//!      tabs.update() [Reactive Signal]
-//!           ↓
-//!      TextBuffer.insert() → version++ [Real Model]
-//!           ↓
-//!      tabs.with() detects change [Reactive]
-//!           ↓
-//!      Re-render visible lines only [Virtual View]
+//! ```text
+//! User Input -> Hidden Textarea
+//!      |
+//!      v
+//! tabs.update() [Reactive Signal]
+//!      |
+//!      v
+//! TextBuffer.insert() -> version++ [Real Model]
+//!      |
+//!      v
+//! tabs.with() detects change [Reactive]
+//!      |
+//!      v
+//! Re-render visible lines only [Virtual View]
 //! ```
 
 use crate::buffer::TextBuffer;
@@ -54,9 +58,10 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
 // ✅ Coordinate system constants - synchronized with CSS and MEASURED from actual browser rendering
+// ✅ IntelliJ 1:2 Model: 全角文字は半角の正確に2倍の幅
 const LINE_HEIGHT: f64 = 20.0; // pixels
-const CHAR_WIDTH_ASCII: f64 = 8.0; // JetBrains Mono 13px (half-width) - E2E measured: 8.0px
-const CHAR_WIDTH_WIDE: f64 = 13.0; // JetBrains Mono 13px (full-width) - E2E measured: 13.0px
+const CHAR_WIDTH_ASCII: f64 = 7.8125; // JetBrains Mono 13px (half-width) - CSS measured: 7.8125px
+const CHAR_WIDTH_WIDE: f64 = 15.625; // JetBrains Mono 13px (full-width) - 2x ASCII = 15.625px
 const GUTTER_WIDTH: f64 = 55.0; // Line number gutter width
 const TEXT_PADDING: f64 = 15.0; // Left padding for text content
 
@@ -381,13 +386,18 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 let buffer = TextBuffer::from_str(&content);
                 let mut highlighter = SyntaxHighlighter::new();
 
-                // Auto-detect language from file extension
-                if path.ends_with(".rs") {
+                // Auto-detect language from file extension (case-insensitive)
+                let path_lower = path.to_lowercase();
+                if path_lower.ends_with(".rs") {
                     let _ = highlighter.set_language("rust");
-                } else if path.ends_with(".js") || path.ends_with(".ts") {
+                } else if path_lower.ends_with(".js") || path_lower.ends_with(".ts") {
                     let _ = highlighter.set_language("javascript");
-                } else if path.ends_with(".py") {
+                } else if path_lower.ends_with(".py") {
                     let _ = highlighter.set_language("python");
+                } else if path_lower.ends_with(".toml") {
+                    let _ = highlighter.set_language("toml");
+                } else if path_lower.ends_with(".md") || path_lower.ends_with(".markdown") {
+                    let _ = highlighter.set_language("markdown");
                 }
 
                 // Create virtual scroll for this file
@@ -410,9 +420,12 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     cursor_col: 0,
                 };
 
-                // ✅ Add tab and set active index
-                tabs.update(|t| t.push(tab));
-                let new_index = current_tabs.len(); // Use the cloned value from tabs.get()
+                // ✅ 修正: update 内でインデックスまで確定させる
+                let mut new_index = 0;
+                tabs.update(|t| {
+                    t.push(tab);
+                    new_index = t.len().saturating_sub(1);
+                });
 
                 #[cfg(target_arch = "wasm32")]
                 {
@@ -429,6 +442,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     ));
                 }
 
+                // 即座にセットすることで、描画エンジンに「新しいタブがある」と教え込む
                 active_tab_index.set(new_index);
 
                 // ✅ CRITICAL FIX: Reset scroll position for new tab
@@ -1392,14 +1406,35 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                                             <div class="berry-editor-viewport" style=format!("position: absolute; top: {}px; left: 0; width: 100%; z-index: 10;", start_line as f64 * LINE_HEIGHT)>
                                                 {(start_line..end_line).filter_map(|line_idx| {
                                                     buffer_clone.line(line_idx).map(|line_text| {
-                                                        let html = tab.highlight_cache.get(&line_idx).cloned()
-                                                            .unwrap_or_else(|| syntax_highlight_line(&line_text));
+                                                        let raw_html = tab.highlight_cache.get(&line_idx).cloned();
+
+                                                        let final_content = match raw_html {
+                                                            Some(html) if !html.is_empty() => {
+                                                                // ✅ Use cached HTML directly (already properly escaped by highlight_result_to_html)
+                                                                if line_idx < 3 {
+                                                                    web_sys::console::log_1(&format!("✅ Line {} using CACHE", line_idx).into());
+                                                                }
+                                                                html
+                                                            },
+                                                            _ => {
+                                                                // Fallback: syntax_highlight_line
+                                                                if line_idx < 3 {
+                                                                    web_sys::console::log_1(&format!("⚠️ Line {} using FALLBACK", line_idx).into());
+                                                                }
+                                                                syntax_highlight_line(&line_text)
+                                                            }
+                                                        };
+
+                                                        // Debug: Log first few lines to verify HTML format
+                                                        if line_idx < 3 {
+                                                            web_sys::console::log_1(&format!("🔍 Rendering line {}: {}", line_idx, &final_content[..final_content.len().min(100)]).into());
+                                                        }
 
                                                         view! {
                                                             <div
                                                                 class="berry-editor-line"
                                                                 style=format!("height: {}px; line-height: {}px; padding-left: {}px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px;", LINE_HEIGHT, LINE_HEIGHT, TEXT_PADDING)
-                                                                inner_html=html
+                                                                inner_html=final_content
                                                             ></div>
                                                         }
                                                     })
@@ -1524,12 +1559,7 @@ fn syntax_highlight_line(line: &str) -> String {
             current_word.push(ch);
         } else {
             flush_word(&mut result, &mut current_word, &keywords, &types);
-            // Preserve spaces explicitly as &nbsp;
-            if ch == ' ' {
-                result.push_str("&nbsp;");
-            } else {
-                result.push_str(&escape_html_char(ch));
-            }
+            result.push_str(&escape_html_char(ch));
         }
     }
 
@@ -1608,5 +1638,5 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
-        .replace(' ', "&nbsp;")
+    // ✅ No space→nbsp conversion - CSS white-space: pre handles spacing
 }

@@ -18,12 +18,22 @@ pub struct FileMetadata {
     pub is_readonly: bool,
 }
 
-/// Get current working directory
+/// Get current working directory (returns project root, not src-tauri)
 #[tauri::command]
 pub async fn get_current_dir() -> Result<String, String> {
-    std::env::current_dir()
-        .map_err(|e| format!("Failed to get current directory: {}", e))?
-        .to_str()
+    let current = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {}", e))?;
+
+    // If we're in src-tauri, return parent directory (project root)
+    let path = if current.ends_with("src-tauri") {
+        current.parent()
+            .ok_or_else(|| "Cannot get parent directory".to_string())?
+            .to_path_buf()
+    } else {
+        current
+    };
+
+    path.to_str()
         .ok_or_else(|| "Invalid UTF-8 in path".to_string())
         .map(|s| s.to_string())
 }

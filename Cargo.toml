@@ -61,6 +61,9 @@ urlencoding = "2.1"
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+# E2E testing dependencies
+tokio = { version = "1", features = ["full"] }
+fantoccini = "0.21"
 
 [profile.release]
 opt-level = 'z'

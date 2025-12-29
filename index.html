@@ -268,14 +268,25 @@
             -moz-tab-size: 4;
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace !important;
             font-variant-ligatures: none !important; /* ✅ 合字による幅の変化を防止 */
-            letter-spacing: 0px !important; /* ✅ 文字間隔を完全にゼロ */
-            font-feature-settings: "tnum", "calt" 0 !important; /* ✅ タブ数字等幅化 + コンテキスト字形無効化 */
-            font-kerning: none !important; /* ✅ カーニングを無効化して完全等幅を強制 */
-            -webkit-text-size-adjust: none !important; /* ✅ ブラウザの文字サイズ調整機能を無効化 */
-            /* ✅ ただし、Rustが描画する行（子要素）はちゃんと見えるようにする */
             color: #a9b7c6 !important; /* Darculaテキスト色 */
             position: relative;
             z-index: 1;
+            overflow: hidden; /* 行が右に突き抜けるのを防ぐ */
+        }
+
+        /* ✅ ハイライト用spanタグの高さとスペースを強制的に保持 */
+        .berry-editor-line span {
+            display: inline !important; /* inline-blockだとズレる場合がある */
+            white-space: pre !important; /* spanの中でもスペースを保持 */
+            font-family: inherit;
+            font-size: inherit;
+            line-height: inherit;
+            vertical-align: baseline !important; /* ベースライン揃え */
+        }
+
+        /* ✅ Markdown専用のスタイル強制 */
+        .berry-editor-line[data-lang="markdown"] {
+            color: #6a8759; /* Markdownのデフォルト色 */
         }
 
         /* contenteditable のフォーカス枠を消す */

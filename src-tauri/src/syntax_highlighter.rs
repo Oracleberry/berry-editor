@@ -179,8 +179,17 @@ impl SyntaxHighlighter {
             }
 
             // Other characters (operators, whitespace, etc.)
-            chars.next();
+            // ✅ FIX: Output these characters as tokens too!
+            let start = current_pos;
+            let ch_char = chars.next().unwrap();
             current_pos += 1;
+
+            tokens.push(HighlightedToken {
+                text: ch_char.to_string(),
+                color: "#A9B7C6".to_string(), // Default text color
+                start,
+                end: current_pos,
+            });
         }
 
         HighlightResult {

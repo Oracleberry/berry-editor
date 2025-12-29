@@ -189,8 +189,12 @@ mod tests {
         vs.set_scroll_top(200.0);
         let (start, end) = vs.visible_range();
 
-        // Should now start around line 5 (10 - 5 overscan)
-        assert!(start >= 5 && start <= 10);
+        // ✅ Fixed: overscan is actually 10, not 5
+        // first_visible = 200px / 20px = 10
+        // start = 10 - 10 = 0
+        // Should start at line 0 (10 - 10 overscan)
+        assert_eq!(start, 0);
+        assert!(end >= 40 && end <= 50); // 10 + 30 visible + 10 overscan
     }
 
     #[test]

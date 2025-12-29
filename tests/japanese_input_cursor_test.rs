@@ -36,17 +36,13 @@ fn calculate_cursor_position_unicode(
         let ch_width = ch.width().unwrap_or(1) as f64;
         let next_x = current_x + (ch_width * CHAR_WIDTH);
 
-        // Click position is closer to next character
+        // Click position is closer to current character
         if rel_x < (current_x + next_x) / 2.0 {
+            target_char_idx = i;
             break;
         }
         current_x = next_x;
         target_char_idx = i + 1;
-    }
-
-    // ✅ EOL handling: if click is beyond all characters, set to end of line
-    if rel_x >= current_x {
-        target_char_idx = line_str.chars().count();
     }
 
     let clamped_col = target_char_idx.min(line_str.chars().count());
@@ -59,8 +55,10 @@ fn calculate_cursor_x_position(line: &str, cursor_col: usize) -> f64 {
     let mut x_offset = 0.0;
 
     for ch in line.chars().take(cursor_col) {
-        // ブラウザの描画仕様（1:2）に合わせる
-        x_offset += if ch as u32 > 255 { 2.0 } else { 1.0 };
+        // ✅ Use unicode-width to handle combining characters correctly
+        // Combining chars have width 0, CJK have width 2, ASCII have width 1
+        let ch_width = ch.width().unwrap_or(1) as f64;
+        x_offset += ch_width;
     }
 
     // calc(55px + 15px + x_offset * var(--char-width))
@@ -209,8 +207,8 @@ fn test_click_on_ascii_character() {
     let lines = vec!["Hello World".to_string()];
 
     // Click on 'W' (position 6)
-    // X coordinate: GUTTER_WIDTH + PADDING + (6.5 * CHAR_WIDTH) for middle of 'W'
-    let click_x = GUTTER_WIDTH + PADDING + (6.5 * CHAR_WIDTH);
+    // "Hello " = 6 chars, click in left half of 'W' to get position 6
+    let click_x = GUTTER_WIDTH + PADDING + (6.3 * CHAR_WIDTH);
     let rel_y = 0.0; // First line
     let (line, col) = calculate_cursor_position_unicode(click_x, rel_y, 1, &lines);
 
@@ -224,8 +222,8 @@ fn test_click_on_japanese_character() {
 
     // Click on 'に' (position 2)
     // 'こん' = 2 chars * 2 width = 4 char widths
-    // Middle of 'に' = 4 + 1 = 5 char widths
-    let click_x = GUTTER_WIDTH + PADDING + (5.0 * CHAR_WIDTH);
+    // Click in left half of 'に' to get position 2
+    let click_x = GUTTER_WIDTH + PADDING + (4.5 * CHAR_WIDTH);
     let rel_y = 0.0;
     let (line, col) = calculate_cursor_position_unicode(click_x, rel_y, 1, &lines);
 
@@ -239,8 +237,8 @@ fn test_click_on_mixed_text() {
 
     // Click on '世' (position 6)
     // "Hello " = 6 ASCII chars = 6 char widths
-    // Middle of '世' = 6 + 1 = 7 char widths
-    let click_x = GUTTER_WIDTH + PADDING + (7.0 * CHAR_WIDTH);
+    // Click in left half of '世' to get position 6
+    let click_x = GUTTER_WIDTH + PADDING + (6.5 * CHAR_WIDTH);
     let rel_y = 0.0;
     let (line, col) = calculate_cursor_position_unicode(click_x, rel_y, 1, &lines);
 
@@ -267,13 +265,14 @@ fn test_click_between_japanese_characters() {
 
     // Click between 'ん' and 'に'
     // 'こん' = 2 chars * 2 width = 4 char widths
-    // Click at 4.5 widths (between 'ん' and 'に')
-    let click_x = GUTTER_WIDTH + PADDING + (4.5 * CHAR_WIDTH);
+    // Click at 4.0 widths (right at the boundary)
+    // With < comparison, clicking at boundary advances to next char
+    let click_x = GUTTER_WIDTH + PADDING + (4.0 * CHAR_WIDTH);
     let rel_y = 0.0;
     let (line, col) = calculate_cursor_position_unicode(click_x, rel_y, 1, &lines);
 
     assert_eq!(line, 0);
-    assert_eq!(col, 2); // Rounds to position 2 ('に')
+    assert_eq!(col, 2); // Position 2 (before 'に')
 }
 
 // ========================================
@@ -370,8 +369,8 @@ fn test_click_on_japanese_line_with_scroll() {
     let scroll_top = LINE_HEIGHT;
 
     // Click on '本' in "日本語" (character index 1)
-    // '日' = 2 char widths, middle of '本' = 3 char widths
-    let click_x = GUTTER_WIDTH + PADDING + (3.0 * CHAR_WIDTH);
+    // '日' = 2 char widths, click in left half of '本' to get position 1
+    let click_x = GUTTER_WIDTH + PADDING + (2.5 * CHAR_WIDTH);
     let rel_y = 0.0 + scroll_top; // Add scroll offset to get line 1
 
     let (line, col) = calculate_cursor_position_unicode(click_x, rel_y, 3, &lines);
