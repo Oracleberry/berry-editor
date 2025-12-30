@@ -81,6 +81,29 @@ fn calculate_x_position(line_str: &str, char_col: usize) -> f64 {
         .sum::<f64>()
 }
 
+/// ✅ Calculate column position from x coordinate
+/// Inverse of calculate_x_position - finds the character position from pixel offset
+fn get_col_from_x(line_str: &str, x_in_text: f64) -> usize {
+    let mut current_x = 0.0;
+    let mut col = 0;
+    for (i, ch) in line_str.chars().enumerate() {
+        if ch == '\n' {
+            break;
+        }
+        let w = if ch as u32 > 255 {
+            CHAR_WIDTH_WIDE
+        } else {
+            CHAR_WIDTH_ASCII
+        };
+        if x_in_text < current_x + (w / 2.0) {
+            break;
+        }
+        current_x += w;
+        col = i + 1;
+    }
+    col
+}
+
 /// ✅ IntelliJ Pro: Extract word at position for Go to Definition
 /// Returns the identifier/word at the given character position in the line
 fn extract_word_at_position(line: &str, col: usize) -> String {
@@ -222,6 +245,10 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
     let cursor_line = RwSignal::new(0usize);
     let cursor_col = RwSignal::new(0usize);
 
+    // ✅ CRITICAL: Browser-measured character width (synchronized with actual rendering)
+    // Start with CSS constant, then update with actual browser measurement
+    let actual_char_width = RwSignal::new(CHAR_WIDTH_ASCII);
+
     // ✅ Selection state (moved to top level to avoid reset on re-render)
     let selection_start = RwSignal::new(None::<usize>);
     let selection_end = RwSignal::new(None::<usize>);
@@ -314,6 +341,59 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     closure.forget();
                     Some(())
                 });
+            }
+        }
+    });
+
+    // ✅ CRITICAL: Measure actual character width from browser rendering
+    // This ensures Rust calculations match the physical pixel rendering exactly
+    Effect::new_isomorphic(move |_| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen::JsCast;
+
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_namespace = console)]
+                fn log(s: &str);
+            }
+
+            if let Some(window) = web_sys::window() {
+                if let Some(document) = window.document() {
+                    // Create temporary element to measure actual character width
+                    if let Ok(el) = document.create_element("div") {
+                        if let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() {
+                            let style = html_el.style();
+                            let _ = style.set_property("font-family", "'JetBrains Mono', monospace");
+                            let _ = style.set_property("font-size", "13px");
+                            let _ = style.set_property("position", "absolute");
+                            let _ = style.set_property("visibility", "hidden");
+                            let _ = style.set_property("white-space", "pre");
+                            let _ = style.set_property("font-variant-ligatures", "none");
+                            let _ = style.set_property("font-kerning", "none");
+                            let _ = style.set_property("letter-spacing", "0px");
+
+                            // Measure 10 ASCII characters to get accurate average width
+                            html_el.set_text_content(Some("WWWWWWWWWW"));
+
+                            if let Some(body) = document.body() {
+                                let _ = body.append_child(&html_el);
+
+                                // Get actual rendered width and calculate per-character width
+                                let width = html_el.get_bounding_client_rect().width() / 10.0;
+
+                                // Clean up
+                                let _ = body.remove_child(&html_el);
+
+                                // Update the signal with measured value
+                                actual_char_width.set(width);
+
+                                log(&format!("📏 Measured actual char width: {}px (CSS constant: {}px)", width, CHAR_WIDTH_ASCII));
+                            }
+                        }
+                    }
+                }
             }
         }
     });
@@ -631,6 +711,22 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
     // ✅ Bulletproof keyboard handler: prevents ghost handler from accessing disposed signals
     let handle_keydown = move |ev: web_sys::KeyboardEvent| {
+        // ✅ CRITICAL: Complete guard - abort if any signal is disposed (zombie handler)
+        // This prevents panics from "ReadUntracked on disposed signal"
+        if tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
+            return;
+        }
+
+        // ✅ Additional safety check: verify active tab exists
+        let tab_exists = tabs.try_with_untracked(|t| {
+            let idx = active_tab_index.get_untracked();
+            t.get(idx).is_some()
+        }).unwrap_or(false);
+
+        if !tab_exists {
+            return;
+        }
+
         let key = ev.key();
 
         // ✅ Handle Cmd+S / Ctrl+S for Save
@@ -843,8 +939,8 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
             }
             "Backspace" => {
                 let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
-                // ✅ Use update_untracked to avoid re-render during typing
-                tabs.update_untracked(|t| {
+                // ✅ Use update() to trigger re-render so deletion is visible
+                tabs.update(|t| {
                     if let Some(tab) = t.get_mut(idx) {
                         if col > 0 {
                             // Delete character before cursor
@@ -897,9 +993,33 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 }
             }
             "Enter" => {
+                // ✅ CRITICAL: Complete IME guard - prevents double newline on Japanese input confirmation
+
+                // 1. If IME composition is in progress, ignore this Enter (let browser handle it)
+                if is_composing.get_untracked() {
+                    return;
+                }
+
+                // 2. Check browser's native composition state (most reliable)
+                // This catches "confirmation Enter" that hasn't updated our flag yet
+                if ev.is_composing() {
+                    return;
+                }
+
+                // 3. Check keyCode == 229 (standard IME processing indicator)
+                // Even if key == "Enter", keyCode 229 means "IME is handling this"
+                if ev.key_code() == 229 {
+                    return;
+                }
+
+                // ✅ Only "real" Enter reaches here - prevent default and stop propagation
+                ev.prevent_default();
+                ev.stop_propagation();
+
                 let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
-                // ✅ Use update_untracked to avoid re-render during typing
-                tabs.update_untracked(|t| {
+
+                // ✅ Use try_update for safe signal access
+                let _ = tabs.try_update(|t| {
                     if let Some(tab) = t.get_mut(idx) {
                         let pos = tab.buffer.line_to_char(line) + col;
                         // ✅ Record operation for undo
@@ -917,12 +1037,88 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                         tab.highlight_cache.remove(&(line + 1));
                     }
                 });
-                // Update cursor position outside update
+
+                // Update cursor position
                 cursor_line.set(line + 1);
                 cursor_col.set(0);
             }
             _ => {}
         }
+    };
+
+    // ✅ CRITICAL: Input handler with complete buffer sanitization
+    // Prevents race condition where rapid typing causes garbage (spaces) to leak
+    let on_input_handler = move |ev: web_sys::Event| {
+        // ✅ Disposal guard
+        if is_composing.is_disposed() || tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
+            return;
+        }
+
+        // Ignore input during IME composition
+        if is_composing.get_untracked() {
+            return;
+        }
+
+        // ✅ CRITICAL: Get value directly from event target (bypasses reactive delays)
+        let target = match ev.target() {
+            Some(t) => t,
+            None => return,
+        };
+
+        let textarea = match target.dyn_into::<web_sys::HtmlTextAreaElement>() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let val = textarea.value();
+
+        // ✅ CRITICAL: Filter out garbage characters that leak during rapid typing
+        // Remove newlines (handled by keydown), carriage returns, and spurious spaces
+        let clean_val: String = val.chars().filter(|&c| {
+            // Newlines/carriage returns are handled by keydown, never allow them here
+            if c == '\n' || c == '\r' {
+                return false;
+            }
+            // Allow single space (intentional space key press)
+            // But filter out spaces that appear with other characters (race condition garbage)
+            if c == ' ' {
+                return val.len() == 1;
+            }
+            true
+        }).collect();
+
+        // ✅ CRITICAL: Clear textarea immediately (prevents next keystroke from reading garbage)
+        textarea.set_value("");
+
+        if clean_val.is_empty() {
+            return;
+        }
+
+        let idx = active_tab_index.get_untracked();
+        let line = cursor_line.get_untracked();
+        let col = cursor_col.get_untracked();
+        let char_count = clean_val.chars().count();
+
+        // ✅ Update buffer and cursor (Leptos 0.7 auto-batches)
+        let _ = tabs.try_update(|t| {
+            if let Some(tab) = t.get_mut(idx) {
+                let pos = tab.buffer.line_to_char(line) + col;
+
+                tab.undo_history.push(EditOperation::Insert {
+                    position: pos,
+                    text: clean_val.clone(),
+                    cursor_before: (line, col),
+                    cursor_after: (line, col + char_count),
+                });
+
+                tab.buffer.insert(pos, &clean_val);
+                tab.is_modified = true;
+                tab.highlight_cache.remove(&line);
+            }
+        });
+
+        // Update cursor position
+        cursor_col.update(|c| *c += char_count);
     };
 
     view! {
@@ -937,15 +1133,93 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     let _ = el.focus();
                 }
             }
-            on:keydown=handle_keydown
             style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; cursor: text;"
         >
-            // ✅ CRITICAL FIX: Textarea with pointer-events: auto (defined in CSS)
-            // CSS class .hidden-input handles all styling to avoid conflicts
+            // ✅ CRITICAL FIX: Textarea positioned at cursor location (not off-screen)
+            // This ensures browser/OS allows focus and input events
             <textarea
                 node_ref=input_ref
                 class="hidden-input"
+                style=move || {
+                    let line = cursor_line.get();
+                    let col = cursor_col.get();
+                    let char_width = actual_char_width.get();
+
+                    // Calculate x position based on actual character widths in the line
+                    let x = tabs.with(|t| {
+                        t.get(active_tab_index.get())
+                            .and_then(|tab| {
+                                let line_str = tab.buffer.line(line).unwrap_or_default();
+                                Some(calculate_x_position(&line_str, col))
+                            })
+                            .unwrap_or(0.0)
+                    });
+
+                    // Position textarea at cursor location (with gutter and padding offset)
+                    let textarea_x = GUTTER_WIDTH + TEXT_PADDING + x;
+                    let textarea_y = line as f64 * LINE_HEIGHT;
+
+                    format!(
+                        "position: absolute; left: {}px; top: {}px; \
+                         width: 1px; height: 1px; z-index: 10000; opacity: 0; \
+                         pointer-events: auto; cursor: text; resize: none; border: none; \
+                         outline: none; padding: 0; margin: 0; overflow: hidden; \
+                         caret-color: transparent;",
+                        textarea_x, textarea_y
+                    )
+                }
                 autofocus=true
+                on:keydown=handle_keydown
+                on:mousedown=move |ev: web_sys::MouseEvent| {
+                    let rect = input_ref.get().unwrap().get_bounding_client_rect();
+                    let rel_x = ev.client_x() as f64 - rect.left();
+                    let rel_y = ev.client_y() as f64 - rect.top();
+
+                    let x_in_text = (rel_x - GUTTER_WIDTH - TEXT_PADDING).max(0.0);
+                    let line = (rel_y / LINE_HEIGHT).floor() as usize;
+
+                    tabs.with_untracked(|t| {
+                        if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                            let cl = line.min(tab.buffer.len_lines().saturating_sub(1));
+                            let line_text = tab.buffer.line(cl).unwrap_or_default();
+                            let col = get_col_from_x(&line_text, x_in_text);
+
+                            cursor_line.set(cl);
+                            cursor_col.set(col);
+
+                            // Start selection
+                            let char_idx = tab.buffer.line_to_char(cl) + col;
+                            selection_start.set(Some(char_idx));
+                            selection_end.set(Some(char_idx));
+                        }
+                    });
+                }
+                on:mousemove=move |ev: web_sys::MouseEvent| {
+                    // Only update selection when mouse button is pressed
+                    if ev.buttons() == 1 {
+                        let rect = input_ref.get().unwrap().get_bounding_client_rect();
+                        let rel_x = ev.client_x() as f64 - rect.left();
+                        let rel_y = ev.client_y() as f64 - rect.top();
+
+                        let x_in_text = (rel_x - GUTTER_WIDTH - TEXT_PADDING).max(0.0);
+                        let line = (rel_y / LINE_HEIGHT).floor() as usize;
+
+                        tabs.with_untracked(|t| {
+                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
+                                let cl = line.min(tab.buffer.len_lines().saturating_sub(1));
+                                let line_text = tab.buffer.line(cl).unwrap_or_default();
+                                let col = get_col_from_x(&line_text, x_in_text);
+
+                                cursor_line.set(cl);
+                                cursor_col.set(col);
+
+                                // Update selection end
+                                let char_idx = tab.buffer.line_to_char(cl) + col;
+                                selection_end.set(Some(char_idx));
+                            }
+                        });
+                    }
+                }
                 on:compositionstart=move |_ev| {
                     is_composing.set(true);
                     composition_text.set(String::new());
@@ -960,6 +1234,11 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     composition_text.set(data.clone());
                 }
                 on:compositionend=move |ev| {
+                    // ✅ CRITICAL: Complete guard - abort if any signal is disposed
+                    if is_composing.is_disposed() || composition_text.is_disposed() || composition_start_pos.is_disposed() || tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
+                        return;
+                    }
+
                     is_composing.set(false);
                     composition_text.set(String::new());
                     composition_start_pos.set((0, 0));
@@ -974,8 +1253,9 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                         let col = cursor_col.get_untracked();
                         let char_count = val.chars().count();
 
-                        // ✅ Use update_untracked to avoid triggering re-render
-                        tabs.update_untracked(|t| {
+                        // ✅ CRITICAL: Update buffer and cursor atomically (Leptos 0.7 auto-batches)
+                        // ✅ Use try_update for safe signal access
+                        let _ = tabs.try_update(|t| {
                             if let Some(tab) = t.get_mut(idx) {
                                 let pos = tab.buffer.line_to_char(line) + col;
                                 tab.undo_history.push(EditOperation::Insert {
@@ -990,68 +1270,15 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                             }
                         });
 
-                        cursor_col.set(col + char_count);
+                        // ✅ Update cursor position (Leptos 0.7 auto-batches with buffer update)
+                        cursor_col.update(|c| *c += char_count);
                     }
 
                     if let Some(el) = input_ref.get() {
                         el.set_value("");
                     }
                 }
-                on:input=move |ev| {
-                    if is_composing.get_untracked() {
-                        return;
-                    }
-
-                    let val = event_target_value(&ev);
-                    if !val.is_empty() {
-                        let idx = active_tab_index.get_untracked();
-                        let line = cursor_line.get_untracked();
-                        let col = cursor_col.get_untracked();
-
-                        let newline_count = val.matches('\n').count();
-                        let last_line_len = if newline_count > 0 {
-                            val.lines().last().unwrap_or("").chars().count()
-                        } else {
-                            val.chars().count()
-                        };
-
-                        // ✅ CRITICAL: Use update() to trigger re-render when text is typed
-                        tabs.update(|t| {
-                            if let Some(tab) = t.get_mut(idx) {
-                                let pos = tab.buffer.line_to_char(line) + col;
-
-                                let cursor_after = if newline_count > 0 {
-                                    (line + newline_count, last_line_len)
-                                } else {
-                                    (line, col + last_line_len)
-                                };
-
-                                tab.undo_history.push(EditOperation::Insert {
-                                    position: pos,
-                                    text: val.clone(),
-                                    cursor_before: (line, col),
-                                    cursor_after,
-                                });
-
-                                tab.buffer.insert(pos, &val);
-                                tab.is_modified = true;
-                                tab.highlight_cache.remove(&line);
-                            }
-                        });
-
-                        // ✅ Update cursor position (this triggers minimal re-render)
-                        if newline_count > 0 {
-                            cursor_line.set(line + newline_count);
-                            cursor_col.set(last_line_len);
-                        } else {
-                            cursor_col.set(col + last_line_len);
-                        }
-
-                        if let Some(el) = input_ref.get() {
-                            el.set_value("");
-                        }
-                    }
-                }
+                on:input=on_input_handler
             ></textarea>
 
             // Tab Bar

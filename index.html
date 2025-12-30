@@ -228,18 +228,20 @@
             opacity: 0.01;
             pointer-events: auto !important;
             z-index: 10000;
-            width: 1px;
-            height: 1px;
-            left: -9999px;
-            top: 0;
+            width: 1px !important;
+            height: 1px !important;
             resize: none;
-            border: none;
-            outline: none;
-            padding: 0;
-            margin: 0;
+            border: none !important;
+            outline: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
             background: transparent;
             color: transparent;
             caret-color: transparent;
+            /* ✅ IME候補ウィンドウを強制的に左寄せにするための設定 */
+            text-indent: -999px;
+            line-height: 1px !important;
+            overflow: hidden;
         }
 
         .berry-editor-content {
@@ -292,10 +294,13 @@
         .berry-editor-line span {
             display: inline !important; /* inline-blockだとズレる場合がある */
             white-space: pre !important; /* spanの中でもスペースを保持 */
-            font-family: inherit;
+            font-family: 'JetBrains Mono', monospace !important; /* ✅ 強制等幅 */
             font-size: inherit;
             line-height: inherit;
             vertical-align: baseline !important; /* ベースライン揃え */
+            font-variant-ligatures: none !important; /* ✅ 合字禁止 */
+            font-kerning: none !important; /* ✅ カーニング禁止 */
+            letter-spacing: 0px !important; /* ✅ 文字間隔固定 */
         }
 
         /* ✅ Markdown専用のスタイル強制 */
