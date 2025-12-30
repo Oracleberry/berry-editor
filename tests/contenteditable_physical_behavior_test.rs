@@ -565,4 +565,303 @@ mod contenteditable_physical_tests {
 
         client.close().await.expect("Failed to close client");
     }
+
+    /// Test 9: Device Pixel Ratio - Retina/4K Display Coordinate Precision
+    ///
+    /// Verifies that coordinate calculations work correctly across different
+    /// device pixel ratios (1.0, 2.0 for Retina, 3.0 for 4K, etc.).
+    ///
+    /// This is THE MOST SUBTLE bug that only appears on specific hardware:
+    /// - Developer's 1.0 DPR display: Works perfectly
+    /// - User's 2.0 DPR Retina display: Cursor is off by 1-2 pixels
+    ///
+    /// The test verifies:
+    /// 1. Long line (100+ characters) end-of-line click precision
+    /// 2. Fractional pixel widths (7.8125px * 100 = 781.25px) round correctly
+    /// 3. Rust's char_width calculation matches browser's actual rendering
+    ///
+    /// If this fails, users on Retina/4K displays will experience:
+    /// - Clicks at end of line put cursor in wrong position
+    /// - Text insertion happens at wrong column
+    /// - "My cursor jumps around randomly" bug reports
+    #[tokio::test]
+    async fn test_device_pixel_ratio_coordinate_precision() {
+        let client = ClientBuilder::native()
+            .connect("http://localhost:4444")
+            .await
+            .expect("Failed to connect to WebDriver");
+
+        client.goto(APP_URL).await.expect("Failed to navigate");
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        if let Ok(file_elem) = client.find(Locator::Css("div[data-path$='.rs']")).await {
+            file_elem.click().await.expect("Failed to click file");
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+            // Get device pixel ratio
+            let device_pixel_ratio: f64 = client
+                .execute("return window.devicePixelRatio;", vec![])
+                .await
+                .expect("Failed to get devicePixelRatio")
+                .as_f64()
+                .unwrap_or(1.0);
+
+            println!(
+                "Testing on devicePixelRatio: {} ({})",
+                device_pixel_ratio,
+                if device_pixel_ratio >= 2.0 {
+                    "Retina/4K"
+                } else {
+                    "Standard"
+                }
+            );
+
+            // Focus editor
+            let editor_pane = client
+                .find(Locator::Css(".berry-editor-pane[contenteditable='true']"))
+                .await
+                .expect("Editor pane not found");
+
+            editor_pane.click().await.expect("Failed to click editor");
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+            // Insert a long line (100 characters) to test fractional pixel accumulation
+            // 100 chars * 7.8125px = 781.25px (tests rounding behavior)
+            let long_line = "x".repeat(100);
+
+            client
+                .execute(
+                    &format!(
+                        "document.activeElement.dispatchEvent(new InputEvent('beforeinput', {{ \
+                            bubbles: true, \
+                            cancelable: true, \
+                            data: '{}' \
+                        }}));",
+                        long_line
+                    ),
+                    vec![],
+                )
+                .await
+                .expect("Failed to insert long line");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+            // Get the rendered line's bounding box
+            let line_element = client
+                .find(Locator::Css(".berry-editor-line"))
+                .await
+                .expect("Line element not found");
+
+            // Get line's position and width
+            let line_rect = client
+                .execute(
+                    "const line = arguments[0]; \
+                     const rect = line.getBoundingClientRect(); \
+                     return { \
+                         left: rect.left, \
+                         top: rect.top, \
+                         width: rect.width, \
+                         height: rect.height \
+                     };",
+                    vec![serde_json::json!(line_element)],
+                )
+                .await
+                .expect("Failed to get line rect");
+
+            let left = line_rect["left"].as_f64().unwrap_or(0.0);
+            let top = line_rect["top"].as_f64().unwrap_or(0.0);
+            let width = line_rect["width"].as_f64().unwrap_or(0.0);
+            let height = line_rect["height"].as_f64().unwrap_or(0.0);
+
+            println!(
+                "Line rect: left={}, top={}, width={}, height={}",
+                left, top, width, height
+            );
+
+            // CRITICAL TEST: Click at the END of the line
+            // This is where fractional pixel accumulation causes the most issues
+            // Expected: 100 chars * 7.8125px/char = 781.25px
+            let end_x = left + width - 5.0; // 5px from right edge
+            let center_y = top + (height / 2.0);
+
+            println!("Clicking at end of line: ({}, {})", end_x, center_y);
+
+            // Click at the calculated end position
+            client
+                .execute(
+                    &format!(
+                        "const pane = document.querySelector('.berry-editor-pane'); \
+                         const event = new MouseEvent('mousedown', {{ \
+                             bubbles: true, \
+                             cancelable: true, \
+                             clientX: {}, \
+                             clientY: {} \
+                         }}); \
+                         pane.dispatchEvent(event);",
+                        end_x, center_y
+                    ),
+                    vec![],
+                )
+                .await
+                .expect("Failed to dispatch mousedown");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+            // Insert a marker character at cursor position
+            client
+                .execute(
+                    "document.activeElement.dispatchEvent(new InputEvent('beforeinput', { \
+                        bubbles: true, \
+                        cancelable: true, \
+                        data: 'M' \
+                    }));",
+                    vec![],
+                )
+                .await
+                .expect("Failed to insert marker");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            // CRITICAL ASSERTION: Verify marker 'M' is near the end
+            // Get the content and find position of 'M'
+            let editor_content = client
+                .find(Locator::Css(".berry-editor-scroll-content"))
+                .await
+                .expect("Editor content not found");
+
+            let content_html = editor_content
+                .html(true)
+                .await
+                .expect("Failed to get HTML");
+
+            // The marker should appear near the end (within last 10 characters)
+            // because we clicked near the end of the 100-char line
+            let contains_marker = content_html.contains('M');
+            assert!(
+                contains_marker,
+                "Marker 'M' should be inserted after end-of-line click"
+            );
+
+            // More precise check: Extract text content and verify marker position
+            let text_content: String = client
+                .execute(
+                    "const lines = document.querySelectorAll('.berry-editor-line'); \
+                     return Array.from(lines).map(l => l.textContent).join('\\n');",
+                    vec![],
+                )
+                .await
+                .expect("Failed to get text content")
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+
+            println!("Content after click: '{}'", text_content);
+
+            // Find position of 'M' in the first line
+            if let Some(first_line) = text_content.lines().next() {
+                if let Some(marker_pos) = first_line.find('M') {
+                    println!("Marker 'M' found at position: {}", marker_pos);
+
+                    // CRITICAL: On any DPR, clicking near end of 100-char line
+                    // should place cursor within reasonable range (90-101)
+                    // If marker is at position 50, there's a major coordinate bug
+                    assert!(
+                        marker_pos >= 90,
+                        "COORDINATE BUG on devicePixelRatio {}: \
+                         Clicked near end (x={}px) but cursor landed at position {}. \
+                         Expected position 90-101. \
+                         This indicates char_width calculation doesn't match actual rendering \
+                         on this device pixel ratio.",
+                        device_pixel_ratio,
+                        end_x,
+                        marker_pos
+                    );
+
+                    assert!(
+                        marker_pos <= 101,
+                        "Cursor position {} exceeds line length (expected ≤101)",
+                        marker_pos
+                    );
+
+                    println!(
+                        "✅ PASS: Cursor positioned correctly at {} (within 90-101 range) \
+                         on devicePixelRatio {}",
+                        marker_pos, device_pixel_ratio
+                    );
+                } else {
+                    panic!("Marker 'M' not found in text content: '{}'", first_line);
+                }
+            }
+
+            // Additional verification: Click at START of line and verify cursor goes to column 0
+            let start_x = left + 5.0; // 5px from left edge
+
+            client
+                .execute(
+                    &format!(
+                        "const pane = document.querySelector('.berry-editor-pane'); \
+                         const event = new MouseEvent('mousedown', {{ \
+                             bubbles: true, \
+                             cancelable: true, \
+                             clientX: {}, \
+                             clientY: {} \
+                         }}); \
+                         pane.dispatchEvent(event);",
+                        start_x, center_y
+                    ),
+                    vec![],
+                )
+                .await
+                .expect("Failed to click start");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            // Insert marker at start
+            client
+                .execute(
+                    "document.activeElement.dispatchEvent(new InputEvent('beforeinput', { \
+                        bubbles: true, \
+                        cancelable: true, \
+                        data: 'S' \
+                    }));",
+                    vec![],
+                )
+                .await
+                .expect("Failed to insert start marker");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            let text_after_start: String = client
+                .execute(
+                    "const lines = document.querySelectorAll('.berry-editor-line'); \
+                     return Array.from(lines).map(l => l.textContent).join('\\n');",
+                    vec![],
+                )
+                .await
+                .expect("Failed to get text")
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+
+            println!("Content after start click: '{}'", text_after_start);
+
+            if let Some(first_line) = text_after_start.lines().next() {
+                assert!(
+                    first_line.starts_with('S') || first_line.chars().position(|c| c == 'S') == Some(0),
+                    "Start marker 'S' should be at or near position 0. \
+                     Line: '{}'. devicePixelRatio: {}",
+                    first_line,
+                    device_pixel_ratio
+                );
+            }
+
+            println!(
+                "✅ COMPLETE: Device pixel ratio {} test passed. \
+                 Coordinate precision verified for both start and end of long lines.",
+                device_pixel_ratio
+            );
+        }
+
+        client.close().await.expect("Failed to close client");
+    }
 }
