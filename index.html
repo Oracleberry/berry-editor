@@ -225,6 +225,9 @@
         /* ✅ ContentEditable: Complete input control in Rust */
         .berry-editor-pane[contenteditable="true"] {
             outline: none !important;
+            /* ✅ CRITICAL: Positioning context for child layers */
+            position: relative;
+            overflow: auto;
             /* ✅ CRITICAL: Force block display to prevent browser from auto-creating <div><br></div> */
             display: block !important;
             /* ✅ CRITICAL: Preserve all whitespace exactly as-is (no auto line-breaking) */
@@ -244,9 +247,11 @@
 
         /* ✅ Rendering layer: Completely isolated from browser's ContentEditable control */
         .berry-editor-scroll-content {
+            /* ✅ CRITICAL: Transparent to all mouse/touch events - clicks pass through to parent */
             pointer-events: none !important; /* Clicks are handled by parent .berry-editor-pane */
             user-select: none !important; /* Browser must not select text in this layer */
             background: transparent !important; /* ✅ Don't block input with opaque background */
+            position: relative; /* ✅ Positioning context for child elements */
             z-index: 1;
             /* contenteditable="false" in HTML prevents browser from manipulating this DOM */
         }

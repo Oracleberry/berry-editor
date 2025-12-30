@@ -1219,7 +1219,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                     // ❌ DO NOT call ev.prevent_default() - it kills browser's native text selection!
                 }
-                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex; caret-color: transparent; outline: none; user-select: text;"
+                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: block; caret-color: transparent; outline: none; user-select: text;"
             >
                 {move || {
                     // ✅ Disposed check first
@@ -1297,7 +1297,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                     // ✅ NEW STRUCTURE: Simple, reactive layout
                     return view! {
-                        <div class="berry-editor-scroll-content" contenteditable="false" style=format!("height: {}px; width: 100%; position: relative; display: flex;", total_height)>
+                        <div class="berry-editor-scroll-content" contenteditable="false" style=format!("height: {}px; width: 100%; position: relative; display: flex; pointer-events: none;", total_height)>
 
                             // [Layer 1] Line Number Gutter (Sticky, z-index: 20)
                             <div class="berry-editor-gutter" style=format!("width: {}px; background: #313335; border-right: 1px solid #323232; position: sticky; left: 0; z-index: 20; height: 100%;", GUTTER_WIDTH)>
