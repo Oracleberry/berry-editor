@@ -228,7 +228,9 @@
             white-space: pre;
             /* 本物のカーソルを隠し、Rustのバーチャルカーソルを主役にする */
             caret-color: transparent !important;
-            user-select: text; /* Allow browser's native text selection */
+            user-select: text !important; /* Allow browser's native text selection */
+            cursor: text; /* ✅ Show text cursor to indicate this is an input area */
+            min-height: 100%; /* ✅ Ensure element has size for browser to recognize as focusable */
             /* ✅ Prevent browser from inserting rich formatting (only plain text) */
             -webkit-user-modify: read-write-plaintext-only !important;
             /* ✅ Strict line/word breaking to prevent browser auto-formatting */
@@ -243,6 +245,7 @@
         .berry-editor-scroll-content {
             pointer-events: none !important; /* Clicks are handled by parent .berry-editor-pane */
             user-select: none !important; /* Browser must not select text in this layer */
+            background: transparent !important; /* ✅ Don't block input with opaque background */
             z-index: 1;
             /* contenteditable="false" in HTML prevents browser from manipulating this DOM */
         }

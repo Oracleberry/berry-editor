@@ -1210,18 +1210,14 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     }
                 }
                 on:mousedown=move |ev| {
-                    // ❌ DO NOT call ev.prevent_default() - it kills browser's native text selection!
-                    // ✅ Only handle focus, let browser handle selection
-                    if let Some(target) = ev.target() {
-                        if let Ok(element) = target.dyn_into::<web_sys::HtmlElement>() {
-                            if element.class_list().contains("berry-editor-pane") {
-                                // Background click - focus editor pane
-                                if let Some(el) = editor_pane_ref.get() {
-                                    let _ = el.focus();
-                                }
-                            }
-                        }
+                    // ✅ CRITICAL: Force focus on editor pane regardless of where user clicks
+                    // This prevents "focus trap" where browser loses input focus when clicking
+                    // on rendering layer (scroll-content with pointer-events: none)
+                    if let Some(el) = editor_pane_ref.get() {
+                        let _ = el.focus();
                     }
+
+                    // ❌ DO NOT call ev.prevent_default() - it kills browser's native text selection!
                 }
                 style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex; caret-color: transparent; outline: none; user-select: text;"
             >
