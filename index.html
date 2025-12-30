@@ -292,6 +292,7 @@
             z-index: 2; /* ✅ Ensure rendered lines are always visible in front */
             background: transparent; /* ✅ No background interference */
             overflow: hidden; /* 行が右に突き抜けるのを防ぐ */
+            pointer-events: none; /* ✅ Lines are display-only, not input targets */
         }
 
         /* ✅ ハイライト用spanタグの高さとスペースを強制的に保持 */
