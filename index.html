@@ -220,28 +220,8 @@
             outline: none !important; /* フォーカス時の枠を消す */
             cursor: text; /* テキスト入力カーソルを表示 */
             position: relative;
-        }
-
-        /* 隠しテキストエリア：これですべての入力を捕まえます */
-        .hidden-input {
-            position: absolute;
-            opacity: 0.01;
-            pointer-events: auto !important;
-            z-index: 10000;
-            width: 1px !important;
-            height: 1px !important;
-            resize: none;
-            border: none !important;
-            outline: none !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            background: transparent;
-            color: transparent;
-            caret-color: transparent;
-            /* ✅ IME候補ウィンドウを強制的に左寄せにするための設定 */
-            text-indent: -999px;
-            line-height: 1px !important;
-            overflow: hidden;
+            /* ✅ ContentEditable: Hide browser's default caret, use Rust virtual cursor */
+            caret-color: transparent !important;
         }
 
         .berry-editor-content {

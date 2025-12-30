@@ -238,7 +238,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
     let active_tab_index = RwSignal::new(0usize);
     let scroll_top = RwSignal::new(0.0);
     let container_ref = NodeRef::<leptos::html::Div>::new();
-    let input_ref = NodeRef::<html::Textarea>::new();
+    let editor_pane_ref = NodeRef::<leptos::html::Div>::new();  // ✅ ContentEditable div reference
 
     // ✅ IntelliJ Pattern: Independent cursor signals (UI truth source)
     // These are separate from tabs to avoid reactive loops
@@ -323,15 +323,15 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 fn log(s: &str);
             }
 
-            if let Some(el) = input_ref.get() {
-                log("⌨️ Auto-focusing textarea on mount");
+            if let Some(el) = editor_pane_ref.get() {
+                log("⌨️ Auto-focusing editor pane on mount");
 
                 // Use setTimeout to ensure DOM is fully ready
                 let el_clone = el.clone();
                 let _ = web_sys::window().and_then(|win| {
                     let closure = Closure::wrap(Box::new(move || {
                         let _ = el_clone.focus();
-                        log("✅ Textarea focused via Effect!");
+                        log("✅ Editor pane focused via Effect!");
                     }) as Box<dyn FnMut()>);
                     win.set_timeout_with_callback_and_timeout_and_arguments_0(
                         closure.as_ref().unchecked_ref(),
@@ -1046,80 +1046,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
         }
     };
 
-    // ✅ CRITICAL: Input handler with complete buffer sanitization
-    // Prevents race condition where rapid typing causes garbage (spaces) to leak
-    let on_input_handler = move |ev: web_sys::Event| {
-        // ✅ Disposal guard
-        if is_composing.is_disposed() || tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
-            return;
-        }
-
-        // Ignore input during IME composition
-        if is_composing.get_untracked() {
-            return;
-        }
-
-        // ✅ CRITICAL: Get value directly from event target (bypasses reactive delays)
-        let target = match ev.target() {
-            Some(t) => t,
-            None => return,
-        };
-
-        let textarea = match target.dyn_into::<web_sys::HtmlTextAreaElement>() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-
-        let val = textarea.value();
-
-        // ✅ CRITICAL: Filter out garbage characters that leak during rapid typing
-        // Remove newlines (handled by keydown), carriage returns, and spurious spaces
-        let clean_val: String = val.chars().filter(|&c| {
-            // Newlines/carriage returns are handled by keydown, never allow them here
-            if c == '\n' || c == '\r' {
-                return false;
-            }
-            // Allow single space (intentional space key press)
-            // But filter out spaces that appear with other characters (race condition garbage)
-            if c == ' ' {
-                return val.len() == 1;
-            }
-            true
-        }).collect();
-
-        // ✅ CRITICAL: Clear textarea immediately (prevents next keystroke from reading garbage)
-        textarea.set_value("");
-
-        if clean_val.is_empty() {
-            return;
-        }
-
-        let idx = active_tab_index.get_untracked();
-        let line = cursor_line.get_untracked();
-        let col = cursor_col.get_untracked();
-        let char_count = clean_val.chars().count();
-
-        // ✅ Update buffer and cursor (Leptos 0.7 auto-batches)
-        let _ = tabs.try_update(|t| {
-            if let Some(tab) = t.get_mut(idx) {
-                let pos = tab.buffer.line_to_char(line) + col;
-
-                tab.undo_history.push(EditOperation::Insert {
-                    position: pos,
-                    text: clean_val.clone(),
-                    cursor_before: (line, col),
-                    cursor_after: (line, col + char_count),
-                });
-
-                tab.buffer.insert(pos, &clean_val);
-                tab.is_modified = true;
-                tab.highlight_cache.remove(&line);
-            }
-        });
-
-        // Update cursor position
-        cursor_col.update(|c| *c += char_count);
-    };
+    // ❌ on_input_handler removed - using on:beforeinput on ContentEditable div
 
     view! {
         <div
@@ -1128,158 +1055,14 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
             tabindex="0"
             on:mousedown=move |ev| {
                 ev.prevent_default();
-                // ✅ CRITICAL: Force focus on textarea with every click
-                if let Some(el) = input_ref.get() {
+                // ✅ CRITICAL: Force focus on editor pane with every click
+                if let Some(el) = editor_pane_ref.get() {
                     let _ = el.focus();
                 }
             }
             style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; cursor: text;"
         >
-            // ✅ CRITICAL FIX: Textarea positioned at cursor location (not off-screen)
-            // This ensures browser/OS allows focus and input events
-            <textarea
-                node_ref=input_ref
-                class="hidden-input"
-                style=move || {
-                    let line = cursor_line.get();
-                    let col = cursor_col.get();
-                    let char_width = actual_char_width.get();
-
-                    // Calculate x position based on actual character widths in the line
-                    let x = tabs.with(|t| {
-                        t.get(active_tab_index.get())
-                            .and_then(|tab| {
-                                let line_str = tab.buffer.line(line).unwrap_or_default();
-                                Some(calculate_x_position(&line_str, col))
-                            })
-                            .unwrap_or(0.0)
-                    });
-
-                    // Position textarea at cursor location (with gutter and padding offset)
-                    let textarea_x = GUTTER_WIDTH + TEXT_PADDING + x;
-                    let textarea_y = line as f64 * LINE_HEIGHT;
-
-                    format!(
-                        "position: absolute; left: {}px; top: {}px; \
-                         width: 1px; height: 1px; z-index: 10000; opacity: 0; \
-                         pointer-events: auto; cursor: text; resize: none; border: none; \
-                         outline: none; padding: 0; margin: 0; overflow: hidden; \
-                         caret-color: transparent;",
-                        textarea_x, textarea_y
-                    )
-                }
-                autofocus=true
-                on:keydown=handle_keydown
-                on:mousedown=move |ev: web_sys::MouseEvent| {
-                    let rect = input_ref.get().unwrap().get_bounding_client_rect();
-                    let rel_x = ev.client_x() as f64 - rect.left();
-                    let rel_y = ev.client_y() as f64 - rect.top();
-
-                    let x_in_text = (rel_x - GUTTER_WIDTH - TEXT_PADDING).max(0.0);
-                    let line = (rel_y / LINE_HEIGHT).floor() as usize;
-
-                    tabs.with_untracked(|t| {
-                        if let Some(tab) = t.get(active_tab_index.get_untracked()) {
-                            let cl = line.min(tab.buffer.len_lines().saturating_sub(1));
-                            let line_text = tab.buffer.line(cl).unwrap_or_default();
-                            let col = get_col_from_x(&line_text, x_in_text);
-
-                            cursor_line.set(cl);
-                            cursor_col.set(col);
-
-                            // Start selection
-                            let char_idx = tab.buffer.line_to_char(cl) + col;
-                            selection_start.set(Some(char_idx));
-                            selection_end.set(Some(char_idx));
-                        }
-                    });
-                }
-                on:mousemove=move |ev: web_sys::MouseEvent| {
-                    // Only update selection when mouse button is pressed
-                    if ev.buttons() == 1 {
-                        let rect = input_ref.get().unwrap().get_bounding_client_rect();
-                        let rel_x = ev.client_x() as f64 - rect.left();
-                        let rel_y = ev.client_y() as f64 - rect.top();
-
-                        let x_in_text = (rel_x - GUTTER_WIDTH - TEXT_PADDING).max(0.0);
-                        let line = (rel_y / LINE_HEIGHT).floor() as usize;
-
-                        tabs.with_untracked(|t| {
-                            if let Some(tab) = t.get(active_tab_index.get_untracked()) {
-                                let cl = line.min(tab.buffer.len_lines().saturating_sub(1));
-                                let line_text = tab.buffer.line(cl).unwrap_or_default();
-                                let col = get_col_from_x(&line_text, x_in_text);
-
-                                cursor_line.set(cl);
-                                cursor_col.set(col);
-
-                                // Update selection end
-                                let char_idx = tab.buffer.line_to_char(cl) + col;
-                                selection_end.set(Some(char_idx));
-                            }
-                        });
-                    }
-                }
-                on:compositionstart=move |_ev| {
-                    is_composing.set(true);
-                    composition_text.set(String::new());
-                    let line = cursor_line.get_untracked();
-                    let col = cursor_col.get_untracked();
-                    composition_start_pos.set((line, col));
-                }
-                on:compositionupdate=move |ev| {
-                    use leptos::ev::CompositionEvent;
-                    let comp_ev: &CompositionEvent = ev.as_ref();
-                    let data = comp_ev.data().unwrap_or_default();
-                    composition_text.set(data.clone());
-                }
-                on:compositionend=move |ev| {
-                    // ✅ CRITICAL: Complete guard - abort if any signal is disposed
-                    if is_composing.is_disposed() || composition_text.is_disposed() || composition_start_pos.is_disposed() || tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
-                        return;
-                    }
-
-                    is_composing.set(false);
-                    composition_text.set(String::new());
-                    composition_start_pos.set((0, 0));
-
-                    use leptos::ev::CompositionEvent;
-                    let comp_ev: &CompositionEvent = ev.as_ref();
-                    let val = comp_ev.data().unwrap_or_default();
-
-                    if !val.is_empty() {
-                        let idx = active_tab_index.get_untracked();
-                        let line = cursor_line.get_untracked();
-                        let col = cursor_col.get_untracked();
-                        let char_count = val.chars().count();
-
-                        // ✅ CRITICAL: Update buffer and cursor atomically (Leptos 0.7 auto-batches)
-                        // ✅ Use try_update for safe signal access
-                        let _ = tabs.try_update(|t| {
-                            if let Some(tab) = t.get_mut(idx) {
-                                let pos = tab.buffer.line_to_char(line) + col;
-                                tab.undo_history.push(EditOperation::Insert {
-                                    position: pos,
-                                    text: val.clone(),
-                                    cursor_before: (line, col),
-                                    cursor_after: (line, col + char_count),
-                                });
-                                tab.buffer.insert(pos, &val);
-                                tab.is_modified = true;
-                                tab.highlight_cache.remove(&line);
-                            }
-                        });
-
-                        // ✅ Update cursor position (Leptos 0.7 auto-batches with buffer update)
-                        cursor_col.update(|c| *c += char_count);
-                    }
-
-                    if let Some(el) = input_ref.get() {
-                        el.set_value("");
-                    }
-                }
-                on:input=on_input_handler
-            ></textarea>
+            // ❌ textarea removed - using ContentEditable on berry-editor-pane instead
 
             // Tab Bar
             <div class="berry-editor-tab-bar">
@@ -1326,24 +1109,67 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 }}
             </div>
 
-            // Editor Pane with Virtual Scrolling
+            // Editor Pane with Virtual Scrolling (✅ ContentEditable)
             <div
                 class="berry-editor-pane"
+                node_ref=editor_pane_ref
+                contenteditable="true"
+                spellcheck="false"
+                tabindex="0"
                 on:scroll=on_scroll
+                on:keydown=handle_keydown
+                on:beforeinput=move |ev: web_sys::InputEvent| {
+                    // ✅ CRITICAL: Disposal guard
+                    if tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
+                        return;
+                    }
+
+                    // ✅ CRITICAL: Prevent browser's default DOM manipulation
+                    ev.prevent_default();
+
+                    // Get input data
+                    if let Some(data) = ev.data() {
+                        let idx = active_tab_index.get_untracked();
+                        let line = cursor_line.get_untracked();
+                        let col = cursor_col.get_untracked();
+                        let char_count = data.chars().count();
+
+                        // ✅ Update buffer with input data
+                        let _ = tabs.try_update(|t| {
+                            if let Some(tab) = t.get_mut(idx) {
+                                let pos = tab.buffer.line_to_char(line) + col;
+
+                                tab.undo_history.push(EditOperation::Insert {
+                                    position: pos,
+                                    text: data.clone(),
+                                    cursor_before: (line, col),
+                                    cursor_after: (line, col + char_count),
+                                });
+
+                                tab.buffer.insert(pos, &data);
+                                tab.is_modified = true;
+                                tab.highlight_cache.remove(&line);
+                            }
+                        });
+
+                        // Update cursor position
+                        cursor_col.update(|c| *c += char_count);
+                    }
+                }
                 on:mousedown=move |ev| {
                     // ✅ Check if clicking on background (not scrollbar or other elements)
                     if let Some(target) = ev.target() {
                         if let Ok(element) = target.dyn_into::<web_sys::HtmlElement>() {
                             if element.class_list().contains("berry-editor-pane") {
-                                // Background click - focus textarea
-                                if let Some(el) = input_ref.get() {
+                                // Background click - focus editor pane
+                                if let Some(el) = editor_pane_ref.get() {
                                     let _ = el.focus();
                                 }
                             }
                         }
                     }
                 }
-                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex;"
+                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex; caret-color: transparent; outline: none;"
             >
                 {move || {
                     // ✅ Disposed check first
@@ -1510,8 +1336,8 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                                             }
                                         });
 
-                                        // ✅ Focus textarea after setting cursor position
-                                        if let Some(el) = input_ref.get() {
+                                        // ✅ Focus editor pane after setting cursor position
+                                        if let Some(el) = editor_pane_ref.get() {
                                             let _ = el.focus();
                                         }
                                     }
