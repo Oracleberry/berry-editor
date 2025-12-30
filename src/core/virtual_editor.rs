@@ -453,6 +453,13 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 let path_for_highlight = path.clone();
                 let line_count = buffer.len_lines();
                 spawn_local(async move {
+                    // ✅ CRITICAL FIX: Delay highlighting to give UI thread time to process input
+                    // This prevents blocking input events when opening large files
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        gloo_timers::future::TimeoutFuture::new(100).await;
+                    }
+
                     // Prepare lines for parallel highlighting
                     let lines_to_highlight: Vec<(usize, String)> = (0..line_count)
                         .filter_map(|i| buffer.line(i).map(|line| (i, line.to_string())))
@@ -465,8 +472,9 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     )
                     .await
                     {
-                        // Update cache with results
-                        tabs.update(|t| {
+                        // ✅ CRITICAL FIX: Use update_untracked to prevent reactive re-render loop
+                        // This allows cache updates without triggering expensive full re-renders
+                        tabs.update_untracked(|t| {
                             if let Some(tab) = t.get_mut(new_index) {
                                 for result in results {
                                     let html = highlight_result_to_html(&result);
@@ -625,6 +633,59 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
     let handle_keydown = move |ev: web_sys::KeyboardEvent| {
         let key = ev.key();
 
+        // ✅ Handle Cmd+S / Ctrl+S for Save
+        if (ev.meta_key() || ev.ctrl_key()) && key == "s" {
+            ev.prevent_default();
+            ev.stop_propagation();
+
+            let idx = active_tab_index.get_untracked();
+            let save_data = tabs.with_untracked(|t| {
+                t.get(idx).map(|tab| (tab.path.clone(), tab.buffer.to_string()))
+            });
+
+            if let Some((path, content)) = save_data {
+                // Skip saving "Untitled" tabs
+                if path != "Untitled" {
+                    spawn_local(async move {
+                        match tauri_bindings::write_file(&path, &content).await {
+                            Ok(_) => {
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    use wasm_bindgen::prelude::*;
+                                    #[wasm_bindgen]
+                                    extern "C" {
+                                        #[wasm_bindgen(js_namespace = console)]
+                                        fn log(s: &str);
+                                    }
+                                    log(&format!("✅ File saved: {}", path));
+                                }
+
+                                // Mark as not modified
+                                tabs.update_untracked(|t| {
+                                    if let Some(tab) = t.get_mut(idx) {
+                                        tab.is_modified = false;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    use wasm_bindgen::prelude::*;
+                                    #[wasm_bindgen]
+                                    extern "C" {
+                                        #[wasm_bindgen(js_namespace = console)]
+                                        fn log(s: &str);
+                                    }
+                                    log(&format!("❌ Failed to save file: {}", e));
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+            return;
+        }
+
         // ✅ Handle Cmd+Z (macOS) / Ctrl+Z (Windows/Linux) for Undo
         // ✅ Handle Cmd+Shift+Z (macOS) / Ctrl+Y (Windows/Linux) for Redo
         // Check both meta_key (Cmd on Mac) and ctrl_key (Ctrl on Windows/Linux)
@@ -782,7 +843,8 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
             }
             "Backspace" => {
                 let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
-                tabs.update(|t| {
+                // ✅ Use update_untracked to avoid re-render during typing
+                tabs.update_untracked(|t| {
                     if let Some(tab) = t.get_mut(idx) {
                         if col > 0 {
                             // Delete character before cursor
@@ -798,7 +860,6 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                             tab.buffer.remove(pos - 1, pos);
                             tab.is_modified = true;
-                            cursor_col.update(|c| *c = col - 1);
                             tab.highlight_cache.remove(&line);
                         } else if line > 0 {
                             // Delete newline, merge with previous line
@@ -821,18 +882,24 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                                 tab.buffer.remove(pos - 1, pos);
                                 tab.is_modified = true;
-                                cursor_line.update(|l| *l = line - 1);
-                                cursor_col.update(|c| *c = prev_line_len);
                                 tab.highlight_cache.remove(&(line - 1));
                                 tab.highlight_cache.remove(&line);
+                                // Update cursor after deleting
+                                cursor_line.set(line - 1);
+                                cursor_col.set(prev_line_len);
                             }
                         }
                     }
                 });
+                // Update cursor position for normal backspace
+                if col > 0 {
+                    cursor_col.set(col - 1);
+                }
             }
             "Enter" => {
                 let (line, col) = (cursor_line.get_untracked(), cursor_col.get_untracked());
-                tabs.update(|t| {
+                // ✅ Use update_untracked to avoid re-render during typing
+                tabs.update_untracked(|t| {
                     if let Some(tab) = t.get_mut(idx) {
                         let pos = tab.buffer.line_to_char(line) + col;
                         // ✅ Record operation for undo
@@ -845,13 +912,14 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                         tab.buffer.insert(pos, "\n");
                         tab.is_modified = true;
-                        cursor_line.update(|l| *l = line + 1);
-                        cursor_col.update(|c| *c = 0);
                         // Clear cache for current and next line
                         tab.highlight_cache.remove(&line);
                         tab.highlight_cache.remove(&(line + 1));
                     }
                 });
+                // Update cursor position outside update
+                cursor_line.set(line + 1);
+                cursor_col.set(0);
             }
             _ => {}
         }
@@ -862,15 +930,130 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
             class="berry-editor-main"
             node_ref=container_ref
             tabindex="0"
-            on:mousedown=move |_| {
-                // ✅ Focus the hidden textarea for keyboard input
+            on:mousedown=move |ev| {
+                ev.prevent_default();
+                // ✅ CRITICAL: Force focus on textarea with every click
                 if let Some(el) = input_ref.get() {
                     let _ = el.focus();
                 }
             }
             on:keydown=handle_keydown
-            style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column;"
+            style="outline: none; position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; cursor: text;"
         >
+            // ✅ CRITICAL FIX: Textarea with pointer-events: auto (defined in CSS)
+            // CSS class .hidden-input handles all styling to avoid conflicts
+            <textarea
+                node_ref=input_ref
+                class="hidden-input"
+                autofocus=true
+                on:compositionstart=move |_ev| {
+                    is_composing.set(true);
+                    composition_text.set(String::new());
+                    let line = cursor_line.get_untracked();
+                    let col = cursor_col.get_untracked();
+                    composition_start_pos.set((line, col));
+                }
+                on:compositionupdate=move |ev| {
+                    use leptos::ev::CompositionEvent;
+                    let comp_ev: &CompositionEvent = ev.as_ref();
+                    let data = comp_ev.data().unwrap_or_default();
+                    composition_text.set(data.clone());
+                }
+                on:compositionend=move |ev| {
+                    is_composing.set(false);
+                    composition_text.set(String::new());
+                    composition_start_pos.set((0, 0));
+
+                    use leptos::ev::CompositionEvent;
+                    let comp_ev: &CompositionEvent = ev.as_ref();
+                    let val = comp_ev.data().unwrap_or_default();
+
+                    if !val.is_empty() {
+                        let idx = active_tab_index.get_untracked();
+                        let line = cursor_line.get_untracked();
+                        let col = cursor_col.get_untracked();
+                        let char_count = val.chars().count();
+
+                        // ✅ Use update_untracked to avoid triggering re-render
+                        tabs.update_untracked(|t| {
+                            if let Some(tab) = t.get_mut(idx) {
+                                let pos = tab.buffer.line_to_char(line) + col;
+                                tab.undo_history.push(EditOperation::Insert {
+                                    position: pos,
+                                    text: val.clone(),
+                                    cursor_before: (line, col),
+                                    cursor_after: (line, col + char_count),
+                                });
+                                tab.buffer.insert(pos, &val);
+                                tab.is_modified = true;
+                                tab.highlight_cache.remove(&line);
+                            }
+                        });
+
+                        cursor_col.set(col + char_count);
+                    }
+
+                    if let Some(el) = input_ref.get() {
+                        el.set_value("");
+                    }
+                }
+                on:input=move |ev| {
+                    if is_composing.get_untracked() {
+                        return;
+                    }
+
+                    let val = event_target_value(&ev);
+                    if !val.is_empty() {
+                        let idx = active_tab_index.get_untracked();
+                        let line = cursor_line.get_untracked();
+                        let col = cursor_col.get_untracked();
+
+                        let newline_count = val.matches('\n').count();
+                        let last_line_len = if newline_count > 0 {
+                            val.lines().last().unwrap_or("").chars().count()
+                        } else {
+                            val.chars().count()
+                        };
+
+                        // ✅ CRITICAL: Use update() to trigger re-render when text is typed
+                        tabs.update(|t| {
+                            if let Some(tab) = t.get_mut(idx) {
+                                let pos = tab.buffer.line_to_char(line) + col;
+
+                                let cursor_after = if newline_count > 0 {
+                                    (line + newline_count, last_line_len)
+                                } else {
+                                    (line, col + last_line_len)
+                                };
+
+                                tab.undo_history.push(EditOperation::Insert {
+                                    position: pos,
+                                    text: val.clone(),
+                                    cursor_before: (line, col),
+                                    cursor_after,
+                                });
+
+                                tab.buffer.insert(pos, &val);
+                                tab.is_modified = true;
+                                tab.highlight_cache.remove(&line);
+                            }
+                        });
+
+                        // ✅ Update cursor position (this triggers minimal re-render)
+                        if newline_count > 0 {
+                            cursor_line.set(line + newline_count);
+                            cursor_col.set(last_line_len);
+                        } else {
+                            cursor_col.set(col + last_line_len);
+                        }
+
+                        if let Some(el) = input_ref.get() {
+                            el.set_value("");
+                        }
+                    }
+                }
+            ></textarea>
+
             // Tab Bar
             <div class="berry-editor-tab-bar">
                 {move || {
@@ -1107,212 +1290,6 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                                     }
                                 }
                             >
-                                // ✅ Input capture textarea - positioned at cursor for IME
-                                <textarea
-                                    node_ref=input_ref
-                                    class="hidden-input"
-                                    autofocus=true
-                                    style=move || {
-                                        let l = cursor_line.get();
-                                        let c = cursor_col.get();
-                                        let current_idx = active_tab_index.get();
-                                        let x_offset = tabs.with(|t| {
-                                            t.get(current_idx).and_then(|tab| {
-                                                tab.buffer.line(l).map(|s| calculate_x_position(&s, c))
-                                            })
-                                        }).unwrap_or(0.0);
-                                        format!(
-                                            "position: absolute; left: {}px; top: {}px; width: 200px; height: {}px; opacity: 0; z-index: 999; resize: none; border: none; outline: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent;",
-                                            TEXT_PADDING + x_offset,
-                                            l as f64 * LINE_HEIGHT,
-                                            LINE_HEIGHT
-                                        )
-                                    }
-                                    on:compositionstart=move |_ev| {
-                                        is_composing.set(true);
-                                        composition_text.set(String::new());
-                                        // ✅ Save cursor position at composition start
-                                        let line = cursor_line.get_untracked();
-                                        let col = cursor_col.get_untracked();
-                                        composition_start_pos.set((line, col));
-                                        #[cfg(target_arch = "wasm32")]
-                                        {
-                                            use wasm_bindgen::prelude::*;
-                                            #[wasm_bindgen]
-                                            extern "C" {
-                                                #[wasm_bindgen(js_namespace = console)]
-                                                fn log(s: &str);
-                                            }
-                                            log(&format!("🎌 compositionstart: IME composition started at line={}, col={}", line, col));
-                                        }
-                                    }
-                                    on:compositionupdate=move |ev| {
-                                        // Update preview text during composition
-                                        use leptos::ev::CompositionEvent;
-                                        let comp_ev: &CompositionEvent = ev.as_ref();
-                                        let data = comp_ev.data().unwrap_or_default();
-                                        composition_text.set(data.clone());
-                                        #[cfg(target_arch = "wasm32")]
-                                        {
-                                            use wasm_bindgen::prelude::*;
-                                            #[wasm_bindgen]
-                                            extern "C" {
-                                                #[wasm_bindgen(js_namespace = console)]
-                                                fn log(s: &str);
-                                            }
-                                            log(&format!("🎌 compositionupdate: {:?}", data));
-                                        }
-                                    }
-                                    on:compositionend=move |ev| {
-                                        is_composing.set(false);
-                                        composition_text.set(String::new());
-                                        composition_start_pos.set((0, 0));
-
-                                        // ✅ CRITICAL: Use CompositionEvent.data, NOT textarea.value
-                                        // textarea.value may contain newlines from browser behavior
-                                        use leptos::ev::CompositionEvent;
-                                        let comp_ev: &CompositionEvent = ev.as_ref();
-                                        let val = comp_ev.data().unwrap_or_default();
-
-                                        #[cfg(target_arch = "wasm32")]
-                                        {
-                                            use wasm_bindgen::prelude::*;
-                                            #[wasm_bindgen]
-                                            extern "C" {
-                                                #[wasm_bindgen(js_namespace = console)]
-                                                fn log(s: &str);
-                                            }
-                                            log(&format!("🎌 compositionend data: {:?}", val));
-                                        }
-
-                                        if !val.is_empty() {
-                                            let idx = active_tab_index.get_untracked();
-                                            let line = cursor_line.get_untracked();
-                                            let col = cursor_col.get_untracked();
-                                            let char_count = val.chars().count();
-
-                                            tabs.update(|t| {
-                                                if let Some(tab) = t.get_mut(idx) {
-                                                    let pos = tab.buffer.line_to_char(line) + col;
-
-                                                    // ✅ Record operation for undo
-                                                    tab.undo_history.push(EditOperation::Insert {
-                                                        position: pos,
-                                                        text: val.clone(),
-                                                        cursor_before: (line, col),
-                                                        cursor_after: (line, col + char_count),
-                                                    });
-
-                                                    tab.buffer.insert(pos, &val);
-                                                    tab.is_modified = true;
-                                                    tab.highlight_cache.remove(&line);
-                                                }
-                                            });
-
-                                            // ✅ CRITICAL: Update cursor OUTSIDE tabs.update() for reactivity
-                                            cursor_col.update(|c| *c += char_count);
-                                        }
-
-                                        // Clear textarea after processing
-                                        if let Some(el) = input_ref.get() {
-                                            el.set_value("");
-                                        }
-                                    }
-                                    on:input=move |ev| {
-                                        // ✅ CRITICAL FIX: Ignore input events during IME composition
-                                        // This prevents double input for Japanese/Chinese/Korean
-                                        if is_composing.get_untracked() {
-                                            #[cfg(target_arch = "wasm32")]
-                                            {
-                                                use wasm_bindgen::prelude::*;
-                                                #[wasm_bindgen]
-                                                extern "C" {
-                                                    #[wasm_bindgen(js_namespace = console)]
-                                                    fn log(s: &str);
-                                                }
-                                                log("⌨️ Input: IGNORED (composition in progress)");
-                                            }
-                                            return;
-                                        }
-
-                                        let val = event_target_value(&ev);
-                                        #[cfg(target_arch = "wasm32")]
-                                        {
-                                            use wasm_bindgen::prelude::*;
-                                            #[wasm_bindgen]
-                                            extern "C" {
-                                                #[wasm_bindgen(js_namespace = console)]
-                                                fn log(s: &str);
-                                            }
-                                            log(&format!("⌨️ Input: val={:?}", val));
-                                        }
-
-                                        if !val.is_empty() {
-                                            let idx = active_tab_index.get_untracked();
-                                            let line = cursor_line.get_untracked();
-                                            let col = cursor_col.get_untracked();
-
-                                            // ✅ CRITICAL: Count newlines in the input text
-                                            let newline_count = val.matches('\n').count();
-                                            let last_line_len = if newline_count > 0 {
-                                                val.lines().last().unwrap_or("").chars().count()
-                                            } else {
-                                                val.chars().count()
-                                            };
-
-                                            tabs.update(|t| {
-                                                if let Some(tab) = t.get_mut(idx) {
-                                                    let pos = tab.buffer.line_to_char(line) + col;
-
-                                                    #[cfg(target_arch = "wasm32")]
-                                                    {
-                                                        use wasm_bindgen::prelude::*;
-                                                        #[wasm_bindgen]
-                                                        extern "C" {
-                                                            #[wasm_bindgen(js_namespace = console)]
-                                                            fn log(s: &str);
-                                                        }
-                                                        log(&format!("📝 Insert: line={}, col={}, pos={}, val={:?}, newlines={}", line, col, pos, val, newline_count));
-                                                    }
-
-                                                    // ✅ Record operation for undo
-                                                    let cursor_after = if newline_count > 0 {
-                                                        (line + newline_count, last_line_len)
-                                                    } else {
-                                                        (line, col + last_line_len)
-                                                    };
-
-                                                    tab.undo_history.push(EditOperation::Insert {
-                                                        position: pos,
-                                                        text: val.clone(),
-                                                        cursor_before: (line, col),
-                                                        cursor_after,
-                                                    });
-
-                                                    tab.buffer.insert(pos, &val);
-                                                    tab.is_modified = true;
-                                                    // Clear highlight cache for modified line
-                                                    tab.highlight_cache.remove(&line);
-                                                }
-                                            });
-
-                                            // ✅ CRITICAL: Move cursor forward correctly for multiline text
-                                            if newline_count > 0 {
-                                                cursor_line.update(|l| *l += newline_count);
-                                                cursor_col.set(last_line_len);
-                                            } else {
-                                                cursor_col.update(|c| *c += last_line_len);
-                                            }
-
-                                            // Clear textarea
-                                            if let Some(el) = input_ref.get() {
-                                                el.set_value("");
-                                            }
-                                        }
-                                    }
-                                    on:keydown=handle_keydown
-                                ></textarea>
-
                                 // ✅ Virtual Cursor Layer (z-index: 30)
                                 <div style=move || {
                                     if cursor_line.is_disposed() || cursor_col.is_disposed() {

@@ -56,6 +56,7 @@ anyhow = "1.0"
 uuid = { version = "1.0", features = ["v4", "serde", "js"] }
 chrono = "0.4"
 urlencoding = "2.1"
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

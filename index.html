@@ -225,11 +225,21 @@
         /* 隠しテキストエリア：これですべての入力を捕まえます */
         .hidden-input {
             position: absolute;
-            opacity: 0;
-            pointer-events: none;
-            z-index: -1;
+            opacity: 0.01;
+            pointer-events: auto !important;
+            z-index: 10000;
             width: 1px;
             height: 1px;
+            left: -9999px;
+            top: 0;
+            resize: none;
+            border: none;
+            outline: none;
+            padding: 0;
+            margin: 0;
+            background: transparent;
+            color: transparent;
+            caret-color: transparent;
         }
 
         .berry-editor-content {
