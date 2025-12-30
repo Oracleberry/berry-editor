@@ -394,4 +394,175 @@ mod contenteditable_physical_tests {
 
         client.close().await.expect("Failed to close client");
     }
+
+    /// Test 7: Focus Management - Sidebar to Editor Focus Return
+    ///
+    /// Verifies that focus correctly returns to the editor after clicking
+    /// on sidebar elements (file tree). This is a common "can't type" bug scenario:
+    /// 1. User clicks file in sidebar -> focus moves to sidebar
+    /// 2. User clicks editor -> focus should return to contenteditable pane
+    /// 3. User types -> input should work
+    ///
+    /// If this fails, users will experience "keyboard input stops working after
+    /// clicking sidebar" which is a critical UX bug.
+    #[tokio::test]
+    async fn test_focus_returns_to_editor_after_sidebar_click() {
+        let client = ClientBuilder::native()
+            .connect("http://localhost:4444")
+            .await
+            .expect("Failed to connect to WebDriver");
+
+        client.goto(APP_URL).await.expect("Failed to navigate");
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Step 1: Click on a file in the sidebar (file tree)
+        if let Ok(file_elem) = client.find(Locator::Css("div[data-path$='.rs']")).await {
+            file_elem.click().await.expect("Failed to click file in sidebar");
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+            // At this point, focus might be on the file tree item
+            // This is normal behavior when clicking UI elements
+
+            // Step 2: Click on the editor pane to regain focus
+            let editor_pane = client
+                .find(Locator::Css(".berry-editor-pane[contenteditable='true']"))
+                .await
+                .expect("Editor pane not found");
+
+            editor_pane.click().await.expect("Failed to click editor pane");
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+            // CRITICAL ASSERTION: Verify contenteditable pane has focus
+            let active_element_contenteditable = client
+                .execute(
+                    "return document.activeElement.getAttribute('contenteditable');",
+                    vec![],
+                )
+                .await
+                .expect("Failed to get active element");
+
+            assert_eq!(
+                active_element_contenteditable.as_str(),
+                Some("true"),
+                "After clicking editor pane, the contenteditable='true' pane should have focus. \
+                 If this fails, focus management is broken and users can't type after clicking sidebar."
+            );
+
+            // Step 3: Verify typing works after focus return
+            client
+                .execute(
+                    "document.activeElement.dispatchEvent(new InputEvent('beforeinput', { \
+                        bubbles: true, \
+                        cancelable: true, \
+                        data: 'test' \
+                    }));",
+                    vec![],
+                )
+                .await
+                .expect("Failed to dispatch input event");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            // Verify the text was inserted
+            let editor_content = client
+                .find(Locator::Css(".berry-editor-scroll-content"))
+                .await
+                .expect("Editor content not found");
+
+            let content_html = editor_content
+                .html(true)
+                .await
+                .expect("Failed to get HTML");
+
+            assert!(
+                content_html.contains("test"),
+                "Text should be inserted after focus returns from sidebar. \
+                 If this fails, input handling is broken after sidebar interaction."
+            );
+        }
+
+        client.close().await.expect("Failed to close client");
+    }
+
+    /// Test 8: Focus Management - Rapid Sidebar-Editor Switching
+    ///
+    /// Verifies that focus management works correctly even with rapid switching
+    /// between sidebar and editor. This tests focus robustness under stress.
+    #[tokio::test]
+    async fn test_rapid_focus_switching_sidebar_to_editor() {
+        let client = ClientBuilder::native()
+            .connect("http://localhost:4444")
+            .await
+            .expect("Failed to connect to WebDriver");
+
+        client.goto(APP_URL).await.expect("Failed to navigate");
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Find file tree and editor pane elements
+        if let Ok(file_elem) = client.find(Locator::Css("div[data-path$='.rs']")).await {
+            let editor_pane = client
+                .find(Locator::Css(".berry-editor-pane[contenteditable='true']"))
+                .await
+                .expect("Editor pane not found");
+
+            // Rapid switching: Click sidebar -> editor -> sidebar -> editor
+            for i in 0..3 {
+                // Click sidebar
+                file_elem.click().await.expect("Failed to click sidebar");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // Click editor
+                editor_pane.click().await.expect("Failed to click editor");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // Verify editor has focus after each cycle
+                let active_contenteditable = client
+                    .execute(
+                        "return document.activeElement.getAttribute('contenteditable');",
+                        vec![],
+                    )
+                    .await
+                    .expect("Failed to get active element");
+
+                assert_eq!(
+                    active_contenteditable.as_str(),
+                    Some("true"),
+                    "Cycle {}: Editor should have focus after rapid switching",
+                    i
+                );
+            }
+
+            // Final verification: Type should still work
+            client
+                .execute(
+                    "document.activeElement.dispatchEvent(new InputEvent('beforeinput', { \
+                        bubbles: true, \
+                        cancelable: true, \
+                        data: 'abc' \
+                    }));",
+                    vec![],
+                )
+                .await
+                .expect("Failed to dispatch input event");
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            let editor_content = client
+                .find(Locator::Css(".berry-editor-scroll-content"))
+                .await
+                .expect("Editor content not found");
+
+            let content_html = editor_content
+                .html(true)
+                .await
+                .expect("Failed to get HTML");
+
+            assert!(
+                content_html.contains("abc"),
+                "Input should work after rapid focus switching"
+            );
+        }
+
+        client.close().await.expect("Failed to close client");
+    }
 }
