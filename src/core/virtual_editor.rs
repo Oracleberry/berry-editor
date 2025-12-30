@@ -1160,6 +1160,12 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                         // Update cursor position
                         cursor_col.update(|c| *c += char_count);
                     }
+
+                    // ✅ CRITICAL: Clean up browser's leftover DOM after IME confirmation
+                    // This prevents double rendering (browser's text + Rust's text)
+                    if let Some(el) = editor_pane_ref.get() {
+                        el.set_text_content(None);  // Clear internal DOM, let Rust re-render
+                    }
                 }
                 on:beforeinput=move |ev: web_sys::InputEvent| {
                     // ✅ CRITICAL: Disposal guard

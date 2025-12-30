@@ -229,6 +229,20 @@
             /* 本物のカーソルを隠し、Rustのバーチャルカーソルを主役にする */
             caret-color: transparent !important;
             user-select: text; /* Allow browser's native text selection */
+            /* ✅ Prevent browser from inserting rich formatting (only plain text) */
+            -webkit-user-modify: read-write-plaintext-only !important;
+            /* ✅ Strict line/word breaking to prevent browser auto-formatting */
+            line-break: strict;
+            word-break: break-all;
+            /* ✅ Display mode for proper layout */
+            display: flex !important;
+            flex-direction: column;
+        }
+
+        /* ✅ Rendering layer should not interfere with input events */
+        .berry-editor-scroll-content {
+            pointer-events: none; /* Clicks are handled by parent .berry-editor-pane */
+            z-index: 1;
         }
 
         .berry-editor-content {
