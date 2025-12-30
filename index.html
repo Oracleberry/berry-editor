@@ -239,10 +239,12 @@
             flex-direction: column;
         }
 
-        /* ✅ Rendering layer should not interfere with input events */
+        /* ✅ Rendering layer: Completely isolated from browser's ContentEditable control */
         .berry-editor-scroll-content {
-            pointer-events: none; /* Clicks are handled by parent .berry-editor-pane */
+            pointer-events: none !important; /* Clicks are handled by parent .berry-editor-pane */
+            user-select: none !important; /* Browser must not select text in this layer */
             z-index: 1;
+            /* contenteditable="false" in HTML prevents browser from manipulating this DOM */
         }
 
         .berry-editor-content {
@@ -287,7 +289,8 @@
             font-variant-ligatures: none !important; /* ✅ 合字による幅の変化を防止 */
             color: #a9b7c6 !important; /* Darculaテキスト色 */
             position: relative;
-            z-index: 1;
+            z-index: 2; /* ✅ Ensure rendered lines are always visible in front */
+            background: transparent; /* ✅ No background interference */
             overflow: hidden; /* 行が右に突き抜けるのを防ぐ */
         }
 

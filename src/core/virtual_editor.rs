@@ -1161,11 +1161,10 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                         cursor_col.update(|c| *c += char_count);
                     }
 
-                    // ✅ CRITICAL: Clean up browser's leftover DOM after IME confirmation
-                    // This prevents double rendering (browser's text + Rust's text)
-                    if let Some(el) = editor_pane_ref.get() {
-                        el.set_text_content(None);  // Clear internal DOM, let Rust re-render
-                    }
+                    // ✅ CRITICAL: Do NOT call set_text_content(None) here!
+                    // It would delete the entire Viewport that Rust just rendered.
+                    // The browser's temporary IME text will be overwritten by Rust's
+                    // next render cycle automatically (no manual cleanup needed).
                 }
                 on:beforeinput=move |ev: web_sys::InputEvent| {
                     // ✅ CRITICAL: Disposal guard
@@ -1302,7 +1301,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
 
                     // ✅ NEW STRUCTURE: Simple, reactive layout
                     return view! {
-                        <div class="berry-editor-scroll-content" style=format!("height: {}px; width: 100%; position: relative; display: flex;", total_height)>
+                        <div class="berry-editor-scroll-content" contenteditable="false" style=format!("height: {}px; width: 100%; position: relative; display: flex;", total_height)>
 
                             // [Layer 1] Line Number Gutter (Sticky, z-index: 20)
                             <div class="berry-editor-gutter" style=format!("width: {}px; background: #313335; border-right: 1px solid #323232; position: sticky; left: 0; z-index: 20; height: 100%;", GUTTER_WIDTH)>
