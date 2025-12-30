@@ -6,9 +6,9 @@
 //!
 //! ### 3-Layer Design:
 //!
-//! 1. **[本物の入力層] Real Input Layer** (Hidden Textarea)
+//! 1. **[本物の入力層] Real Input Layer** (ContentEditable Div)
 //!    - すべてのキーボード入力をキャプチャ（日本語IME含む）
-//!    - データフロー: textarea → tabs.update() → buffer.insert() → version++
+//!    - データフロー: contenteditable div → tabs.update() → buffer.insert() → version++
 //!
 //! 2. **[本物のデータ層] Real Model Layer** (TextBuffer with Ropey)
 //!    - 実際のテキストデータを保持（不変なRope構造）
@@ -26,7 +26,7 @@
 //!
 //! ### データフロー（明確な一方向）:
 //! ```text
-//! User Input -> Hidden Textarea
+//! User Input -> ContentEditable Div (on:beforeinput/on:compositionend)
 //!      |
 //!      v
 //! tabs.update() [Reactive Signal]
@@ -310,8 +310,8 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
         }
     });
 
-    // ✅ CRITICAL: Auto-focus textarea on mount so keyboard input works immediately
-    // Use Effect (Leptos reactive system) to set focus when textarea is mounted
+    // ✅ CRITICAL: Auto-focus editor pane on mount so keyboard input works immediately
+    // Use Effect (Leptos reactive system) to set focus when editor pane is mounted
     Effect::new_isomorphic(move |_| {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1118,16 +1118,64 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                 tabindex="0"
                 on:scroll=on_scroll
                 on:keydown=handle_keydown
+                // ✅ CRITICAL: IME Composition Events - Lock Rust updates during Japanese input
+                on:compositionstart=move |_ev| {
+                    // ✅ Lock: Browser handles IME display during composition
+                    is_composing.set(true);
+                }
+                on:compositionend=move |ev: web_sys::CompositionEvent| {
+                    // ✅ Disposal guard
+                    if tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
+                        return;
+                    }
+
+                    // ✅ Unlock: Composition finished, commit to Rust buffer
+                    is_composing.set(false);
+
+                    // Get confirmed text from IME
+                    if let Some(data) = ev.data() {
+                        let idx = active_tab_index.get_untracked();
+                        let line = cursor_line.get_untracked();
+                        let col = cursor_col.get_untracked();
+                        let char_count = data.chars().count();
+
+                        // ✅ Update buffer with confirmed IME text
+                        let _ = tabs.try_update(|t| {
+                            if let Some(tab) = t.get_mut(idx) {
+                                let pos = tab.buffer.line_to_char(line) + col;
+
+                                tab.undo_history.push(EditOperation::Insert {
+                                    position: pos,
+                                    text: data.clone(),
+                                    cursor_before: (line, col),
+                                    cursor_after: (line, col + char_count),
+                                });
+
+                                tab.buffer.insert(pos, &data);
+                                tab.is_modified = true;
+                                tab.highlight_cache.remove(&line);
+                            }
+                        });
+
+                        // Update cursor position
+                        cursor_col.update(|c| *c += char_count);
+                    }
+                }
                 on:beforeinput=move |ev: web_sys::InputEvent| {
                     // ✅ CRITICAL: Disposal guard
                     if tabs.is_disposed() || active_tab_index.is_disposed() || cursor_line.is_disposed() || cursor_col.is_disposed() {
                         return;
                     }
 
+                    // ✅ CRITICAL: Ignore input during IME composition (prevents double insertion)
+                    if is_composing.get_untracked() {
+                        return;
+                    }
+
                     // ✅ CRITICAL: Prevent browser's default DOM manipulation
                     ev.prevent_default();
 
-                    // Get input data
+                    // Get input data (for non-IME input like English)
                     if let Some(data) = ev.data() {
                         let idx = active_tab_index.get_untracked();
                         let line = cursor_line.get_untracked();
@@ -1157,7 +1205,8 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                     }
                 }
                 on:mousedown=move |ev| {
-                    // ✅ Check if clicking on background (not scrollbar or other elements)
+                    // ❌ DO NOT call ev.prevent_default() - it kills browser's native text selection!
+                    // ✅ Only handle focus, let browser handle selection
                     if let Some(target) = ev.target() {
                         if let Ok(element) = target.dyn_into::<web_sys::HtmlElement>() {
                             if element.class_list().contains("berry-editor-pane") {
@@ -1169,7 +1218,7 @@ pub fn VirtualEditorPanel(selected_file: RwSignal<Option<(String, String)>>) -> 
                         }
                     }
                 }
-                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex; caret-color: transparent; outline: none;"
+                style="position: relative; overflow: auto; height: 100%; background: #1E1E1E; display: flex; caret-color: transparent; outline: none; user-select: text;"
             >
                 {move || {
                     // ✅ Disposed check first

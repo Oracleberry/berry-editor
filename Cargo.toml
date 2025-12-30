@@ -17,7 +17,8 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlElement",
     "HtmlInputElement",
-    "HtmlTextAreaElement",
+    # ❌ "HtmlTextAreaElement" removed - using ContentEditable div instead
+    "InputEvent",  # ✅ Added for on:beforeinput
     "Event",
     "KeyboardEvent",
     "MouseEvent",
