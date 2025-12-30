@@ -225,7 +225,12 @@
         /* ✅ ContentEditable: Complete input control in Rust */
         .berry-editor-pane[contenteditable="true"] {
             outline: none !important;
-            white-space: pre;
+            /* ✅ CRITICAL: Force block display to prevent browser from auto-creating <div><br></div> */
+            display: block !important;
+            /* ✅ CRITICAL: Preserve all whitespace exactly as-is (no auto line-breaking) */
+            white-space: pre !important;
+            word-break: break-all !important;
+            overflow-wrap: anywhere !important;
             /* 本物のカーソルを隠し、Rustのバーチャルカーソルを主役にする */
             caret-color: transparent !important;
             user-select: text !important; /* Allow browser's native text selection */
@@ -235,10 +240,6 @@
             -webkit-user-modify: read-write-plaintext-only !important;
             /* ✅ Strict line/word breaking to prevent browser auto-formatting */
             line-break: strict;
-            word-break: break-all;
-            /* ✅ Display mode for proper layout */
-            display: flex !important;
-            flex-direction: column;
         }
 
         /* ✅ Rendering layer: Completely isolated from browser's ContentEditable control */
@@ -296,6 +297,7 @@
             background: transparent; /* ✅ No background interference */
             overflow: hidden; /* 行が右に突き抜けるのを防ぐ */
             pointer-events: none; /* ✅ Lines are display-only, not input targets */
+            contain: strict; /* ✅ CRITICAL: Contain layout calculations within this line (performance) */
         }
 
         /* ✅ ハイライト用spanタグの高さとスペースを強制的に保持 */
