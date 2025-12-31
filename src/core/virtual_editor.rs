@@ -1070,15 +1070,39 @@ pub fn VirtualEditorPanel(
                             <div class="berry-tab active" style="
                                 display: flex;
                                 align-items: center;
-                                padding: 8px 16px;
+                                padding: 8px 12px 8px 16px;
                                 background: #1E1E1E;
                                 border-right: 1px solid #323232;
                                 color: #A9B7C6;
                                 font-size: 13px;
                                 font-family: 'JetBrains Mono', monospace;
-                                cursor: pointer;
+                                gap: 8px;
                             ">
-                                {file_name}
+                                <span style="cursor: pointer;">{file_name}</span>
+                                <button
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        // タブを閉じる
+                                        current_tab.set(None);
+                                    }
+                                    style="
+                                        background: transparent;
+                                        border: none;
+                                        color: #606366;
+                                        cursor: pointer;
+                                        padding: 2px 4px;
+                                        font-size: 16px;
+                                        line-height: 1;
+                                        display: flex;
+                                        align-items: center;
+                                        justify-content: center;
+                                        border-radius: 2px;
+                                    "
+                                    onmouseover="this.style.background='#4E5157'; this.style.color='#A9B7C6';"
+                                    onmouseout="this.style.background='transparent'; this.style.color='#606366';"
+                                >
+                                    "×"
+                                </button>
                             </div>
                         }.into_any()
                     } else {
