@@ -1055,6 +1055,42 @@ pub fn VirtualEditorPanel(
             class="berry-editor-main"
             style="display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;"
         >
+            // タブバー
+            <div class="berry-editor-tabs" style="display: flex; background: #2B2B2B; border-bottom: 1px solid #323232; min-height: 35px;">
+                {move || {
+                    if let Some(tab) = current_tab.get() {
+                        // ファイル名を抽出（パスから最後のコンポーネント）
+                        let file_name = tab.file_path
+                            .split('/')
+                            .last()
+                            .unwrap_or(&tab.file_path)
+                            .to_string();
+
+                        view! {
+                            <div class="berry-tab active" style="
+                                display: flex;
+                                align-items: center;
+                                padding: 8px 16px;
+                                background: #1E1E1E;
+                                border-right: 1px solid #323232;
+                                color: #A9B7C6;
+                                font-size: 13px;
+                                font-family: 'JetBrains Mono', monospace;
+                                cursor: pointer;
+                            ">
+                                {file_name}
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div style="padding: 8px 16px; color: #606366; font-size: 13px;">
+                                "No file open"
+                            </div>
+                        }.into_any()
+                    }
+                }}
+            </div>
+
             <div class="berry-editor-pane" style="flex: 1; min-height: 0; display: flex; background: #2B2B2B;">
                 <canvas
                     node_ref=canvas_ref
