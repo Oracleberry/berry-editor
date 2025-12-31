@@ -237,32 +237,41 @@ pub fn VirtualEditorPanel(
         }
     });
 
-    // 後方互換性のため、current_tabのラッパーを作成
-    let current_tab = create_rw_signal(Option::<EditorTab>::None);
+    // 後方互換性：current_tabは擬似的なRwSignalとして動作
+    // get()はアクティブタブを返し、set()はtabsに直接書き込む
+    #[derive(Clone, Copy)]
+    struct CurrentTabWrapper {
+        tabs: RwSignal<Vec<EditorTab>>,
+        active_index: RwSignal<Option<usize>>,
+    }
 
-    // active_tab_indexが変更されたら、current_tabを更新
-    Effect::new(move |_| {
-        if let Some(index) = active_tab_index.get() {
-            if let Some(tab) = tabs.get().get(index) {
-                current_tab.set(Some(tab.clone()));
+    impl CurrentTabWrapper {
+        fn get(&self) -> Option<EditorTab> {
+            if let Some(index) = self.active_index.get() {
+                self.tabs.get().get(index).cloned()
+            } else {
+                None
             }
-        } else {
-            current_tab.set(None);
         }
-    });
 
-    // current_tabが更新されたら、tabsに反映
-    Effect::new(move |_| {
-        if let Some(new_tab) = current_tab.get() {
-            if let Some(index) = active_tab_index.get() {
-                let mut tabs_vec = tabs.get();
-                if index < tabs_vec.len() {
-                    tabs_vec[index] = new_tab;
-                    tabs.set(tabs_vec);
+        fn set(&self, new_tab: Option<EditorTab>) {
+            if let Some(tab) = new_tab {
+                if let Some(index) = self.active_index.get() {
+                    let mut tabs_vec = self.tabs.get();
+                    if index < tabs_vec.len() {
+                        tabs_vec[index] = tab;
+                        self.tabs.set(tabs_vec);
+                    }
                 }
             }
         }
-    });
+    }
+
+    // current_tabのラッパーを作成（Effectなしで無限ループを回避）
+    let current_tab = CurrentTabWrapper {
+        tabs,
+        active_index: active_tab_index,
+    };
 
     // キーボードイベントハンドラー
     let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
