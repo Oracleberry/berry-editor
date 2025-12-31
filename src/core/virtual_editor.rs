@@ -662,21 +662,30 @@ pub fn VirtualEditorPanel(
         // 確定文字をバッファに挿入
         if let Some(data) = ev.data() {
             if let Some(mut tab) = current_tab.get() {
+                let old_col = tab.cursor_col;
                 let char_idx = tab.buffer.line_to_char(tab.cursor_line) + tab.cursor_col;
                 tab.buffer.insert(char_idx, &data);
                 tab.cursor_col += data.chars().count();
+                leptos::logging::log!(
+                    "✅ IME committed: '{}' at pos {}, cursor: {} -> {}",
+                    data,
+                    char_idx,
+                    old_col,
+                    tab.cursor_col
+                );
                 current_tab.set(Some(tab));
-                leptos::logging::log!("IME committed: {}", data);
             }
         }
 
         composing_text.set(String::new());
-        render_trigger.update(|v| *v += 1);
 
-        // IME inputを再フォーカス（次の入力に備えて）
+        // IME inputの値をクリア（次の入力に備えて）
         if let Some(input) = ime_input_ref.get() {
+            input.set_value("");
             let _ = input.focus();
         }
+
+        render_trigger.update(|v| *v += 1);
     };
 
 
@@ -955,6 +964,13 @@ pub fn VirtualEditorPanel(
 
                 // カーソルを描画（現在行のテキストを渡す）
                 let cursor_line_text = tab.buffer.line(tab.cursor_line).unwrap_or_default();
+                leptos::logging::log!(
+                    "🎯 Drawing cursor: line={}, col={}, line_text='{}' (len={})",
+                    tab.cursor_line,
+                    tab.cursor_col,
+                    cursor_line_text.trim_end_matches('\n'),
+                    cursor_line_text.chars().count()
+                );
                 renderer.draw_cursor(tab.cursor_line, tab.cursor_col, tab.scroll_top, &cursor_line_text);
 
                 // IME未確定文字列を描画（あれば）
