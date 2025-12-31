@@ -6,20 +6,16 @@
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{window, HtmlElement};
 
 pub mod buffer;
-mod components;
 pub mod components_tauri;
 mod cursor;
 pub mod editor;
 pub mod editor_lsp;
-pub mod file_tree;
 pub mod file_tree_tauri;
 mod git;
 mod lsp;
 pub mod lsp_client;
-mod minimap;
 mod search;
 mod syntax;
 
@@ -42,9 +38,10 @@ pub mod core;
 // Phase 2: Search functionality
 pub mod search_panel;
 
+// Common types
+pub mod types;
+
 // Phase 1: High-performance rendering
-pub mod canvas_renderer;
-pub mod debounce;
 pub mod highlight_job;
 pub mod virtual_scroll; // ✅ IntelliJ Pro: Async syntax highlighting
 
@@ -67,22 +64,13 @@ pub mod refactoring;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod git_ui;
 
-use components::EditorApp;
 use components_tauri::EditorAppTauri;
-use file_tree::get_mock_file_tree;
 
 /// Test helper: Get mock file tree data for testing
 #[wasm_bindgen]
 pub fn get_test_file_tree() -> JsValue {
-    let files = get_mock_file_tree();
-    serde_wasm_bindgen::to_value(&files).unwrap()
-}
-
-/// Get document from global scope (fallback for test environments)
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = globalThis, js_name = document)]
-    static DOCUMENT: web_sys::Document;
+    // Return empty array - Tauri version uses native file system
+    serde_wasm_bindgen::to_value(&Vec::<()>::new()).unwrap()
 }
 
 /// Initialize the BerryEditor WASM application
@@ -92,32 +80,28 @@ pub fn init_berry_editor() {
     // Set up better panic messages in development
     console_error_panic_hook::set_once();
 
-    // Get the root element
-    // In test environments (like jsdom), web_sys::window() might not work properly
-    // So we try to get the document directly from JavaScript global scope
-    let document = match window() {
-        Some(win) => win.document().expect("no document"),
-        None => {
-            // Fallback for test environments: access document from global scope
-            DOCUMENT.clone()
-        }
-    };
+    // ✅ Use web_sys with fully qualified names instead of importing
+    let document = web_sys::window()
+        .expect("no window")
+        .document()
+        .expect("no document");
 
-    let root = document
-        .get_element_by_id("berry-editor-wasm-root")
-        .expect("berry-editor-wasm-root element not found")
-        .dyn_into::<HtmlElement>()
-        .expect("root element is not an HtmlElement");
+    // Get and clear the root element
+    if let Some(root) = document.get_element_by_id("berry-editor-wasm-root") {
+        root.set_inner_html("");
 
-    // Clear loading message
-    root.set_inner_html("");
+        // ✅ Convert Element to HtmlElement using JsCast (no web_sys import needed)
+        let html_root: web_sys::HtmlElement = root
+            .dyn_into()
+            .expect("berry-editor-wasm-root is not an HtmlElement");
 
-    // Mount the Leptos app to the specific element
-    // ✅ UNIFIED: Always use Tauri version for consistent behavior
-    // Desktop and Web now have identical functionality
-    let mount_handle = leptos::mount::mount_to(root.clone(), || {
-        view! { <EditorAppTauri/> }
-    });
+        // ✅ Mount the Leptos app
+        let mount_handle = leptos::mount::mount_to(html_root, || {
+            view! { <EditorAppTauri/> }
+        });
 
-    mount_handle.forget();
+        mount_handle.forget();
+    } else {
+        leptos::logging::error!("berry-editor-wasm-root element not found");
+    }
 }

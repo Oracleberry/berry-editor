@@ -9,7 +9,10 @@
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::{window, HtmlElement};
+
+// ✅ Use test helpers instead of web_sys directly
+mod test_helpers;
+use test_helpers::{get_test_window, get_test_document};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -41,10 +44,10 @@ fn get_col_from_x(line_str: &str, x: f64) -> usize {
 }
 
 /// Create a test editor line element with proper CSS
-fn create_test_line(text: &str) -> HtmlElement {
-    let document = window().unwrap().document().unwrap();
+fn create_test_line(text: &str) -> web_sys::HtmlElement {
+    let document = get_test_document();
     let line = document.create_element("div").unwrap()
-        .dyn_into::<HtmlElement>().unwrap();
+        .dyn_into::<web_sys::HtmlElement>().unwrap();
 
     // Apply exact same CSS as editor
     line.set_attribute("style", &format!(
@@ -72,14 +75,14 @@ fn create_test_line(text: &str) -> HtmlElement {
 }
 
 /// Get actual pixel position of character in rendered DOM
-fn get_character_pixel_position(element: &HtmlElement, char_index: usize) -> f64 {
+fn get_character_pixel_position(element: &web_sys::HtmlElement, char_index: usize) -> f64 {
     let text = element.text_content().unwrap();
     let prefix = text.chars().take(char_index).collect::<String>();
 
     // Create a span with just the prefix to measure its width
-    let document = window().unwrap().document().unwrap();
+    let document = get_test_document();
     let span = document.create_element("span").unwrap()
-        .dyn_into::<HtmlElement>().unwrap();
+        .dyn_into::<web_sys::HtmlElement>().unwrap();
 
     span.set_text_content(Some(&prefix));
     element.append_child(&span).ok();

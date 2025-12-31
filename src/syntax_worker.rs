@@ -4,11 +4,9 @@
 //! Guarantees 144fps UI by isolating parsing to separate thread
 
 use leptos::prelude::*;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{Worker, MessageEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::core::bridge;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,116 +67,101 @@ pub struct HighlightedLine {
     pub html: String,
 }
 
-/// Syntax Worker wrapper
+/// Syntax Worker wrapper (100% web_sys free)
 pub struct SyntaxWorker {
-    worker: Worker,
-    on_result: RwSignal<Option<HashMap<usize, String>>>,
-    on_error: RwSignal<Option<String>>,
+    // ✅ No web_sys::Worker - just a handle for posting messages
+    worker: bridge::WorkerHandle<SyntaxWorkerMessage>,
 }
 
 impl SyntaxWorker {
     /// Create a new syntax worker
+    ///
+    /// This function sets up the worker through the bridge abstraction,
+    /// keeping web_sys usage isolated to the bridge module.
     pub fn new(
         on_result: RwSignal<Option<HashMap<usize, String>>>,
         on_error: RwSignal<Option<String>>,
-    ) -> Result<Self, JsValue> {
-        let worker = Worker::new("/syntax-worker.js")?;
-
-        Ok(Self {
-            worker,
-            on_result,
-            on_error,
-        })
-    }
-
-    /// Set up message handler
-    pub fn setup_handlers(&self) {
-        let on_result = self.on_result;
-        let on_error = self.on_error;
-
-        let onmessage_callback = Closure::wrap(Box::new(move |event: MessageEvent| {
-            if let Ok(response) = serde_wasm_bindgen::from_value::<SyntaxWorkerResponse>(event.data()) {
-                match response {
-                    SyntaxWorkerResponse::Ready => {
-                        web_sys::console::log_1(&"Syntax worker ready".into());
-                    }
-                    SyntaxWorkerResponse::HighlightResult { results } => {
-                        let mut map = HashMap::new();
-                        for line in results {
-                            map.insert(line.line_number, line.html);
+    ) -> Result<Self, wasm_bindgen::JsValue> {
+        // ✅ Use bridge to spawn worker - web_sys is hidden
+        let worker = bridge::spawn_worker::<SyntaxWorkerMessage>(
+            "/syntax-worker.js",
+            move |data| {
+                if let Ok(response) = serde_wasm_bindgen::from_value::<SyntaxWorkerResponse>(data) {
+                    match response {
+                        SyntaxWorkerResponse::Ready => {
+                            leptos::logging::log!("Syntax worker ready");
                         }
-                        on_result.set(Some(map));
-                    }
-                    SyntaxWorkerResponse::SingleLineResult { line_number, html } => {
-                        let mut map = HashMap::new();
-                        map.insert(line_number, html);
-                        on_result.set(Some(map));
-                    }
-                    SyntaxWorkerResponse::CacheCleared => {
-                        web_sys::console::log_1(&"Cache cleared".into());
-                    }
-                    SyntaxWorkerResponse::LanguageSet { language } => {
-                        web_sys::console::log_1(&format!("Language set to: {}", language).into());
-                    }
-                    SyntaxWorkerResponse::CacheStats { size, is_analyzing } => {
-                        web_sys::console::log_1(&format!("Cache: {} items, analyzing: {}", size, is_analyzing).into());
-                    }
-                    SyntaxWorkerResponse::Error { error } => {
-                        on_error.set(Some(error));
+                        SyntaxWorkerResponse::HighlightResult { results } => {
+                            let mut map = HashMap::new();
+                            for line in results {
+                                map.insert(line.line_number, line.html);
+                            }
+                            on_result.set(Some(map));
+                        }
+                        SyntaxWorkerResponse::SingleLineResult { line_number, html } => {
+                            let mut map = HashMap::new();
+                            map.insert(line_number, html);
+                            on_result.set(Some(map));
+                        }
+                        SyntaxWorkerResponse::CacheCleared => {
+                            leptos::logging::log!("Cache cleared");
+                        }
+                        SyntaxWorkerResponse::LanguageSet { language } => {
+                            leptos::logging::log!("Language set to: {}", language);
+                        }
+                        SyntaxWorkerResponse::CacheStats { size, is_analyzing } => {
+                            leptos::logging::log!("Cache: {} items, analyzing: {}", size, is_analyzing);
+                        }
+                        SyntaxWorkerResponse::Error { error } => {
+                            on_error.set(Some(error));
+                        }
                     }
                 }
-            }
-        }) as Box<dyn FnMut(_)>);
+            },
+        )?;
 
-        self.worker.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
-        onmessage_callback.forget();
-    }
-
-    /// Send message to worker
-    pub fn post_message(&self, message: SyntaxWorkerMessage) -> Result<(), JsValue> {
-        let js_message = serde_wasm_bindgen::to_value(&message)?;
-        self.worker.post_message(&js_message)
+        Ok(Self { worker })
     }
 
     /// Highlight multiple lines (batch)
-    pub fn highlight_lines(&self, lines: Vec<(usize, String)>, language: Option<String>) -> Result<(), JsValue> {
+    pub fn highlight_lines(&self, lines: Vec<(usize, String)>, language: Option<String>) {
         let lines_to_highlight: Vec<LineToHighlight> = lines
             .into_iter()
             .map(|(line_number, text)| LineToHighlight { line_number, text })
             .collect();
 
-        self.post_message(SyntaxWorkerMessage::HighlightLines {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(SyntaxWorkerMessage::HighlightLines {
             lines: lines_to_highlight,
             language,
-        })
+        });
     }
 
     /// Highlight single line (for real-time typing)
-    pub fn highlight_single_line(&self, line_number: usize, text: String, language: Option<String>) -> Result<(), JsValue> {
-        self.post_message(SyntaxWorkerMessage::HighlightSingleLine {
+    pub fn highlight_single_line(&self, line_number: usize, text: String, language: Option<String>) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(SyntaxWorkerMessage::HighlightSingleLine {
             line_number,
             text,
             language,
-        })
+        });
     }
 
     /// Clear cache
-    pub fn clear_cache(&self) -> Result<(), JsValue> {
-        self.post_message(SyntaxWorkerMessage::ClearCache)
+    pub fn clear_cache(&self) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(SyntaxWorkerMessage::ClearCache);
     }
 
     /// Set language
-    pub fn set_language(&self, language: String) -> Result<(), JsValue> {
-        self.post_message(SyntaxWorkerMessage::SetLanguage { language })
+    pub fn set_language(&self, language: String) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(SyntaxWorkerMessage::SetLanguage { language });
     }
 
     /// Get cache stats
-    pub fn get_cache_stats(&self) -> Result<(), JsValue> {
-        self.post_message(SyntaxWorkerMessage::GetCacheStats)
-    }
-
-    /// Terminate worker
-    pub fn terminate(&self) {
-        self.worker.terminate();
+    pub fn get_cache_stats(&self) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(SyntaxWorkerMessage::GetCacheStats);
     }
 }

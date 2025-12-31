@@ -17,18 +17,23 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlElement",
     "HtmlInputElement",
+    "HtmlDivElement",
     # ❌ "HtmlTextAreaElement" removed - using ContentEditable div instead
     "InputEvent",  # ✅ Added for on:beforeinput
     "Event",
     "KeyboardEvent",
+    "KeyboardEventInit",  # ✅ Added for creating keyboard events in tests
     "MouseEvent",
     "WheelEvent",
     "CompositionEvent",
+    "Node",  # ✅ Added for DOM manipulation
+    "NodeList",  # ✅ Added for child_nodes()
     "ResizeObserver",
     "ResizeObserverEntry",
     "DomRect",
-    "CanvasRenderingContext2d",
+    "CanvasRenderingContext2d",  # ✅ Canvas API
     "HtmlCanvasElement",
+    "TextMetrics",  # ✅ Canvas text measurement
     "CssStyleDeclaration",
     "EventTarget",
     "Navigator",
@@ -63,7 +68,9 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-# E2E testing dependencies
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# E2E testing dependencies (only for native target)
 tokio = { version = "1", features = ["full"] }
 fantoccini = "0.21"
 

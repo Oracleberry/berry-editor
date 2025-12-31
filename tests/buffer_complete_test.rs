@@ -239,7 +239,7 @@ fn test_buffer_10k_lines_performance() {
     let elapsed = end - start;
 
     assert_eq!(buffer.len_lines(), 10000);
-    web_sys::console::log_1(&format!("10k lines buffer creation took {}ms", elapsed).into());
+    leptos::logging::log!("10k lines buffer creation took {}ms", elapsed);
 
     // Should be fast (< 100ms for 10k lines)
     assert!(elapsed < 100.0, "Buffer creation should be fast");
@@ -287,7 +287,7 @@ fn test_buffer_50k_lines() {
     let buffer = TextBuffer::from_str(&content);
 
     assert_eq!(buffer.len_lines(), 50000);
-    web_sys::console::log_1(&"Successfully created 50k line buffer".into());
+    leptos::logging::log!("Successfully created 50k line buffer");
 }
 
 #[wasm_bindgen_test]

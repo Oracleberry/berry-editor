@@ -953,30 +953,35 @@ pub fn VirtualEditorPanel(
                     );
                 }
 
-                // カーソルを描画
-                renderer.draw_cursor(tab.cursor_line, tab.cursor_col, tab.scroll_top);
+                // カーソルを描画（現在行のテキストを渡す）
+                let cursor_line_text = tab.buffer.line(tab.cursor_line).unwrap_or_default();
+                renderer.draw_cursor(tab.cursor_line, tab.cursor_col, tab.scroll_top, &cursor_line_text);
 
                 // IME未確定文字列を描画（あれば）
                 let composing = composing_text.get();
                 if !composing.is_empty() {
+                    // 全角文字を考慮してカーソル位置までの実際の幅を測定
+                    let text_before_cursor: String = cursor_line_text
+                        .chars()
+                        .take(tab.cursor_col)
+                        .collect();
                     let x = renderer.gutter_width() + 15.0
-                        + (tab.cursor_col as f64 * renderer.char_width_ascii());
+                        + renderer.measure_text(&text_before_cursor);
                     let y = tab.cursor_line as f64 * LINE_HEIGHT - tab.scroll_top + 15.0;
 
-                    // 未確定文字列を描画（灰色）
-                    renderer.draw_line(
-                        tab.cursor_line,
-                        tab.cursor_line as f64 * LINE_HEIGHT - tab.scroll_top,
-                        &composing,
-                        "#808080", // グレー
-                    );
+                    // 未確定文字列をカーソル位置から描画（灰色）
+                    renderer.draw_text_at(x, y, &composing, "#808080");
 
-                    leptos::logging::log!("Drew composing text: {}", composing);
+                    leptos::logging::log!("Drew composing text '{}' at ({}, {})", composing, x, y);
                 }
 
-                // カーソル位置を計算（IME用）
+                // カーソル位置を計算（IME用）- 全角文字対応
+                let text_before_cursor: String = cursor_line_text
+                    .chars()
+                    .take(tab.cursor_col)
+                    .collect();
                 let cursor_pixel_x = renderer.gutter_width() + 15.0
-                    + (tab.cursor_col as f64 * renderer.char_width_ascii());
+                    + renderer.measure_text(&text_before_cursor);
                 let cursor_pixel_y = tab.cursor_line as f64 * LINE_HEIGHT - tab.scroll_top;
 
                 cursor_x.set(cursor_pixel_x);
@@ -1043,16 +1048,17 @@ pub fn VirtualEditorPanel(
                         "position: absolute; \
                          left: {}px; \
                          top: {}px; \
-                         width: 200px; \
+                         width: 2px; \
                          height: {}px; \
-                         opacity: 0.3; \
+                         opacity: 0; \
                          z-index: 999; \
-                         color: red; \
-                         background: yellow; \
-                         border: 2px solid red; \
+                         color: transparent; \
+                         background: transparent; \
+                         border: none; \
                          outline: none; \
                          padding: 0; \
-                         margin: 0;",
+                         margin: 0; \
+                         caret-color: transparent;",
                         cursor_x.get(),
                         cursor_y.get(),
                         LINE_HEIGHT

@@ -85,20 +85,24 @@ extern "C" {
 // is_tauri_context - berry_invoke Check
 // ========================================
 
-/// Check if running in Tauri context by detecting window.berry_invoke
-#[cfg(target_arch = "wasm32")]
+/// Check if running in Tauri context
+/// Returns false in test environment (wasm-bindgen-test)
 pub fn is_tauri_context() -> bool {
-    if let Some(window) = web_sys::window() {
-        js_sys::Reflect::has(&window, &JsValue::from_str("berry_invoke")).unwrap_or(false)
-    } else {
+    // ✅ Check if window.__TAURI__ exists to detect Tauri environment
+    // In WASM test environment (wasm-bindgen-test), this will be false
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Some(window) = web_sys::window() {
+            let js_val = js_sys::Reflect::get(&window, &"__TAURI__".into()).ok();
+            return js_val.is_some() && !js_val.unwrap().is_undefined();
+        }
         false
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn is_tauri_context() -> bool {
-    // Native builds are always Tauri
-    true
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
 }
 
 // ========================================

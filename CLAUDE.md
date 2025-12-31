@@ -453,4 +453,21 @@ A change is successful when:
 
 ---
 
+## ワークフロー・鉄の掟 (Test-Driven Cleanup)
+コーディング完了を定義する3つのステップ：
+
+1.  **影響範囲の検証 (E2E First)**:
+    - 実装・修正が完了した後は、必ず **デスクトップアプリのE2Eテスト** (`./run_e2e_tests.sh`) を実行し、既存機能にデグレード（先祖返り）がないことを証明すること。
+2.  **新機能の保証 (Add E2E)**:
+    - 新しく追加した機能や修正したバグに対して、それを検証する E2E テストが存在しない場合は、**必ず新規に E2E テストを追加**すること。
+3.  **負の遺産の掃除 (Delete Obsolete)**:
+    - 設計変更（例: DOMからCanvasへの移行）によって**不要になったテストコードは、即座に、かつ完全に削除**すること。動かないテストを残すことは罪である。
+
+## テストの優先順位
+- **Canvas導通**: 文字入力、IME（日本語入力）、カーソル移動が Canvas 上で期待通り動作するか。
+- **データ整合性**: `Rope` バッファと Canvas 描画座標が 1px の狂いもなく同期しているか。
+- **リサイズ耐性**: ウィンドウリサイズ後に描画が崩れず、入力が継続できるか。
+
+---
+
 **Remember**: This is a **100% Canvas + 100% Rust** editor. There is NO contenteditable, NO textarea, NO browser native text input. We control everything from keyboard events to pixel rendering.

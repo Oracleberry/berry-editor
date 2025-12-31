@@ -3,14 +3,14 @@
 //! Editor with integrated LSP support for completions, diagnostics, and hover.
 
 use leptos::prelude::*;
+use leptos::ev::{KeyboardEvent, MouseEvent};
 use leptos::task::spawn_local;
 use crate::buffer::TextBuffer;
 use crate::syntax::SyntaxHighlighter;
 use crate::lsp_ui::{LspIntegration, CompletionItem, Diagnostic, HoverInfo};
 use crate::completion_widget::CompletionWidget;
 use crate::hover_tooltip::HoverTooltip;
-use crate::canvas_renderer::Position;
-use web_sys::{KeyboardEvent, MouseEvent};
+use crate::types::Position;
 
 #[derive(Clone)]
 struct EditorTab {

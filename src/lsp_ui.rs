@@ -5,7 +5,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::common::async_bridge::TauriBridge;
-use crate::canvas_renderer::Position;
+use crate::types::Position;
 
 /// LSP Completion Item
 #[derive(Debug, Clone, Serialize, Deserialize)]

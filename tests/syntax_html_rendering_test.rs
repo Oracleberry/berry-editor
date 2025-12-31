@@ -4,6 +4,8 @@
 //! not escaped as text. This test catches the regression where `inner_html`
 //! was used instead of `prop:innerHTML` in Leptos 0.7.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use fantoccini::{Client, ClientBuilder};
 use serde_json::json;
 use std::time::Duration;

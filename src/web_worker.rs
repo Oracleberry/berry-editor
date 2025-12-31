@@ -4,10 +4,9 @@
 //! without blocking the UI
 
 use leptos::prelude::*;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{Worker, MessageEvent};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsValue;
+use crate::core::bridge;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -54,103 +53,81 @@ pub struct ErrorData {
     pub timestamp: u64,
 }
 
-/// Web Worker wrapper for background indexing
+/// Web Worker wrapper for background indexing (100% web_sys free)
 pub struct IndexerWorker {
-    worker: Worker,
-    on_progress: RwSignal<Option<ProgressData>>,
-    on_error: RwSignal<Option<String>>,
+    // ✅ No web_sys::Worker - just a handle for posting messages
+    worker: bridge::WorkerHandle<WorkerMessage>,
 }
 
 impl IndexerWorker {
     /// Create a new worker instance
+    ///
+    /// This function sets up the worker through the bridge abstraction,
+    /// keeping web_sys usage isolated to the bridge module.
     pub fn new(
         on_progress: RwSignal<Option<ProgressData>>,
         on_error: RwSignal<Option<String>>,
     ) -> Result<Self, JsValue> {
-        let worker = Worker::new("/indexer-worker.js")?;
-
-        Ok(Self {
-            worker,
-            on_progress,
-            on_error,
-        })
-    }
-
-    /// Set up message handler
-    pub fn setup_handlers(&self) {
-        let on_progress = self.on_progress;
-        let on_error = self.on_error;
-
-        let onmessage_callback = Closure::wrap(Box::new(move |event: MessageEvent| {
-            if let Ok(response) = serde_wasm_bindgen::from_value::<WorkerResponse>(event.data()) {
-                match response {
-                    WorkerResponse::Ready => {
-                        web_sys::console::log_1(&"Worker ready".into());
-                    }
-                    WorkerResponse::Progress { data } => {
-                        on_progress.set(Some(data));
-                    }
-                    WorkerResponse::Status { .. } => {
-                        // Handle status if needed
-                    }
-                    WorkerResponse::SearchResult { .. } => {
-                        // Handle search results if needed
-                    }
-                    WorkerResponse::CallTauri { command: _, args: _ } => {
-                        // Note: Tauri calls handled separately via events
-                        web_sys::console::log_1(&"Tauri call requested".into());
-                    }
-                    WorkerResponse::Error { error } => {
-                        on_error.set(Some(error));
+        // ✅ Use bridge to spawn worker - web_sys is hidden
+        let worker = bridge::spawn_worker::<WorkerMessage>(
+            "/indexer-worker.js",
+            move |data| {
+                if let Ok(response) = serde_wasm_bindgen::from_value::<WorkerResponse>(data) {
+                    match response {
+                        WorkerResponse::Ready => {
+                            leptos::logging::log!("Worker ready");
+                        }
+                        WorkerResponse::Progress { data } => {
+                            on_progress.set(Some(data));
+                        }
+                        WorkerResponse::Status { .. } => {
+                            // Handle status if needed
+                        }
+                        WorkerResponse::SearchResult { .. } => {
+                            // Handle search results if needed
+                        }
+                        WorkerResponse::CallTauri { command: _, args: _ } => {
+                            // Note: Tauri calls handled separately via events
+                            leptos::logging::log!("Tauri call requested");
+                        }
+                        WorkerResponse::Error { error } => {
+                            on_error.set(Some(error));
+                        }
                     }
                 }
-            }
-        }) as Box<dyn FnMut(_)>);
+            },
+        )?;
 
-        self.worker.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
-        onmessage_callback.forget();
-    }
-
-    /// Send message to worker
-    pub fn post_message(&self, message: WorkerMessage) -> Result<(), JsValue> {
-        let js_message = serde_wasm_bindgen::to_value(&message)?;
-        self.worker.post_message(&js_message)
-    }
-
-    /// Send result back to worker
-    pub fn send_result(&self, result: serde_json::Value) -> Result<(), JsValue> {
-        let js_value = serde_wasm_bindgen::to_value(&result)?;
-        self.worker.post_message(&js_value)
+        Ok(Self { worker })
     }
 
     /// Index workspace
-    pub fn index_workspace(&self, path: String) -> Result<(), JsValue> {
-        self.post_message(WorkerMessage::IndexWorkspace {
+    pub fn index_workspace(&self, path: String) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(WorkerMessage::IndexWorkspace {
             path,
             api_endpoint: None,
-        })
+        });
     }
 
     /// Search symbols
-    pub fn search_symbols(&self, query: String) -> Result<(), JsValue> {
-        self.post_message(WorkerMessage::SearchSymbols {
+    pub fn search_symbols(&self, query: String) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(WorkerMessage::SearchSymbols {
             query,
             api_endpoint: None,
-        })
+        });
     }
 
     /// Get status
-    pub fn get_status(&self) -> Result<(), JsValue> {
-        self.post_message(WorkerMessage::GetStatus)
+    pub fn get_status(&self) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(WorkerMessage::GetStatus);
     }
 
     /// Cancel indexing
-    pub fn cancel(&self) -> Result<(), JsValue> {
-        self.post_message(WorkerMessage::Cancel)
-    }
-
-    /// Terminate worker
-    pub fn terminate(&self) {
-        self.worker.terminate();
+    pub fn cancel(&self) {
+        // ✅ Use WorkerHandle - no web_sys::Worker
+        self.worker.post(WorkerMessage::Cancel);
     }
 }

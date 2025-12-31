@@ -8,7 +8,12 @@
 use berry_editor::core::virtual_editor::VirtualEditorPanel;
 use berry_editor::buffer::TextBuffer;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+
+// ✅ Use test helpers instead of web_sys directly
+mod test_helpers;
+use test_helpers::{get_test_document, wait_for_render};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -27,7 +32,7 @@ async fn test_editor_initialization() {
     // Wait for render
     wait_for_render().await;
 
-    let document = web_sys::window().unwrap().document().unwrap();
+    let document = get_test_document();
 
     // Verify main structure exists
     assert!(
@@ -41,7 +46,7 @@ async fn test_editor_initialization() {
 // ========================================
 
 #[wasm_bindgen_test]
-async fn test_file_loading_creates_tab() {
+async fn test_file_loading_creates_canvas() {
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -55,12 +60,17 @@ async fn test_file_loading_creates_tab() {
 
     // Wait for effect to execute
     wait_for_render().await;
+    wait_for_render().await;
 
-    let document = web_sys::window().unwrap().document().unwrap();
+    let document = get_test_document();
 
-    // Verify tab was created (check for tab bar, not specific tab structure)
-    let tab_bar = document.query_selector(".berry-editor-tab-bar").unwrap();
-    assert!(tab_bar.is_some(), "Tab bar should exist after loading file");
+    // ✅ Canvas Architecture: Verify canvas was created after file load
+    let canvas = document.query_selector("canvas").unwrap();
+    assert!(canvas.is_some(), "Canvas should exist after loading file");
+
+    let canvas_el = canvas.unwrap().dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
+    assert!(canvas_el.width() > 0, "Canvas should have non-zero width");
+    assert!(canvas_el.height() > 0, "Canvas should have non-zero height");
 }
 
 // ========================================
@@ -68,7 +78,7 @@ async fn test_file_loading_creates_tab() {
 // ========================================
 
 #[wasm_bindgen_test]
-async fn test_virtual_scrolling_with_large_file() {
+async fn test_canvas_renders_large_file() {
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -86,14 +96,16 @@ async fn test_virtual_scrolling_with_large_file() {
     selected_file.set(Some(("/large.txt".to_string(), large_content)));
 
     wait_for_render().await;
+    wait_for_render().await;
 
-    // Virtual scrolling should be active - we don't verify exact DOM structure,
-    // just that the component rendered
-    let document = web_sys::window().unwrap().document().unwrap();
-    assert!(
-        document.query_selector(".berry-editor-pane").unwrap().is_some(),
-        "Editor pane should exist for large file"
-    );
+    // ✅ Canvas Architecture: Verify canvas rendered large file
+    let document = get_test_document();
+    let canvas = document.query_selector("canvas").unwrap();
+    assert!(canvas.is_some(), "Canvas should exist for large file");
+
+    let canvas_el = canvas.unwrap().dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
+    assert!(canvas_el.width() > 0, "Canvas should have width for large file");
+    assert!(canvas_el.height() > 0, "Canvas should have height for large file");
 }
 
 // ========================================
@@ -138,19 +150,6 @@ fn test_buffer_line_operations() {
 
 // ========================================
 // Helper Functions
-// ========================================
-
-async fn wait_for_render() {
-    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 100)
-            .unwrap();
-    }))
-    .await
-    .unwrap();
-}
-
 // ========================================
 // Cursor Position Tests (Logic Only)
 // ========================================

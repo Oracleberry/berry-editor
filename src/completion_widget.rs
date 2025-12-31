@@ -3,11 +3,11 @@
 //! IntelliJ-style completion popup with keyboard navigation.
 
 use leptos::prelude::*;
+use leptos::ev::KeyboardEvent;
 use crate::lsp_ui::CompletionItem;
-use crate::canvas_renderer::Position;
+use crate::types::Position;
 use crate::common::ui_components::ListView;
 use crate::common::event_handler::KeyCombo;
-use web_sys::KeyboardEvent;
 
 /// Completion widget component
 #[component]

@@ -126,9 +126,16 @@ impl CanvasRenderer {
         let _ = self.context.fill_text(text, x, y);
     }
 
+    /// 指定座標にテキストを描画（IME未確定文字用）
+    pub fn draw_text_at(&self, x: f64, y: f64, text: &str, color: &str) {
+        self.context.set_fill_style(&color.into());
+        let _ = self.context.fill_text(text, x, y);
+    }
+
     /// カーソルを描画（縦線）
-    pub fn draw_cursor(&self, line: usize, col: usize, scroll_top: f64) {
-        let x = self.gutter_width + 15.0 + self.calculate_x_offset(col);
+    /// line_text: カーソルがある行のテキスト全体
+    pub fn draw_cursor(&self, line: usize, col: usize, scroll_top: f64, line_text: &str) {
+        let x = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, col);
         let y = line as f64 * self.line_height - scroll_top;
 
         self.context.set_stroke_style(&COLOR_CURSOR.into());
@@ -165,8 +172,27 @@ impl CanvasRenderer {
     }
 
     /// 文字列の幅を計算（ASCII + 全角混在対応）
+    /// 実際のテキストから、指定された列位置までの幅を測定
+    fn calculate_x_offset_from_text(&self, line_text: &str, col: usize) -> f64 {
+        // 列位置までの文字列を取得
+        let chars: Vec<char> = line_text.chars().collect();
+        let end_col = col.min(chars.len());
+
+        if end_col == 0 {
+            return 0.0;
+        }
+
+        // カーソル位置までの文字列
+        let text_up_to_cursor: String = chars[0..end_col].iter().collect();
+
+        // 実際の幅を測定
+        self.measure_text(&text_up_to_cursor)
+    }
+
+    /// 文字列の幅を計算（後方互換性のため残す、非推奨）
+    #[allow(dead_code)]
     fn calculate_x_offset(&self, col: usize) -> f64 {
-        // TODO: 実際の文字列から計算（今は簡易実装）
+        // 簡易実装（ASCII幅のみ）
         col as f64 * self.char_width_ascii
     }
 

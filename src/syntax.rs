@@ -311,12 +311,13 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_token_type_colors() {
-        assert_eq!(TokenType::Keyword.to_color(), "#569cd6");
-        assert_eq!(TokenType::Function.to_color(), "#dcdcaa");
-        assert_eq!(TokenType::Type.to_color(), "#4ec9b0");
-        assert_eq!(TokenType::String.to_color(), "#ce9178");
-        assert_eq!(TokenType::Number.to_color(), "#b5cea8");
-        assert_eq!(TokenType::Comment.to_color(), "#6a9955");
+        // IntelliJ IDEA / RustRover Darcula color scheme
+        assert_eq!(TokenType::Keyword.to_color(), "#CC7832");
+        assert_eq!(TokenType::Function.to_color(), "#FFC66D");
+        assert_eq!(TokenType::Type.to_color(), "#A9B7C6");
+        assert_eq!(TokenType::String.to_color(), "#6A8759");
+        assert_eq!(TokenType::Number.to_color(), "#6897BB");
+        assert_eq!(TokenType::Comment.to_color(), "#629755");
     }
 
     #[wasm_bindgen_test]

@@ -1,0 +1,131 @@
+//! Quick test to check actual canvas height in browser
+use fantoccini::{ClientBuilder, Locator};
+
+#[tokio::test]
+async fn check_actual_canvas_dimensions() {
+    let client = ClientBuilder::native()
+        .connect("http://localhost:4444")
+        .await
+        .expect("Failed to connect");
+
+    client.goto("http://localhost:8081").await.expect("Failed to navigate");
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    println!("\n=== Initial state ===");
+    let initial_container = client
+        .execute(
+            "const container = document.querySelector('.berry-editor-main'); \
+             if (container) { \
+                 const rect = container.getBoundingClientRect(); \
+                 return { width: rect.width, height: rect.height }; \
+             } \
+             return null;",
+            vec![],
+        )
+        .await
+        .unwrap();
+    println!("Container: {:?}", initial_container);
+
+    let initial_canvas = client
+        .execute(
+            "const canvas = document.querySelector('canvas'); \
+             return canvas ? { width: canvas.width, height: canvas.height } : null;",
+            vec![],
+        )
+        .await
+        .unwrap();
+    println!("Canvas: {:?}", initial_canvas);
+
+    // Check what files are available
+    let file_tree_info = client
+        .execute(
+            "const files = document.querySelectorAll('[data-path]'); \
+             return Array.from(files).slice(0, 10).map(f => f.getAttribute('data-path'));",
+            vec![],
+        )
+        .await
+        .unwrap();
+    eprintln!("Available files (first 10): {:?}", file_tree_info);
+
+    // Click a file
+    eprintln!("\n=== Clicking a .rs file ===");
+    match client.find(Locator::Css("div[data-path$='.rs']")).await {
+        Ok(file_elem) => {
+            eprintln!("Found .rs file, clicking...");
+            file_elem.click().await.expect("Failed to click");
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        let after_container = client
+            .execute(
+                "const container = document.querySelector('.berry-editor-main'); \
+                 if (container) { \
+                     const rect = container.getBoundingClientRect(); \
+                     return { width: rect.width, height: rect.height }; \
+                 } \
+                 return null;",
+                vec![],
+            )
+            .await
+            .unwrap();
+        eprintln!("Container after file load: {:?}", after_container);
+
+        let after_canvas = client
+            .execute(
+                "const canvas = document.querySelector('canvas'); \
+                 return canvas ? { width: canvas.width, height: canvas.height } : null;",
+                vec![],
+            )
+            .await
+            .unwrap();
+        eprintln!("Canvas after file load: {:?}", after_canvas);
+
+        // Check parent elements
+        let parent_info = client
+            .execute(
+                "const container = document.querySelector('.berry-editor-main'); \
+                 if (container && container.parentElement) { \
+                     const rect = container.parentElement.getBoundingClientRect(); \
+                     return { \
+                         className: container.parentElement.className, \
+                         width: rect.width, \
+                         height: rect.height, \
+                         style: container.parentElement.getAttribute('style') \
+                     }; \
+                 } \
+                 return null;",
+                vec![],
+            )
+            .await
+            .unwrap();
+        eprintln!("Parent element: {:?}", parent_info);
+
+        let grandparent_info = client
+            .execute(
+                "const container = document.querySelector('.berry-editor-main'); \
+                 if (container && container.parentElement && container.parentElement.parentElement) { \
+                     const gp = container.parentElement.parentElement; \
+                     const rect = gp.getBoundingClientRect(); \
+                     return { \
+                         className: gp.className, \
+                         width: rect.width, \
+                         height: rect.height \
+                     }; \
+                 } \
+                 return null;",
+                vec![],
+            )
+            .await
+            .unwrap();
+        eprintln!("Grandparent element: {:?}", grandparent_info);
+
+        // Force output flush
+        eprintln!("\n=== TEST COMPLETE ===\n");
+        }
+        Err(e) => {
+            eprintln!("ERROR: Could not find .rs file: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let _ = client.close().await;
+}

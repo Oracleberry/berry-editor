@@ -77,24 +77,34 @@ pub fn FileTreePanelTauri(
 
     // CRITICAL: Load immediately in component body, not in Effect
 
-    let root_for_tree = root_path.clone();
-    spawn_local(async move {
+    // ✅ In test environment, skip Tauri backend calls and show empty tree
+    #[cfg(test)]
+    {
+        tree.set(Vec::new());
+        is_loading.set(false);
+    }
 
-        // ✅ IntelliJ Design: Lazy Loading - load only first level initially
-        // Further levels are loaded on-demand when folders are expanded
-        match tauri_bindings::read_dir(&root_for_tree, Some(1)).await {
-            Ok(nodes) => {
-                // ✅ Safe: Use .set() to trigger reactivity and update UI
-                tree.set(nodes);
-                is_loading.set(false);
+    // ✅ Only call Tauri backend in non-test environment
+    #[cfg(not(test))]
+    {
+        let root_for_tree = root_path.clone();
+        spawn_local(async move {
+            // ✅ IntelliJ Design: Lazy Loading - load only first level initially
+            // Further levels are loaded on-demand when folders are expanded
+            match tauri_bindings::read_dir(&root_for_tree, Some(1)).await {
+                Ok(nodes) => {
+                    // ✅ Safe: Use .set() to trigger reactivity and update UI
+                    tree.set(nodes);
+                    is_loading.set(false);
+                }
+                Err(e) => {
+                    // ✅ Safe: set empty on error
+                    tree.set(Vec::new());
+                    is_loading.set(false);
+                }
             }
-            Err(e) => {
-                // ✅ Safe: set empty on error
-                tree.set(Vec::new());
-                is_loading.set(false);
-            }
-        }
-    });
+        });
+    }
 
     // ✅ IntelliJ Pro: Index workspace on button click
     let on_index_click = move |_| {
@@ -121,7 +131,7 @@ pub fn FileTreePanelTauri(
         <div class="berry-editor-sidebar">
             <div class="berry-editor-sidebar-header">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span>"PROJECT"</span>
+                    <span>"EXPLORER"</span>
 
                     // ✅ IntelliJ Pro: Index workspace button
                     <button

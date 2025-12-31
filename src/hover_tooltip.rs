@@ -4,7 +4,7 @@
 
 use leptos::prelude::*;
 use crate::lsp_ui::HoverInfo;
-use crate::canvas_renderer::Position;
+use crate::types::Position;
 
 /// Hover tooltip component
 #[component]

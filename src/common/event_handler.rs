@@ -2,7 +2,7 @@
 //!
 //! Provides reusable event handling patterns to avoid duplication.
 
-use web_sys::{KeyboardEvent, MouseEvent};
+use leptos::ev::{KeyboardEvent, MouseEvent};
 
 /// Key combination for shortcuts
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -3,10 +3,10 @@
 //! IntelliJ-style Shift+Shift / VS Code Cmd+P equivalent
 
 use leptos::prelude::*;
+use leptos::ev::{KeyboardEvent, MouseEvent};
 use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use crate::common::async_bridge::TauriBridge;
-use web_sys::KeyboardEvent;
 use crate::tauri_bindings;  // ✅ IntelliJ Pro: Symbol search integration
 
 /// Action type for command palette
@@ -165,7 +165,7 @@ pub fn CommandPalette(
 
                 view! {
                     <div class="berry-command-palette-backdrop" on:click=move |_| show.set(false)>
-                        <div class="berry-command-palette" on:click=move |e| e.stop_propagation()>
+                        <div class="berry-command-palette" on:click=move |e: MouseEvent| e.stop_propagation()>
                             <input
                                 type="text"
                                 class="berry-command-palette-input"
