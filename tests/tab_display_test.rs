@@ -13,6 +13,9 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 async fn test_tab_bar_exists() {
+    // Clean up DOM from previous tests
+    get_test_document().body().unwrap().set_inner_html("");
+
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -35,6 +38,9 @@ async fn test_tab_bar_exists() {
 
 #[wasm_bindgen_test]
 async fn test_tab_close_button_exists() {
+    // Clean up DOM from previous tests
+    get_test_document().body().unwrap().set_inner_html("");
+
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -66,6 +72,9 @@ async fn test_tab_close_button_exists() {
 
 #[wasm_bindgen_test]
 async fn test_multiple_tabs_display() {
+    // Clean up DOM from previous tests
+    get_test_document().body().unwrap().set_inner_html("");
+
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -100,6 +109,9 @@ async fn test_multiple_tabs_display() {
 
 #[wasm_bindgen_test]
 async fn test_tab_switching() {
+    // Clean up DOM from previous tests
+    get_test_document().body().unwrap().set_inner_html("");
+
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {

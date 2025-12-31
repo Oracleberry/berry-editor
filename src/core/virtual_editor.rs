@@ -220,19 +220,21 @@ pub fn VirtualEditorPanel(
 
     // ファイルが選択されたらタブを作成または切り替え
     Effect::new(move |_| {
-        if let Some((path, content)) = selected_file.get() {
-            let mut tabs_vec = tabs.get();
+        let current_file = selected_file.get();
 
-            // 既存のタブを探す
-            if let Some(existing_index) = tabs_vec.iter().position(|t| t.file_path == path) {
-                // 既存のタブをアクティブにする
-                active_tab_index.set(Some(existing_index));
-            } else {
-                // 新しいタブを追加
-                tabs_vec.push(EditorTab::new(path, content));
-                tabs.set(tabs_vec.clone());
-                active_tab_index.set(Some(tabs_vec.len() - 1));
-            }
+        if let Some((path, content)) = current_file {
+            tabs.update(|tabs_vec| {
+                // 既存のタブを探す
+                if let Some(existing_index) = tabs_vec.iter().position(|t| &t.file_path == &path) {
+                    // 既存のタブをアクティブにする
+                    active_tab_index.set(Some(existing_index));
+                } else {
+                    // 新しいタブを追加
+                    tabs_vec.push(EditorTab::new(path.clone(), content.clone()));
+                    active_tab_index.set(Some(tabs_vec.len() - 1));
+                }
+            });
+
             render_trigger.set(0);
         }
     });
