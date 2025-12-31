@@ -875,6 +875,19 @@ pub fn VirtualEditorPanel(
                 }
             }
         }
+
+        // ドラッグ終了後、IME inputに再フォーカス
+        if let Some(input) = ime_input_ref.get() {
+            use wasm_bindgen::JsCast;
+            let input_clone = input.clone();
+            let callback = wasm_bindgen::closure::Closure::once(move || {
+                let _ = input_clone.focus();
+                leptos::logging::log!("🔄 Re-focused IME input after mouseup");
+            });
+            let window = web_sys::window().unwrap();
+            let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
+            callback.forget();
+        }
     };
 
     // ホイールでスクロール
@@ -1251,8 +1264,8 @@ pub fn VirtualEditorPanel(
                     }
                     on:blur=move |ev: leptos::ev::FocusEvent| {
                         leptos::logging::log!("❌ IME input BLURRED, re-focusing...");
-                        // 即座に再フォーカス（ただしIME composing中は除く）
-                        if !is_composing.get() {
+                        // 即座に再フォーカス（ただしIME composing中またはドラッグ中は除く）
+                        if !is_composing.get() && !is_dragging.get() {
                             if let Some(input) = ime_input_ref.get() {
                                 // Use requestAnimationFrame to avoid immediate blur loop
                                 use wasm_bindgen::JsCast;
