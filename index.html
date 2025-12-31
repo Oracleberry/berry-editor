@@ -36,12 +36,21 @@
             --char-width: 7.8125px; /* JetBrains Mono 13px の正確な値 */
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* ✅ 絶対に必要：最上位から高さを固定 */
+        html, body {
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
         body {
             /* JetBrains Mono - IntelliJ's official font */
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
             background: #2B2B2B; /* IntelliJ Darcula background */
             color: #a9b7c6; /* Darcula text color */
-            overflow: hidden;
             /* フォントレンダリング最適化 */
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
@@ -51,10 +60,18 @@
             font-variant-ligatures: none;
         }
 
+        /* ✅ Leptosがマウントされるルート要素も高さを100%にする */
+        #berry-editor-wasm-root {
+            height: 100%;
+            width: 100%;
+            display: flex;
+        }
+
         .berry-editor-container {
             display: flex;
-            height: 100vh;
-            width: 100vw;
+            flex-direction: column;
+            height: 100%; /* ✅ vhではなく親の100%を継承 */
+            width: 100%;
         }
 
         .berry-editor-sidebar {
@@ -166,11 +183,14 @@
         }
 
         .berry-editor-main {
-            flex: 1;
+            flex: 1; /* ✅ Flexアイテムとして残りの高さを占有 */
             display: flex;
             flex-direction: column;
+            min-width: 0;
+            min-height: 0;
             outline: none !important; /* フォーカス時の枠を消す */
             position: relative;
+            background: #2B2B2B;
         }
 
         .berry-editor-tab-bar {
@@ -212,120 +232,36 @@
         }
 
         .berry-editor-pane {
-            flex: 1;
-            background: #2B2B2B; /* IntelliJ Darcula editor background */
-            overflow: auto;
-            tab-size: 4; /* タブをスペース4つ分に固定 */
-            -moz-tab-size: 4;
-            outline: none !important; /* フォーカス時の枠を消す */
-            cursor: text; /* テキスト入力カーソルを表示 */
+            flex: 1; /* ✅ これで残りの高さをすべて占有させる */
+            background: #2B2B2B;
             position: relative;
+            overflow: hidden; /* Canvas内部でスクロールを管理するため */
+            min-height: 0; /* ✅ Flexbox内の潰れ防止 */
+            width: 100%;
+            display: flex; /* ✅ 子要素(Canvas)を広げるため */
         }
 
-        /* ✅ ContentEditable: Complete input control in Rust */
-        .berry-editor-pane[contenteditable="true"] {
-            outline: none !important;
-            /* ✅ CRITICAL: Positioning context for child layers */
-            position: relative;
-            overflow: auto;
-            /* ✅ CRITICAL: Force block display to prevent browser from auto-creating <div><br></div> */
-            display: block !important;
-            /* ✅ CRITICAL: Preserve all whitespace exactly as-is (no auto line-breaking) */
-            white-space: pre !important;
-            word-break: break-all !important;
-            overflow-wrap: anywhere !important;
-            /* 本物のカーソルを隠し、Rustのバーチャルカーソルを主役にする */
-            caret-color: transparent !important;
-            user-select: text !important; /* Allow browser's native text selection */
-            cursor: text; /* ✅ Show text cursor to indicate this is an input area */
-            min-height: 100%; /* ✅ Ensure element has size for browser to recognize as focusable */
-            /* ✅ Prevent browser from inserting rich formatting (only plain text) */
-            -webkit-user-modify: read-write-plaintext-only !important;
-            /* ✅ Strict line/word breaking to prevent browser auto-formatting */
-            line-break: strict;
+        /* ✅ Canvas はコンテナを完全に埋める */
+        .berry-editor-pane canvas {
+            flex: 1; /* ✅ 親の高さに合わせる */
+            width: 100%;
+            height: 100%;
+            display: block;
+            outline: none;
+            cursor: text;
         }
 
-        /* ✅ Rendering layer: Completely isolated from browser's ContentEditable control */
-        .berry-editor-scroll-content {
-            /* ✅ CRITICAL: Transparent to all mouse/touch events - clicks pass through to parent */
-            pointer-events: none !important; /* Clicks are handled by parent .berry-editor-pane */
-            user-select: none !important; /* Browser must not select text in this layer */
-            background: transparent !important; /* ✅ Don't block input with opaque background */
-            position: relative; /* ✅ Positioning context for child elements */
+        /* ✅ Hidden input for IME positioning (Canvas mode) */
+        input[type="text"] {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
             z-index: 1;
-            /* contenteditable="false" in HTML prevents browser from manipulating this DOM */
-        }
-
-        .berry-editor-content {
-            display: flex;
-            padding: 8px 0; /* Reduced padding */
-        }
-
-        .berry-editor-line-numbers {
-            min-width: 50px;
-            text-align: right;
-            padding-right: 12px;
-            background: #313335; /* Gutter background */
-            color: #606366; /* Darker line numbers */
-            font-size: 13px; /* IntelliJ standard size */
-            line-height: 1.5; /* Optimal for JetBrains Mono */
-            user-select: none;
-            border-right: 1px solid #323232;
-            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
-        }
-
-        .berry-editor-line-number {
-            padding: 0 8px;
-        }
-
-        .berry-editor-lines {
-            flex: 1;
-            font-size: 13px; /* IntelliJ standard size */
-            line-height: 1.5; /* Optimal for JetBrains Mono */
-            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
-        }
-
-        .berry-editor-line {
-            padding: 0 12px; /* Reduced padding */
-            display: block; /* ✅ ブロック要素として明示 */
-            height: 20px; /* ✅ 高さを明示的に固定 */
-            line-height: 20px; /* ✅ 行の高さを明示的に固定 */
-            font-size: 13px !important; /* ✅ IntelliJ standard size */
-            white-space: pre !important; /* IntelliJ: 半角スペースを正確な幅にする */
-            tab-size: 4; /* タブ幅を4スペースに統一 */
-            -moz-tab-size: 4;
-            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace !important;
-            font-variant-ligatures: none !important; /* ✅ 合字による幅の変化を防止 */
-            color: #a9b7c6 !important; /* Darculaテキスト色 */
-            position: relative;
-            z-index: 2; /* ✅ Ensure rendered lines are always visible in front */
-            background: transparent; /* ✅ No background interference */
-            overflow: hidden; /* 行が右に突き抜けるのを防ぐ */
-            pointer-events: none; /* ✅ Lines are display-only, not input targets */
-            contain: strict; /* ✅ CRITICAL: Contain layout calculations within this line (performance) */
-        }
-
-        /* ✅ ハイライト用spanタグの高さとスペースを強制的に保持 */
-        .berry-editor-line span {
-            display: inline !important; /* inline-blockだとズレる場合がある */
-            white-space: pre !important; /* spanの中でもスペースを保持 */
-            font-family: 'JetBrains Mono', monospace !important; /* ✅ 強制等幅 */
-            font-size: inherit;
-            line-height: inherit;
-            vertical-align: baseline !important; /* ベースライン揃え */
-            font-variant-ligatures: none !important; /* ✅ 合字禁止 */
-            font-kerning: none !important; /* ✅ カーニング禁止 */
-            letter-spacing: 0px !important; /* ✅ 文字間隔固定 */
-        }
-
-        /* ✅ Markdown専用のスタイル強制 */
-        .berry-editor-line[data-lang="markdown"] {
-            color: #6a8759; /* Markdownのデフォルト色 */
-        }
-
-        /* contenteditable のフォーカス枠を消す */
-        [contenteditable]:focus {
-            outline: none !important;
+            color: transparent;
+            background: transparent;
+            border: none;
+            outline: none;
+            caret-color: transparent;
         }
 
         .berry-editor-status-bar {
@@ -358,7 +294,8 @@
         .berry-editor-main-area {
             flex: 1;
             display: flex;
-            flex-direction: column;
+            flex-direction: row; /* ✅ サイドバーとエディターは横並び */
+            min-height: 0;
             overflow: hidden;
         }
 
