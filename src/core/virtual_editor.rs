@@ -723,17 +723,25 @@ pub fn VirtualEditorPanel(
                 current_tab.set(Some(tab));
                 render_trigger.update(|v| *v += 1);
 
-                // IME inputにフォーカス
+                leptos::logging::log!("Mouse down: line={}, col={}", line, col);
+
+                // ✅ レンダリング完了後にフォーカスを設定（requestAnimationFrameで次のフレーム）
                 if let Some(input) = ime_input_ref.get() {
-                    match input.focus() {
-                        Ok(_) => leptos::logging::log!("✅ IME input focused successfully"),
-                        Err(e) => leptos::logging::log!("❌ IME input focus failed: {:?}", e),
-                    }
+                    use wasm_bindgen::JsCast;
+                    let input_clone = input.clone();
+                    let callback = wasm_bindgen::closure::Closure::once(move || {
+                        match input_clone.focus() {
+                            Ok(_) => leptos::logging::log!("✅ IME input focused (after render)"),
+                            Err(e) => leptos::logging::log!("❌ IME input focus failed: {:?}", e),
+                        }
+                    });
+
+                    let window = web_sys::window().unwrap();
+                    let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
+                    callback.forget();
                 } else {
                     leptos::logging::log!("❌ IME input ref not found");
                 }
-
-                leptos::logging::log!("Mouse down: line={}, col={}", line, col);
             }
         }
     };
@@ -1013,8 +1021,23 @@ pub fn VirtualEditorPanel(
                     on:focus=move |_| {
                         leptos::logging::log!("✅ IME input FOCUSED");
                     }
-                    on:blur=move |_| {
-                        leptos::logging::log!("❌ IME input BLURRED");
+                    on:blur=move |ev: leptos::ev::FocusEvent| {
+                        leptos::logging::log!("❌ IME input BLURRED, re-focusing...");
+                        // 即座に再フォーカス（ただしIME composing中は除く）
+                        if !is_composing.get() {
+                            if let Some(input) = ime_input_ref.get() {
+                                // Use requestAnimationFrame to avoid immediate blur loop
+                                use wasm_bindgen::JsCast;
+                                let input_clone = input.clone();
+                                let callback = wasm_bindgen::closure::Closure::once(move || {
+                                    let _ = input_clone.focus();
+                                    leptos::logging::log!("🔄 Re-focused IME input after blur");
+                                });
+                                let window = web_sys::window().unwrap();
+                                let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
+                                callback.forget();
+                            }
+                        }
                     }
                     style=move || format!(
                         "position: absolute; \
