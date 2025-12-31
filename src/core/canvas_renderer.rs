@@ -18,8 +18,8 @@ pub const COLOR_LINE_HIGHLIGHT: &str = "#26282E"; // Current line (pixel-perfect
 
 /// フォント設定
 pub const FONT_FAMILY: &str = "JetBrains Mono";
-pub const FONT_SIZE: f64 = 13.0;
-pub const LINE_HEIGHT: f64 = 20.0;
+pub const FONT_SIZE: f64 = 15.0;  // RustRover uses 14-15px
+pub const LINE_HEIGHT: f64 = 22.0; // Increased for better readability
 
 /// トークンの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,12 +67,17 @@ impl CanvasRenderer {
             .dyn_into::<CanvasRenderingContext2d>()
             .map_err(|_| "Failed to cast to CanvasRenderingContext2d")?;
 
+        // Retinaディスプレイ対応: devicePixelRatioでスケーリング
+        let window = web_sys::window().ok_or("no global window")?;
+        let dpr = window.device_pixel_ratio();
+        context.scale(dpr, dpr).map_err(|_| "Failed to scale context")?;
+
         // フォント品質設定
-        // Medium weight for sharper appearance (RustRover uses slightly heavier font)
-        context.set_font(&format!("500 {}px '{}'", FONT_SIZE, FONT_FAMILY));
+        // Semi-bold weight for sharp, clear appearance matching RustRover
+        context.set_font(&format!("600 {}px '{}'", FONT_SIZE, FONT_FAMILY));
 
         // 高品質なテキストレンダリングを有効化
-        context.set_image_smoothing_enabled(true);
+        context.set_image_smoothing_enabled(false); // Disable for sharper text
         context.set_text_baseline("alphabetic");
 
         // 文字幅を実測

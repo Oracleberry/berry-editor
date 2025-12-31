@@ -1008,17 +1008,26 @@ pub fn VirtualEditorPanel(
             return;
         }
 
+        // Retinaディスプレイ対応: devicePixelRatioを取得
+        let window = web_sys::window().expect("no global window");
+        let dpr = window.device_pixel_ratio();
+
         leptos::logging::log!(
-            "✅ Canvas resize: parent(.berry-editor-pane)={}x{}, setting canvas to {}x{}",
+            "✅ Canvas resize: parent={}x{}, dpr={}, physical={}x{}",
             width,
             height,
-            width as u32,
-            height as u32
+            dpr,
+            (width * dpr) as u32,
+            (height * dpr) as u32
         );
 
-        // ✅ 物理ピクセルサイズを設定（これがないと描画されない）
-        canvas.set_width(width as u32);
-        canvas.set_height(height as u32);
+        // ✅ 物理ピクセルサイズを設定（Retina対応）
+        canvas.set_width((width * dpr) as u32);
+        canvas.set_height((height * dpr) as u32);
+
+        // CSSサイズは元のまま（ブラウザが自動的にスケーリング）
+        // Note: Canvasの物理サイズとCSSサイズを分離することで、
+        // Retinaディスプレイで高解像度レンダリングを実現
 
         // レンダリング
         let tab_data = current_tab.get();

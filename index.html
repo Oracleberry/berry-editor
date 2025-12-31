@@ -51,9 +51,9 @@
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
             background: #2B2B2B; /* IntelliJ Darcula background */
             color: #a9b7c6; /* Darcula text color */
-            /* フォントレンダリング最適化 */
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
+            /* フォントレンダリング最適化 - Sharper rendering */
+            -webkit-font-smoothing: subpixel-antialiased;
+            -moz-osx-font-smoothing: auto;
             text-rendering: optimizeLegibility;
             /* ✅ タブ数字を等幅化 */
             font-feature-settings: "tnum";
@@ -90,7 +90,7 @@
             padding: 8px 12px; /* Tighter padding */
             background: #2B2B2B; /* Same as editor background */
             border-bottom: 1px solid #323232;
-            font-size: 12px; /* Slightly larger for header */
+            font-size: 13px; /* Larger for better readability */
             font-weight: 600; /* Semi-bold for header */
             color: #bbbbbb; /* Lighter gray for header */
             display: flex;
@@ -122,20 +122,20 @@
         }
 
         .berry-editor-file-item {
-            padding: 2px 8px; /* IntelliJ-like tight padding */
+            padding: 3px 8px; /* Slightly more padding for readability */
             cursor: pointer;
             color: #afb1b3 !important;
             background: transparent !important; /* No background by default */
             border: none !important; /* Remove red debug border */
-            min-height: 20px !important; /* Height for readability */
+            min-height: 22px !important; /* Height for readability */
             display: flex !important;
             align-items: center;
-            font-size: 13px; /* Match IntelliJ file tree size */
-            font-weight: 400; /* Normal weight */
+            font-size: 14px; /* Larger font matching RustRover */
+            font-weight: 500; /* Medium weight for better visibility */
             user-select: none;
             position: relative;
             white-space: nowrap;
-            line-height: 1.2; /* Tight line height */
+            line-height: 1.3; /* Better line height */
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
         }
 
@@ -250,13 +250,12 @@
             outline: none;
             cursor: text;
             /* 高品質なCanvasレンダリング設定 */
-            image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
-            font-smooth: always;
+            image-rendering: auto; /* Let devicePixelRatio handle quality */
+            /* サブピクセルレンダリングでシャープに */
             -webkit-font-smoothing: subpixel-antialiased;
             -moz-osx-font-smoothing: auto;
-            /* より鮮明なテキストレンダリング */
-            backface-visibility: hidden;
+            /* GPU加速で滑らかに */
+            will-change: transform;
             transform: translateZ(0);
         }
 
