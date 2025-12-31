@@ -1166,16 +1166,23 @@ pub fn VirtualEditorPanel(
 
                                             // アクティブタブのインデックスを調整
                                             if tabs_vec.is_empty() {
+                                                // 全てのタブが閉じられた場合
                                                 current_tab.active_index.set(None);
                                             } else if Some(index) == current_tab.active_index.get() {
-                                                // 閉じたタブがアクティブだった場合、前のタブか最後のタブをアクティブにする
-                                                let new_index = if index > 0 { index - 1 } else { 0 };
+                                                // 閉じたタブがアクティブだった場合、前のタブか次のタブをアクティブにする
+                                                let new_index = if index > 0 {
+                                                    index - 1 // 前のタブ
+                                                } else {
+                                                    0 // 最初のタブが閉じられた場合は新しい最初のタブ
+                                                };
+                                                // tabs_vec.len() は少なくとも 1 なので、安全に -1 できる
                                                 current_tab.active_index.set(Some(new_index.min(tabs_vec.len() - 1)));
                                             } else if let Some(active_idx) = current_tab.active_index.get() {
                                                 // 閉じたタブがアクティブタブより前にあった場合、インデックスを調整
                                                 if index < active_idx {
                                                     current_tab.active_index.set(Some(active_idx - 1));
                                                 }
+                                                // 閉じたタブがアクティブタブより後ろにある場合は調整不要
                                             }
                                         }
                                         style="
