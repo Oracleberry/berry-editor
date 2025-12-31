@@ -1136,11 +1136,19 @@ pub fn VirtualEditorPanel(
                             let tab_class = if is_active { "berry-tab active" } else { "berry-tab" };
                             let bg_color = if is_active { "#1E1E1E" } else { "#2B2B2B" };
 
+                            // file_pathをクローンしてクロージャーで使う（indexは古くなる可能性があるため）
+                            let tab_path = tab.file_path.clone();
+                            let tab_path_for_close = tab_path.clone();
+
                             view! {
                                 <div
                                     class=tab_class
                                     on:click=move |_| {
-                                        current_tab.active_index.set(Some(index));
+                                        // クリック時に最新のindexを検索
+                                        let tabs_vec = current_tab.tabs.get();
+                                        if let Some(idx) = tabs_vec.iter().position(|t| t.file_path == tab_path) {
+                                            current_tab.active_index.set(Some(idx));
+                                        }
                                     }
                                     style=format!("
                                         display: flex;
@@ -1159,30 +1167,32 @@ pub fn VirtualEditorPanel(
                                     <button
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            // タブを閉じる
+                                            // タブを閉じる（file_pathで検索して削除）
                                             let mut tabs_vec = current_tab.tabs.get();
-                                            tabs_vec.remove(index);
-                                            current_tab.tabs.set(tabs_vec.clone());
+                                            if let Some(close_index) = tabs_vec.iter().position(|t| t.file_path == tab_path_for_close) {
+                                                tabs_vec.remove(close_index);
+                                                current_tab.tabs.set(tabs_vec.clone());
 
-                                            // アクティブタブのインデックスを調整
-                                            if tabs_vec.is_empty() {
-                                                // 全てのタブが閉じられた場合
-                                                current_tab.active_index.set(None);
-                                            } else if Some(index) == current_tab.active_index.get() {
-                                                // 閉じたタブがアクティブだった場合、前のタブか次のタブをアクティブにする
-                                                let new_index = if index > 0 {
-                                                    index - 1 // 前のタブ
-                                                } else {
-                                                    0 // 最初のタブが閉じられた場合は新しい最初のタブ
-                                                };
-                                                // tabs_vec.len() は少なくとも 1 なので、安全に -1 できる
-                                                current_tab.active_index.set(Some(new_index.min(tabs_vec.len() - 1)));
-                                            } else if let Some(active_idx) = current_tab.active_index.get() {
-                                                // 閉じたタブがアクティブタブより前にあった場合、インデックスを調整
-                                                if index < active_idx {
-                                                    current_tab.active_index.set(Some(active_idx - 1));
+                                                // アクティブタブのインデックスを調整
+                                                if tabs_vec.is_empty() {
+                                                    // 全てのタブが閉じられた場合
+                                                    current_tab.active_index.set(None);
+                                                } else if Some(close_index) == current_tab.active_index.get() {
+                                                    // 閉じたタブがアクティブだった場合、前のタブか次のタブをアクティブにする
+                                                    let new_index = if close_index > 0 {
+                                                        close_index - 1 // 前のタブ
+                                                    } else {
+                                                        0 // 最初のタブが閉じられた場合は新しい最初のタブ
+                                                    };
+                                                    // tabs_vec.len() は少なくとも 1 なので、安全に -1 できる
+                                                    current_tab.active_index.set(Some(new_index.min(tabs_vec.len() - 1)));
+                                                } else if let Some(active_idx) = current_tab.active_index.get() {
+                                                    // 閉じたタブがアクティブタブより前にあった場合、インデックスを調整
+                                                    if close_index < active_idx {
+                                                        current_tab.active_index.set(Some(active_idx - 1));
+                                                    }
+                                                    // 閉じたタブがアクティブタブより後ろにある場合は調整不要
                                                 }
-                                                // 閉じたタブがアクティブタブより後ろにある場合は調整不要
                                             }
                                         }
                                         style="
