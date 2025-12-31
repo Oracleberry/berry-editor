@@ -18,6 +18,7 @@ mod lsp;
 pub mod lsp_client;
 mod search;
 mod syntax;
+pub mod theme;
 
 // Common utilities (zero duplication)
 pub mod common;

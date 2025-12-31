@@ -5,11 +5,12 @@
 
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use crate::theme::{EditorTheme, RUSTROVER_DARCULA};
 
-/// IntelliJ Darculaカラースキーム
-pub const COLOR_BACKGROUND: &str = "#1E1E1E";
+/// IntelliJ Darculaカラースキーム (Backward compatibility)
+pub const COLOR_BACKGROUND: &str = "#2B2B2B";
 pub const COLOR_FOREGROUND: &str = "#A9B7C6";
-pub const COLOR_CURSOR: &str = "#FFFFFF";
+pub const COLOR_CURSOR: &str = "#BBBBBB";
 pub const COLOR_SELECTION: &str = "#214283";
 pub const COLOR_GUTTER_BG: &str = "#313335";
 pub const COLOR_GUTTER_FG: &str = "#606366";
@@ -19,6 +20,28 @@ pub const COLOR_LINE_HIGHLIGHT: &str = "#323232";
 pub const FONT_FAMILY: &str = "JetBrains Mono";
 pub const FONT_SIZE: f64 = 13.0;
 pub const LINE_HEIGHT: f64 = 20.0;
+
+/// トークンの種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    Keyword,    // fn, pub, struct, let, mut
+    Function,   // function names
+    Type,       // String, usize, custom types
+    String,     // string literals
+    Number,     // numeric literals
+    Comment,    // comments
+    Attribute,  // #[derive]
+    Macro,      // println!, vec!
+    Constant,   // CONSTANTS
+    Text,       // default text
+}
+
+/// シンタックストークン
+#[derive(Debug, Clone)]
+struct SyntaxToken {
+    text: String,
+    kind: TokenKind,
+}
 
 /// Canvas描画エンジン
 pub struct CanvasRenderer {
@@ -84,7 +107,8 @@ impl CanvasRenderer {
 
     /// Canvas全体をクリア
     pub fn clear(&self, width: f64, height: f64) {
-        self.context.set_fill_style(&COLOR_BACKGROUND.into());
+        let theme = EditorTheme::current();
+        self.context.set_fill_style(&theme.bg_canvas.into());
         self.context.fill_rect(0.0, 0.0, width, height);
     }
 
@@ -124,6 +148,186 @@ impl CanvasRenderer {
 
         self.context.set_fill_style(&color.into());
         let _ = self.context.fill_text(text, x, y);
+    }
+
+    /// シンタックスハイライト付きでテキスト行を描画
+    pub fn draw_line_highlighted(&self, y_offset: f64, text: &str, theme: &EditorTheme) {
+        let x_base = self.gutter_width + 15.0; // 左パディング
+        let y = y_offset + 15.0; // ベースライン調整
+
+        // トークンに分解してハイライト
+        let tokens = self.tokenize_rust(text);
+        let mut x_offset = 0.0;
+
+        for token in tokens {
+            let color = match token.kind {
+                TokenKind::Keyword => theme.syntax_keyword,
+                TokenKind::Function => theme.syntax_function,
+                TokenKind::Type => theme.syntax_type,
+                TokenKind::String => theme.syntax_string,
+                TokenKind::Number => theme.syntax_number,
+                TokenKind::Comment => theme.syntax_comment,
+                TokenKind::Attribute => theme.syntax_attribute,
+                TokenKind::Macro => theme.syntax_macro,
+                TokenKind::Constant => theme.syntax_constant,
+                TokenKind::Text => theme.syntax_default,
+            };
+
+            self.context.set_fill_style(&color.into());
+            let _ = self.context.fill_text(&token.text, x_base + x_offset, y);
+
+            // 次のトークンの位置を計算
+            x_offset += self.measure_text(&token.text);
+        }
+    }
+
+    /// Rustコードをトークンに分解
+    fn tokenize_rust(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+        let mut current_pos = 0;
+        let chars: Vec<char> = line.chars().collect();
+        let mut prev_token_was_fn = false;
+
+        while current_pos < chars.len() {
+            // コメント
+            if current_pos + 1 < chars.len() && chars[current_pos] == '/' && chars[current_pos + 1] == '/' {
+                let comment: String = chars[current_pos..].iter().collect();
+                tokens.push(SyntaxToken {
+                    text: comment,
+                    kind: TokenKind::Comment,
+                });
+                break;
+            }
+
+            // 文字列リテラル
+            if chars[current_pos] == '"' {
+                let mut end = current_pos + 1;
+                while end < chars.len() && chars[end] != '"' {
+                    if chars[end] == '\\' && end + 1 < chars.len() {
+                        end += 2;
+                    } else {
+                        end += 1;
+                    }
+                }
+                if end < chars.len() {
+                    end += 1;
+                }
+                let string_lit: String = chars[current_pos..end].iter().collect();
+                tokens.push(SyntaxToken {
+                    text: string_lit,
+                    kind: TokenKind::String,
+                });
+                current_pos = end;
+                continue;
+            }
+
+            // 属性
+            if chars[current_pos] == '#' && current_pos + 1 < chars.len() && chars[current_pos + 1] == '[' {
+                let mut end = current_pos + 2;
+                let mut bracket_count = 1;
+                while end < chars.len() && bracket_count > 0 {
+                    if chars[end] == '[' {
+                        bracket_count += 1;
+                    } else if chars[end] == ']' {
+                        bracket_count -= 1;
+                    }
+                    end += 1;
+                }
+                let attr: String = chars[current_pos..end].iter().collect();
+                tokens.push(SyntaxToken {
+                    text: attr,
+                    kind: TokenKind::Attribute,
+                });
+                current_pos = end;
+                continue;
+            }
+
+            // 数値
+            if chars[current_pos].is_ascii_digit() {
+                let mut end = current_pos;
+                while end < chars.len() && (chars[end].is_ascii_digit() || chars[end] == '.' || chars[end] == '_') {
+                    end += 1;
+                }
+                let number: String = chars[current_pos..end].iter().collect();
+                tokens.push(SyntaxToken {
+                    text: number,
+                    kind: TokenKind::Number,
+                });
+                current_pos = end;
+                continue;
+            }
+
+            // 識別子/キーワード
+            if chars[current_pos].is_alphabetic() || chars[current_pos] == '_' {
+                let mut end = current_pos;
+                while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                    end += 1;
+                }
+                let ident: String = chars[current_pos..end].iter().collect();
+
+                // マクロ呼び出しチェック
+                let is_macro = end < chars.len() && chars[end] == '!';
+                if is_macro {
+                    end += 1;
+                    let macro_call: String = chars[current_pos..end].iter().collect();
+                    tokens.push(SyntaxToken {
+                        text: macro_call,
+                        kind: TokenKind::Macro,
+                    });
+                    current_pos = end;
+                    continue;
+                }
+
+                // 関数名検出: `fn` の直後の識別子
+                let kind = if prev_token_was_fn {
+                    prev_token_was_fn = false;
+                    TokenKind::Function
+                } else {
+                    match ident.as_str() {
+                        "fn" | "pub" | "struct" | "enum" | "impl" | "trait" | "type" | "let" | "mut" |
+                        "const" | "static" | "if" | "else" | "match" | "for" | "while" | "loop" |
+                        "return" | "break" | "continue" | "use" | "mod" | "crate" | "self" | "Self" |
+                        "super" | "as" | "in" | "ref" | "move" | "unsafe" | "async" | "await" |
+                        "dyn" | "where" | "true" | "false" => {
+                            // `fn` キーワードを記憶
+                            if ident == "fn" {
+                                prev_token_was_fn = true;
+                            }
+                            TokenKind::Keyword
+                        }
+
+                        // 型
+                        "String" | "str" | "usize" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" |
+                        "i8" | "i16" | "i32" | "i64" | "i128" | "f32" | "f64" | "bool" | "char" |
+                        "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "HashMap" | "HashSet" => TokenKind::Type,
+
+                        // 大文字始まりは型と判断
+                        _ if ident.chars().next().unwrap().is_uppercase() => TokenKind::Type,
+
+                        // 全大文字は定数と判断
+                        _ if ident.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) && ident.len() > 1 => TokenKind::Constant,
+
+                        _ => TokenKind::Text,
+                    }
+                };
+
+                tokens.push(SyntaxToken {
+                    text: ident,
+                    kind,
+                });
+                current_pos = end;
+                continue;
+            }
+
+            // その他の文字（記号など）
+            tokens.push(SyntaxToken {
+                text: chars[current_pos].to_string(),
+                kind: TokenKind::Text,
+            });
+            current_pos += 1;
+        }
+
+        tokens
     }
 
     /// 指定座標にテキストを描画（IME未確定文字用）

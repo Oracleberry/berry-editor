@@ -8,6 +8,7 @@
 use crate::buffer::TextBuffer;
 use crate::core::canvas_renderer::{CanvasRenderer, LINE_HEIGHT};
 use crate::syntax::SyntaxHighlighter;
+use crate::theme::EditorTheme;
 use leptos::html::Canvas;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -1083,7 +1084,8 @@ pub fn VirtualEditorPanel(
                     }
                 }
 
-                // テキスト行を描画
+                // テキスト行を描画（シンタックスハイライト付き）
+                let theme = EditorTheme::current();
                 for line_num in start_line..end_line {
                     // Ropeから行のテキストを取得（改行を除く）
                     let line_text = tab
@@ -1093,12 +1095,7 @@ pub fn VirtualEditorPanel(
                         .unwrap_or_default();
 
                     let y_offset = (line_num - start_line) as f64 * LINE_HEIGHT;
-                    renderer.draw_line(
-                        line_num,
-                        y_offset,
-                        &line_text,
-                        crate::core::canvas_renderer::COLOR_FOREGROUND,
-                    );
+                    renderer.draw_line_highlighted(y_offset, &line_text, theme);
                 }
 
                 // カーソルを描画（現在行のテキストを渡す）
