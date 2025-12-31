@@ -77,7 +77,14 @@ impl VirtualScroll {
         }
 
         // Calculate first visible line
-        let first_visible = (self.scroll_top / self.line_height).floor() as usize;
+        let first_visible_raw = (self.scroll_top / self.line_height).floor() as usize;
+
+        // ✅ FIX: Clamp first_visible to prevent index out of bounds when scrolled beyond end
+        // Bug: If scroll_top exceeds total_height, first_visible could be > total_lines
+        // Example: scroll_top=2,100,000, line_height=20, total_lines=100,000
+        //   -> first_visible_raw = 105,000 (INVALID!)
+        //   -> Must clamp to max valid line index (total_lines - 1)
+        let first_visible = first_visible_raw.min(self.total_lines.saturating_sub(1));
 
         // Calculate last visible line
         let visible_lines = (self.viewport_height / self.line_height).ceil() as usize;

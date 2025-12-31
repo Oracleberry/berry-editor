@@ -50,7 +50,6 @@ fn test_extreme_scroll_position() {
 }
 
 #[wasm_bindgen_test]
-#[ignore] // TODO: VirtualScroll.visible_range() doesn't properly clamp start when scrolled beyond end
 fn test_scroll_beyond_end() {
     let total_lines = 100_000;
     let viewport_height = 800.0;
