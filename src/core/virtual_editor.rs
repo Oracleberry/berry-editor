@@ -227,8 +227,12 @@ pub fn VirtualEditorPanel(
 
     // キーボードイベントハンドラー
     let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
+        leptos::logging::log!("🎹 on_keydown called: key={}, keyCode={}, composing={}",
+            ev.key(), ev.key_code(), ev.is_composing());
+
         // IME入力中は何もしない
         if ev.is_composing() || ev.key_code() == 229 {
+            leptos::logging::log!("🇯🇵 IME composing detected, skipping");
             return;
         }
 
@@ -1006,21 +1010,26 @@ pub fn VirtualEditorPanel(
                     on:compositionupdate=on_composition_update
                     on:compositionend=on_composition_end
                     on:keydown=on_keydown
+                    on:focus=move |_| {
+                        leptos::logging::log!("✅ IME input FOCUSED");
+                    }
+                    on:blur=move |_| {
+                        leptos::logging::log!("❌ IME input BLURRED");
+                    }
                     style=move || format!(
                         "position: absolute; \
                          left: {}px; \
                          top: {}px; \
-                         width: 2px; \
+                         width: 200px; \
                          height: {}px; \
-                         opacity: 0; \
+                         opacity: 0.3; \
                          z-index: 999; \
-                         color: transparent; \
-                         background: transparent; \
-                         border: none; \
+                         color: red; \
+                         background: yellow; \
+                         border: 2px solid red; \
                          outline: none; \
                          padding: 0; \
-                         margin: 0; \
-                         caret-color: transparent;",
+                         margin: 0;",
                         cursor_x.get(),
                         cursor_y.get(),
                         LINE_HEIGHT
