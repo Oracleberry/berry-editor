@@ -976,14 +976,6 @@ pub fn VirtualEditorPanel(
         }
     });
 
-    // ✅ マウント時にCanvasにフォーカスを当てる
-    Effect::new(move |_| {
-        if let Some(canvas) = canvas_ref.get() {
-            leptos::logging::log!("🎯 Focusing canvas on mount");
-            let _ = canvas.focus();
-        }
-    });
-
     view! {
         <div
             node_ref=container_ref
@@ -999,12 +991,6 @@ pub fn VirtualEditorPanel(
                     on:mousemove=on_mousemove
                     on:mouseup=on_mouseup
                     on:wheel=on_wheel
-                    on:click=move |_| {
-                        leptos::logging::log!("Canvas clicked, focusing");
-                        if let Some(canvas) = canvas_ref.get() {
-                            let _ = canvas.focus();
-                        }
-                    }
                     style="width: 100%; height: 100%; display: block;"
                 />
 
