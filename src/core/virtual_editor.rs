@@ -659,8 +659,17 @@ pub fn VirtualEditorPanel(
     let on_composition_end = move |ev: leptos::ev::CompositionEvent| {
         is_composing.set(false);
 
+        // ✅ FIX: ev.data()は空になることがあるため、IME inputの値を直接取得
+        let data = if let Some(input) = ime_input_ref.get() {
+            let value = input.value();
+            leptos::logging::log!("🔍 compositionend: ev.data()={:?}, input.value()={}", ev.data(), value);
+            value
+        } else {
+            ev.data().unwrap_or_default()
+        };
+
         // 確定文字をバッファに挿入
-        if let Some(data) = ev.data() {
+        if !data.is_empty() {
             if let Some(mut tab) = current_tab.get() {
                 let old_col = tab.cursor_col;
                 let char_idx = tab.buffer.line_to_char(tab.cursor_line) + tab.cursor_col;
@@ -675,6 +684,8 @@ pub fn VirtualEditorPanel(
                 );
                 current_tab.set(Some(tab));
             }
+        } else {
+            leptos::logging::log!("⚠️ IME committed empty string, skipping");
         }
 
         composing_text.set(String::new());
