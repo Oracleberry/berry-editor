@@ -147,6 +147,7 @@ impl CanvasRenderer {
     }
 
     /// 選択範囲を描画
+    /// line_text: 選択範囲がある行のテキスト全体（日本語などマルチバイト文字の幅を正確に計算するため）
     pub fn draw_selection(
         &self,
         start_line: usize,
@@ -154,13 +155,15 @@ impl CanvasRenderer {
         end_line: usize,
         end_col: usize,
         scroll_top: f64,
+        line_text: &str,
     ) {
         self.context.set_fill_style(&COLOR_SELECTION.into());
 
         if start_line == end_line {
             // 単一行の選択
-            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset(start_col);
-            let x_end = self.gutter_width + 15.0 + self.calculate_x_offset(end_col);
+            // 日本語などマルチバイト文字の幅を正確に計算
+            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, start_col);
+            let x_end = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, end_col);
             let y = start_line as f64 * self.line_height - scroll_top;
 
             self.context

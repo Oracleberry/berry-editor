@@ -1001,12 +1001,20 @@ pub fn VirtualEditorPanel(
                 if tab.has_selection() {
                     if let (Some((start_line, start_col)), Some((end_line, end_col))) =
                         (tab.selection_start, tab.selection_end) {
+                        // 選択範囲の行のテキストを取得（日本語などマルチバイト文字の幅を正確に計算するため）
+                        let selection_line_text = tab
+                            .buffer
+                            .line(start_line)
+                            .map(|s| s.trim_end_matches('\n').to_string())
+                            .unwrap_or_default();
+
                         renderer.draw_selection(
                             start_line,
                             start_col,
                             end_line,
                             end_col,
                             tab.scroll_top,
+                            &selection_line_text,
                         );
                     }
                 }
