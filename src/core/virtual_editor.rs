@@ -675,6 +675,34 @@ pub fn VirtualEditorPanel(
         }
     };
 
+    // ✅ IME input専用のkeydownハンドラー（prevent_defaultを呼ばない）
+    let on_ime_keydown = move |ev: leptos::ev::KeyboardEvent| {
+        // IME入力中はブラウザに任せる
+        if ev.is_composing() || ev.key_code() == 229 {
+            leptos::logging::log!("🇯🇵 IME keydown (composing): keyCode={}", ev.key_code());
+            return; // prevent_defaultを呼ばずにreturn
+        }
+
+        // 非IMEキーはcanvasと同じ処理を実行（ArrowやBackspaceなど）
+        leptos::logging::log!("⌨️ IME keydown (not composing): key={}", ev.key());
+
+        // 通常のキーイベントハンドラーを呼び出す
+        // ただしprevent_defaultはIME inputでは呼ばない
+        let key = ev.key();
+        if key.len() == 1 && !ev.ctrl_key() && !ev.meta_key() {
+            // 単一文字の入力 - IME未使用の通常入力として処理
+            if let Some(mut tab) = current_tab.get() {
+                let char_idx = tab.buffer.line_to_char(tab.cursor_line) + tab.cursor_col;
+                tab.buffer.insert(char_idx, &key);
+                tab.cursor_col += 1;
+                current_tab.set(Some(tab));
+                render_trigger.update(|v| *v += 1);
+                leptos::logging::log!("Inserted from IME input: '{}'", key);
+            }
+            ev.prevent_default(); // 通常文字入力時のみprevent_default
+        }
+    };
+
     // マウスクリックでカーソル配置（ドラッグ開始）
     let on_mousedown = move |ev: leptos::ev::MouseEvent| {
         let Some(canvas) = canvas_ref.get() else {
@@ -720,7 +748,12 @@ pub fn VirtualEditorPanel(
 
                 // IME inputにフォーカス
                 if let Some(input) = ime_input_ref.get() {
-                    let _ = input.focus();
+                    match input.focus() {
+                        Ok(_) => leptos::logging::log!("✅ IME input focused successfully"),
+                        Err(e) => leptos::logging::log!("❌ IME input focus failed: {:?}", e),
+                    }
+                } else {
+                    leptos::logging::log!("❌ IME input ref not found");
                 }
 
                 leptos::logging::log!("Mouse down: line={}, col={}", line, col);
@@ -1001,7 +1034,7 @@ pub fn VirtualEditorPanel(
                     on:compositionstart=on_composition_start
                     on:compositionupdate=on_composition_update
                     on:compositionend=on_composition_end
-                    on:keydown=on_keydown
+                    on:keydown=on_ime_keydown
                     style=move || format!(
                         "position: absolute; \
                          left: {}px; \
