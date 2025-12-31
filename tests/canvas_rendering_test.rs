@@ -215,11 +215,10 @@ async fn test_canvas_has_event_handlers() {
     let canvas = query_selector("canvas");
     assert!(canvas.is_some(), "❌ Canvas element not found");
 
-    let canvas_el = canvas.unwrap().dyn_into::<web_sys::HtmlElement>().unwrap();
+    // ✅ IME Architecture: Canvasはtabindexを持たない（IME inputがキーイベントを処理）
+    // 代わりにIME input要素が存在することを確認
+    let ime_input = query_selector("input[type='text']");
+    assert!(ime_input.is_some(), "❌ IME input element should exist for keyboard events");
 
-    // Verify canvas is focusable (has tabindex)
-    let tabindex = canvas_el.get_attribute("tabindex");
-    assert!(tabindex.is_some(), "❌ Canvas should have tabindex for keyboard events");
-
-    leptos::logging::log!("✅ Canvas has event handler support");
+    leptos::logging::log!("✅ Canvas has IME input for event handling");
 }
