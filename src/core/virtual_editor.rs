@@ -237,21 +237,27 @@ pub fn VirtualEditorPanel(
         }
     });
 
-    // 後方互換性：current_tabは擬似的なRwSignalとして動作
-    // get()はアクティブタブを返し、set()はtabsに直接書き込む
+    // 後方互換性：current_tabはMemoで計算される読み取り専用の値
+    // 書き込みはヘルパー関数を使用
+    let current_tab_memo = Signal::derive(move || {
+        if let Some(index) = active_tab_index.get() {
+            tabs.get().get(index).cloned()
+        } else {
+            None
+        }
+    });
+
+    // current_tab.get() の代わり
     #[derive(Clone, Copy)]
-    struct CurrentTabWrapper {
+    struct CurrentTab {
         tabs: RwSignal<Vec<EditorTab>>,
         active_index: RwSignal<Option<usize>>,
+        memo: Signal<Option<EditorTab>>,
     }
 
-    impl CurrentTabWrapper {
+    impl CurrentTab {
         fn get(&self) -> Option<EditorTab> {
-            if let Some(index) = self.active_index.get() {
-                self.tabs.get().get(index).cloned()
-            } else {
-                None
-            }
+            self.memo.get()
         }
 
         fn set(&self, new_tab: Option<EditorTab>) {
@@ -267,10 +273,10 @@ pub fn VirtualEditorPanel(
         }
     }
 
-    // current_tabのラッパーを作成（Effectなしで無限ループを回避）
-    let current_tab = CurrentTabWrapper {
+    let current_tab = CurrentTab {
         tabs,
         active_index: active_tab_index,
+        memo: current_tab_memo,
     };
 
     // キーボードイベントハンドラー
@@ -1106,8 +1112,8 @@ pub fn VirtualEditorPanel(
             // タブバー
             <div class="berry-editor-tabs" style="display: flex; background: #2B2B2B; border-bottom: 1px solid #323232; min-height: 35px;">
                 {move || {
-                    let tabs_vec = tabs.get();
-                    let active_index = active_tab_index.get();
+                    let tabs_vec = current_tab.tabs.get();
+                    let active_index = current_tab.active_index.get();
 
                     if tabs_vec.is_empty() {
                         view! {
@@ -1132,7 +1138,7 @@ pub fn VirtualEditorPanel(
                                 <div
                                     class=tab_class
                                     on:click=move |_| {
-                                        active_tab_index.set(Some(index));
+                                        current_tab.active_index.set(Some(index));
                                     }
                                     style=format!("
                                         display: flex;
@@ -1152,21 +1158,21 @@ pub fn VirtualEditorPanel(
                                         on:click=move |ev| {
                                             ev.stop_propagation();
                                             // タブを閉じる
-                                            let mut tabs_vec = tabs.get();
+                                            let mut tabs_vec = current_tab.tabs.get();
                                             tabs_vec.remove(index);
-                                            tabs.set(tabs_vec.clone());
+                                            current_tab.tabs.set(tabs_vec.clone());
 
                                             // アクティブタブのインデックスを調整
                                             if tabs_vec.is_empty() {
-                                                active_tab_index.set(None);
-                                            } else if Some(index) == active_tab_index.get() {
+                                                current_tab.active_index.set(None);
+                                            } else if Some(index) == current_tab.active_index.get() {
                                                 // 閉じたタブがアクティブだった場合、前のタブか最後のタブをアクティブにする
                                                 let new_index = if index > 0 { index - 1 } else { 0 };
-                                                active_tab_index.set(Some(new_index.min(tabs_vec.len() - 1)));
-                                            } else if let Some(active_idx) = active_tab_index.get() {
+                                                current_tab.active_index.set(Some(new_index.min(tabs_vec.len() - 1)));
+                                            } else if let Some(active_idx) = current_tab.active_index.get() {
                                                 // 閉じたタブがアクティブタブより前にあった場合、インデックスを調整
                                                 if index < active_idx {
-                                                    active_tab_index.set(Some(active_idx - 1));
+                                                    current_tab.active_index.set(Some(active_idx - 1));
                                                 }
                                             }
                                         }
