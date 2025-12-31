@@ -249,6 +249,15 @@
             display: block;
             outline: none;
             cursor: text;
+            /* 高品質なCanvasレンダリング設定 */
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            font-smooth: always;
+            -webkit-font-smoothing: subpixel-antialiased;
+            -moz-osx-font-smoothing: auto;
+            /* より鮮明なテキストレンダリング */
+            backface-visibility: hidden;
+            transform: translateZ(0);
         }
 
         /* ✅ Hidden input for IME positioning (Canvas mode) */

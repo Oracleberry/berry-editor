@@ -67,8 +67,13 @@ impl CanvasRenderer {
             .dyn_into::<CanvasRenderingContext2d>()
             .map_err(|_| "Failed to cast to CanvasRenderingContext2d")?;
 
-        // フォント設定
-        context.set_font(&format!("{}px '{}'", FONT_SIZE, FONT_FAMILY));
+        // フォント品質設定
+        // Medium weight for sharper appearance (RustRover uses slightly heavier font)
+        context.set_font(&format!("500 {}px '{}'", FONT_SIZE, FONT_FAMILY));
+
+        // 高品質なテキストレンダリングを有効化
+        context.set_image_smoothing_enabled(true);
+        context.set_text_baseline("alphabetic");
 
         // 文字幅を実測
         let char_width_ascii = context
