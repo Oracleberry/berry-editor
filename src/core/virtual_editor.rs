@@ -187,6 +187,39 @@ impl EditorTab {
     }
 }
 
+/// マウスのX座標から、テキスト内の列位置を正確に計算する
+/// measureText()を使ってピクセル単位で最も近い文字位置を見つける
+fn find_column_from_x_position(renderer: &CanvasRenderer, line_text: &str, target_x: f64) -> usize {
+    let chars: Vec<char> = line_text.chars().collect();
+
+    if chars.is_empty() || target_x <= 0.0 {
+        return 0;
+    }
+
+    // 各文字位置の幅を測定して、最も近い位置を見つける
+    for i in 0..=chars.len() {
+        let text_up_to_i: String = chars[0..i].iter().collect();
+        let width = renderer.measure_text(&text_up_to_i);
+
+        if i == chars.len() {
+            // 最後の文字を超えている
+            return chars.len();
+        }
+
+        // 次の文字の中間位置を計算
+        let text_up_to_next: String = chars[0..=i].iter().collect();
+        let next_width = renderer.measure_text(&text_up_to_next);
+        let mid_width = (width + next_width) / 2.0;
+
+        // target_x が現在の文字と次の文字の中間より前なら、現在位置を返す
+        if target_x < mid_width {
+            return i;
+        }
+    }
+
+    chars.len()
+}
+
 #[component]
 pub fn VirtualEditorPanel(
     #[prop(into)] selected_file: Signal<Option<(String, String)>>,
@@ -758,17 +791,22 @@ pub fn VirtualEditorPanel(
 
     // マウスクリックでカーソル配置（ドラッグ開始）
     let on_mousedown = move |ev: leptos::ev::MouseEvent| {
+        leptos::logging::log!("🖱️ MOUSEDOWN EVENT FIRED");
+
         let Some(canvas) = canvas_ref.get() else {
+            leptos::logging::log!("❌ Canvas ref not found");
             return;
         };
 
         let Some(mut tab) = current_tab.get() else {
+            leptos::logging::log!("❌ Current tab not found");
             return;
         };
 
         let rect = canvas.get_bounding_client_rect();
         let x = ev.client_x() as f64 - rect.left();
         let y = ev.client_y() as f64 - rect.top();
+        leptos::logging::log!("🖱️ Click position: x={}, y={}", x, y);
 
         // カーソル位置を計算
         if let Ok(renderer) = CanvasRenderer::new((*canvas).clone().unchecked_into()) {
@@ -780,13 +818,15 @@ pub fn VirtualEditorPanel(
                 // 行範囲内に制限
                 let line = clicked_line.min(tab.buffer.len_lines().saturating_sub(1));
 
-                // 列位置を計算（簡易版：ASCII文字幅で割る）
-                let col = (text_x / renderer.char_width_ascii()).round() as usize;
+                // 行のテキストを取得
+                let line_text = tab.buffer.line(line)
+                    .map(|s| s.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
 
-                // 行の長さ内に制限
-                let line_len = tab.buffer.line(line)
-                    .map(|s| s.trim_end_matches('\n').chars().count())
-                    .unwrap_or(0);
+                let line_len = line_text.chars().count();
+
+                // 列位置を計算（measureText()を使って正確に）
+                let col = find_column_from_x_position(&renderer, &line_text, text_x);
 
                 tab.cursor_line = line;
                 tab.cursor_col = col.min(line_len);
@@ -796,10 +836,11 @@ pub fn VirtualEditorPanel(
                 tab.selection_start = Some((line, col.min(line_len)));
                 tab.selection_end = Some((line, col.min(line_len)));
 
+                leptos::logging::log!("🖱️ Mouse down: line={}, col={}, selection_start=({}, {})",
+                    line, col, line, col.min(line_len));
+
                 current_tab.set(Some(tab));
                 render_trigger.update(|v| *v += 1);
-
-                leptos::logging::log!("Mouse down: line={}, col={}", line, col);
             }
         }
     };
@@ -827,14 +868,23 @@ pub fn VirtualEditorPanel(
                 let text_x = x - renderer.gutter_width() - 15.0;
                 let clicked_line = ((y + tab.scroll_top) / LINE_HEIGHT).floor() as usize;
                 let line = clicked_line.min(tab.buffer.len_lines().saturating_sub(1));
-                let col = (text_x / renderer.char_width_ascii()).round() as usize;
-                let line_len = tab.buffer.line(line)
-                    .map(|s| s.trim_end_matches('\n').chars().count())
-                    .unwrap_or(0);
+
+                // 行のテキストを取得
+                let line_text = tab.buffer.line(line)
+                    .map(|s| s.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+
+                let line_len = line_text.chars().count();
+
+                // 列位置を計算（measureText()を使って正確に）
+                let col = find_column_from_x_position(&renderer, &line_text, text_x);
 
                 tab.cursor_line = line;
                 tab.cursor_col = col.min(line_len);
                 tab.selection_end = Some((line, col.min(line_len)));
+
+                leptos::logging::log!("🖱️ Mouse move: line={}, col={}, selection_end=({}, {})",
+                    line, col, line, col.min(line_len));
 
                 current_tab.set(Some(tab));
                 render_trigger.update(|v| *v += 1);
@@ -844,16 +894,21 @@ pub fn VirtualEditorPanel(
 
     // マウスボタンを離す（ドラッグ終了）
     let on_mouseup = move |_ev: leptos::ev::MouseEvent| {
+        leptos::logging::log!("🖱️ Mouse up, is_dragging was: {}", is_dragging.get());
         is_dragging.set(false);
 
         // 選択範囲が1文字未満なら選択解除
         if let Some(tab) = current_tab.get() {
             if let (Some(start), Some(end)) = (tab.selection_start, tab.selection_end) {
+                leptos::logging::log!("🖱️ Selection on mouseup: start={:?}, end={:?}", start, end);
                 if start == end {
+                    leptos::logging::log!("⚠️ Selection cleared (start == end)");
                     let mut tab = tab;
                     tab.clear_selection();
                     current_tab.set(Some(tab));
                     render_trigger.update(|v| *v += 1);
+                } else {
+                    leptos::logging::log!("✅ Selection kept (start != end)");
                 }
             }
         }
@@ -996,6 +1051,8 @@ pub fn VirtualEditorPanel(
                 if tab.has_selection() {
                     if let (Some((start_line, start_col)), Some((end_line, end_col))) =
                         (tab.selection_start, tab.selection_end) {
+                        leptos::logging::log!("🎨 Drawing selection: ({}, {}) to ({}, {})", start_line, start_col, end_line, end_col);
+
                         // 選択範囲の行のテキストを取得（日本語などマルチバイト文字の幅を正確に計算するため）
                         let selection_line_text = tab
                             .buffer
