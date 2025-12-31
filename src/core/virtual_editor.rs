@@ -800,24 +800,6 @@ pub fn VirtualEditorPanel(
                 render_trigger.update(|v| *v += 1);
 
                 leptos::logging::log!("Mouse down: line={}, col={}", line, col);
-
-                // ✅ レンダリング完了後にフォーカスを設定（requestAnimationFrameで次のフレーム）
-                if let Some(input) = ime_input_ref.get() {
-                    use wasm_bindgen::JsCast;
-                    let input_clone = input.clone();
-                    let callback = wasm_bindgen::closure::Closure::once(move || {
-                        match input_clone.focus() {
-                            Ok(_) => leptos::logging::log!("✅ IME input focused (after render)"),
-                            Err(e) => leptos::logging::log!("❌ IME input focus failed: {:?}", e),
-                        }
-                    });
-
-                    let window = web_sys::window().unwrap();
-                    let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
-                    callback.forget();
-                } else {
-                    leptos::logging::log!("❌ IME input ref not found");
-                }
             }
         }
     };
