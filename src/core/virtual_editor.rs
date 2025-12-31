@@ -974,18 +974,40 @@ pub fn VirtualEditorPanel(
                 }
 
                 // カーソルを描画（現在行のテキストを渡す）
-                let cursor_line_text = tab.buffer.line(tab.cursor_line).unwrap_or_default();
+                // ✅ FIX: 改行を除いたテキストを渡す（改行があると文字数計算がずれる）
+                let cursor_line_text = tab.buffer.line(tab.cursor_line)
+                    .map(|s| s.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+
+                // IME未確定文字列を取得
+                let composing = composing_text.get();
+
+                // IME組成中は、仮想的なテキスト（確定文字+未確定文字）を作成してカーソル位置を計算
+                let (virtual_line_text, cursor_col_display) = if !composing.is_empty() {
+                    // 未確定文字列がある場合、カーソル位置に挿入した仮想テキストを作る
+                    let before: String = cursor_line_text.chars().take(tab.cursor_col).collect();
+                    let after: String = cursor_line_text.chars().skip(tab.cursor_col).collect();
+                    let virtual_text = format!("{}{}{}", before, composing, after);
+                    let virtual_col = tab.cursor_col + composing.chars().count();
+                    (virtual_text, virtual_col)
+                } else {
+                    (cursor_line_text.clone(), tab.cursor_col)
+                };
+
                 leptos::logging::log!(
-                    "🎯 Drawing cursor: line={}, col={}, line_text='{}' (len={})",
+                    "🎯 Drawing cursor: line={}, col={} (display_col={}), composing='{}', line_text='{}' (len={})",
                     tab.cursor_line,
                     tab.cursor_col,
-                    cursor_line_text.trim_end_matches('\n'),
+                    cursor_col_display,
+                    &composing,
+                    &cursor_line_text,
                     cursor_line_text.chars().count()
                 );
-                renderer.draw_cursor(tab.cursor_line, tab.cursor_col, tab.scroll_top, &cursor_line_text);
+
+                // カーソルを描画（composing中は未確定文字列の後ろに表示）
+                renderer.draw_cursor(tab.cursor_line, cursor_col_display, tab.scroll_top, &virtual_line_text);
 
                 // IME未確定文字列を描画（あれば）
-                let composing = composing_text.get();
                 if !composing.is_empty() {
                     // 全角文字を考慮してカーソル位置までの実際の幅を測定
                     let text_before_cursor: String = cursor_line_text
@@ -1003,12 +1025,13 @@ pub fn VirtualEditorPanel(
                 }
 
                 // カーソル位置を計算（IME用）- 全角文字対応
-                let text_before_cursor: String = cursor_line_text
+                // composing中は未確定文字列の後ろに配置
+                let text_before_cursor_display: String = virtual_line_text
                     .chars()
-                    .take(tab.cursor_col)
+                    .take(cursor_col_display)
                     .collect();
                 let cursor_pixel_x = renderer.gutter_width() + 15.0
-                    + renderer.measure_text(&text_before_cursor);
+                    + renderer.measure_text(&text_before_cursor_display);
                 let cursor_pixel_y = tab.cursor_line as f64 * LINE_HEIGHT - tab.scroll_top;
 
                 cursor_x.set(cursor_pixel_x);
