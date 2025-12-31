@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manual Tab Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        button { margin: 5px; padding: 10px; }
+        .success { color: green; }
+        .error { color: red; }
+        #results { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Manual Tab Integration Test</h1>
+    <p>手動でタブ機能をテストします。以下の手順を実行してください：</p>
+
+    <h2>テスト手順</h2>
+    <ol>
+        <li><button onclick="test1()">Test 1: ファイルを2つ開く</button></li>
+        <li><button onclick="test2()">Test 2: 1つ目のタブを閉じる</button></li>
+        <li><button onclick="test3()">Test 3: 残ったタブを閉じる</button></li>
+        <li><button onclick="test4()">Test 4: 3つファイルを開いて、真ん中のタブを閉じる</button></li>
+    </ol>
+
+    <div id="results"></div>
+
+    <script>
+        function log(message, isError = false) {
+            const div = document.createElement('div');
+            div.className = isError ? 'error' : 'success';
+            div.textContent = message;
+            document.getElementById('results').appendChild(div);
+        }
+
+        function test1() {
+            log('✅ Test 1の手順:');
+            log('1. Tauriアプリを開く');
+            log('2. 2つのファイルを開く（ファイルツリーから2つ選択）');
+            log('3. 2つのタブが表示されることを確認');
+            log('4. クラッシュしないことを確認');
+        }
+
+        function test2() {
+            log('✅ Test 2の手順:');
+            log('1. 2つのタブがある状態から開始');
+            log('2. 1つ目のタブの×ボタンをクリック');
+            log('3. 1つのタブだけ残ることを確認');
+            log('4. 残ったタブがアクティブになることを確認');
+            log('5. クラッシュしないことを確認');
+        }
+
+        function test3() {
+            log('✅ Test 3の手順:');
+            log('1. 1つのタブがある状態から開始');
+            log('2. そのタブの×ボタンをクリック');
+            log('3. タブバーに"No file open"が表示されることを確認');
+            log('4. クラッシュしないことを確認');
+        }
+
+        function test4() {
+            log('✅ Test 4の手順:');
+            log('1. 3つのファイルを開く');
+            log('2. 真ん中（2番目）のタブの×ボタンをクリック');
+            log('3. 2つのタブが残ることを確認');
+            log('4. アクティブなタブが正しく維持されることを確認');
+            log('5. クラッシュしないことを確認');
+        }
+    </script>
+</body>
+</html>
