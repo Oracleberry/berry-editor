@@ -1053,12 +1053,14 @@ pub fn VirtualEditorPanel(
                         (tab.selection_start, tab.selection_end) {
                         leptos::logging::log!("🎨 Drawing selection: ({}, {}) to ({}, {})", start_line, start_col, end_line, end_col);
 
-                        // 選択範囲の行のテキストを取得（日本語などマルチバイト文字の幅を正確に計算するため）
-                        let selection_line_text = tab
-                            .buffer
-                            .line(start_line)
-                            .map(|s| s.trim_end_matches('\n').to_string())
-                            .unwrap_or_default();
+                        // 行番号から行のテキストを取得するクロージャを作成
+                        let buffer = &tab.buffer;
+                        let get_line_text = |line_num: usize| -> String {
+                            buffer
+                                .line(line_num)
+                                .map(|s| s.trim_end_matches('\n').to_string())
+                                .unwrap_or_default()
+                        };
 
                         renderer.draw_selection(
                             start_line,
@@ -1066,7 +1068,7 @@ pub fn VirtualEditorPanel(
                             end_line,
                             end_col,
                             tab.scroll_top,
-                            &selection_line_text,
+                            get_line_text,
                         );
                     }
                 }

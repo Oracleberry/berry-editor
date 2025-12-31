@@ -147,30 +147,74 @@ impl CanvasRenderer {
     }
 
     /// 選択範囲を描画
-    /// line_text: 選択範囲がある行のテキスト全体（日本語などマルチバイト文字の幅を正確に計算するため）
-    pub fn draw_selection(
+    /// get_line_text: 行番号から行のテキストを取得するクロージャ（日本語などマルチバイト文字の幅を正確に計算するため）
+    pub fn draw_selection<F>(
         &self,
         start_line: usize,
         start_col: usize,
         end_line: usize,
         end_col: usize,
         scroll_top: f64,
-        line_text: &str,
-    ) {
+        get_line_text: F,
+    ) where
+        F: Fn(usize) -> String,
+    {
         self.context.set_fill_style(&COLOR_SELECTION.into());
 
         if start_line == end_line {
             // 単一行の選択
+            let line_text = get_line_text(start_line);
             // 日本語などマルチバイト文字の幅を正確に計算
-            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, start_col);
-            let x_end = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, end_col);
+            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, start_col);
+            let x_end = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, end_col);
             let y = start_line as f64 * self.line_height - scroll_top;
 
             self.context
                 .fill_rect(x_start, y, x_end - x_start, self.line_height);
         } else {
-            // 複数行の選択（実装は後で）
-            // TODO: 複数行選択の描画
+            // 複数行の選択
+            // 最初の行: start_colから行末まで
+            let first_line_text = get_line_text(start_line);
+            let first_line_chars: Vec<char> = first_line_text.chars().collect();
+            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, start_col);
+            let x_end_first = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, first_line_chars.len());
+            let y_first = start_line as f64 * self.line_height - scroll_top;
+
+            self.context.fill_rect(
+                x_start,
+                y_first,
+                x_end_first - x_start,
+                self.line_height,
+            );
+
+            // 中間の行: 行全体を選択
+            for line in (start_line + 1)..end_line {
+                let middle_line_text = get_line_text(line);
+                let middle_line_chars: Vec<char> = middle_line_text.chars().collect();
+                let x_start_middle = self.gutter_width + 15.0;
+                let x_end_middle = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&middle_line_text, middle_line_chars.len());
+                let y_middle = line as f64 * self.line_height - scroll_top;
+
+                self.context.fill_rect(
+                    x_start_middle,
+                    y_middle,
+                    x_end_middle - x_start_middle,
+                    self.line_height,
+                );
+            }
+
+            // 最後の行: 行頭からend_colまで
+            let last_line_text = get_line_text(end_line);
+            let x_start_last = self.gutter_width + 15.0;
+            let x_end_last = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&last_line_text, end_col);
+            let y_last = end_line as f64 * self.line_height - scroll_top;
+
+            self.context.fill_rect(
+                x_start_last,
+                y_last,
+                x_end_last - x_start_last,
+                self.line_height,
+            );
         }
     }
 
