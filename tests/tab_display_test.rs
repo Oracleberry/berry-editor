@@ -63,3 +63,65 @@ async fn test_tab_close_button_exists() {
 
     leptos::logging::log!("✅ Tab close button test completed");
 }
+
+#[wasm_bindgen_test]
+async fn test_multiple_tabs_display() {
+    let selected_file = RwSignal::new(None::<(String, String)>);
+
+    let _dispose = leptos::mount::mount_to_body(move || {
+        view! { <VirtualEditorPanel selected_file=selected_file /> }
+    });
+
+    wait_for_render().await;
+
+    let document = get_test_document();
+
+    // Open first file
+    selected_file.set(Some(("/file1.rs".to_string(), "content1".to_string())));
+    wait_for_render().await;
+    wait_for_render().await;
+
+    // Open second file
+    selected_file.set(Some(("/file2.rs".to_string(), "content2".to_string())));
+    wait_for_render().await;
+    wait_for_render().await;
+
+    // Open third file
+    selected_file.set(Some(("/file3.rs".to_string(), "content3".to_string())));
+    wait_for_render().await;
+    wait_for_render().await;
+
+    // Check that all 3 tabs are displayed
+    let tabs = document.query_selector_all(".berry-tab").unwrap();
+    assert_eq!(tabs.length(), 3, "Should have 3 tabs");
+
+    leptos::logging::log!("✅ Multiple tabs display test completed");
+}
+
+#[wasm_bindgen_test]
+async fn test_tab_switching() {
+    let selected_file = RwSignal::new(None::<(String, String)>);
+
+    let _dispose = leptos::mount::mount_to_body(move || {
+        view! { <VirtualEditorPanel selected_file=selected_file /> }
+    });
+
+    wait_for_render().await;
+
+    let document = get_test_document();
+
+    // Open two files
+    selected_file.set(Some(("/first.rs".to_string(), "first content".to_string())));
+    wait_for_render().await;
+    wait_for_render().await;
+
+    selected_file.set(Some(("/second.rs".to_string(), "second content".to_string())));
+    wait_for_render().await;
+    wait_for_render().await;
+
+    // Second tab should be active
+    let active_tabs = document.query_selector_all(".berry-tab.active").unwrap();
+    assert_eq!(active_tabs.length(), 1, "Should have 1 active tab");
+
+    leptos::logging::log!("✅ Tab switching test completed");
+}

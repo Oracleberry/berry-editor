@@ -194,8 +194,9 @@ pub fn VirtualEditorPanel(
     let canvas_ref = NodeRef::<Canvas>::new();
     let container_ref = NodeRef::<leptos::html::Div>::new();
 
-    // タブ管理（簡略版 - 1つのファイルのみ）
-    let current_tab = RwSignal::new(Option::<EditorTab>::None);
+    // タブ管理（複数タブ対応）
+    let tabs = RwSignal::new(Vec::<EditorTab>::new());
+    let active_tab_index = RwSignal::new(Option::<usize>::None);
 
     // 再描画トリガー用
     let render_trigger = RwSignal::new(0u32);
@@ -217,11 +218,49 @@ pub fn VirtualEditorPanel(
     // マウスドラッグ中かどうか
     let is_dragging = RwSignal::new(false);
 
-    // ファイルが選択されたらタブを作成
+    // ファイルが選択されたらタブを作成または切り替え
     Effect::new(move |_| {
         if let Some((path, content)) = selected_file.get() {
-            current_tab.set(Some(EditorTab::new(path, content)));
+            let mut tabs_vec = tabs.get();
+
+            // 既存のタブを探す
+            if let Some(existing_index) = tabs_vec.iter().position(|t| t.file_path == path) {
+                // 既存のタブをアクティブにする
+                active_tab_index.set(Some(existing_index));
+            } else {
+                // 新しいタブを追加
+                tabs_vec.push(EditorTab::new(path, content));
+                tabs.set(tabs_vec.clone());
+                active_tab_index.set(Some(tabs_vec.len() - 1));
+            }
             render_trigger.set(0);
+        }
+    });
+
+    // 後方互換性のため、current_tabのラッパーを作成
+    let current_tab = create_rw_signal(Option::<EditorTab>::None);
+
+    // active_tab_indexが変更されたら、current_tabを更新
+    Effect::new(move |_| {
+        if let Some(index) = active_tab_index.get() {
+            if let Some(tab) = tabs.get().get(index) {
+                current_tab.set(Some(tab.clone()));
+            }
+        } else {
+            current_tab.set(None);
+        }
+    });
+
+    // current_tabが更新されたら、tabsに反映
+    Effect::new(move |_| {
+        if let Some(new_tab) = current_tab.get() {
+            if let Some(index) = active_tab_index.get() {
+                let mut tabs_vec = tabs.get();
+                if index < tabs_vec.len() {
+                    tabs_vec[index] = new_tab;
+                    tabs.set(tabs_vec);
+                }
+            }
         }
     });
 
@@ -1058,59 +1097,91 @@ pub fn VirtualEditorPanel(
             // タブバー
             <div class="berry-editor-tabs" style="display: flex; background: #2B2B2B; border-bottom: 1px solid #323232; min-height: 35px;">
                 {move || {
-                    if let Some(tab) = current_tab.get() {
-                        // ファイル名を抽出（パスから最後のコンポーネント）
-                        let file_name = tab.file_path
-                            .split('/')
-                            .last()
-                            .unwrap_or(&tab.file_path)
-                            .to_string();
+                    let tabs_vec = tabs.get();
+                    let active_index = active_tab_index.get();
 
-                        view! {
-                            <div class="berry-tab active" style="
-                                display: flex;
-                                align-items: center;
-                                padding: 8px 12px 8px 16px;
-                                background: #1E1E1E;
-                                border-right: 1px solid #323232;
-                                color: #A9B7C6;
-                                font-size: 13px;
-                                font-family: 'JetBrains Mono', monospace;
-                                gap: 8px;
-                            ">
-                                <span style="cursor: pointer;">{file_name}</span>
-                                <button
-                                    on:click=move |ev| {
-                                        ev.stop_propagation();
-                                        // タブを閉じる
-                                        current_tab.set(None);
-                                    }
-                                    style="
-                                        background: transparent;
-                                        border: none;
-                                        color: #606366;
-                                        cursor: pointer;
-                                        padding: 2px 4px;
-                                        font-size: 16px;
-                                        line-height: 1;
-                                        display: flex;
-                                        align-items: center;
-                                        justify-content: center;
-                                        border-radius: 2px;
-                                    "
-                                    onmouseover="this.style.background='#4E5157'; this.style.color='#A9B7C6';"
-                                    onmouseout="this.style.background='transparent'; this.style.color='#606366';"
-                                >
-                                    "×"
-                                </button>
-                            </div>
-                        }.into_any()
-                    } else {
+                    if tabs_vec.is_empty() {
                         view! {
                             <div style="padding: 8px 16px; color: #606366; font-size: 13px;">
                                 "No file open"
                             </div>
                         }.into_any()
+                    } else {
+                        // 全てのタブを表示
+                        tabs_vec.into_iter().enumerate().map(|(index, tab)| {
+                            let is_active = Some(index) == active_index;
+                            let file_name = tab.file_path
+                                .split('/')
+                                .last()
+                                .unwrap_or(&tab.file_path)
+                                .to_string();
+
+                            let tab_class = if is_active { "berry-tab active" } else { "berry-tab" };
+                            let bg_color = if is_active { "#1E1E1E" } else { "#2B2B2B" };
+
+                            view! {
+                                <div
+                                    class=tab_class
+                                    on:click=move |_| {
+                                        active_tab_index.set(Some(index));
+                                    }
+                                    style=format!("
+                                        display: flex;
+                                        align-items: center;
+                                        padding: 8px 12px 8px 16px;
+                                        background: {};
+                                        border-right: 1px solid #323232;
+                                        color: #A9B7C6;
+                                        font-size: 13px;
+                                        font-family: 'JetBrains Mono', monospace;
+                                        gap: 8px;
+                                        cursor: pointer;
+                                    ", bg_color)
+                                >
+                                    <span>{file_name}</span>
+                                    <button
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            // タブを閉じる
+                                            let mut tabs_vec = tabs.get();
+                                            tabs_vec.remove(index);
+                                            tabs.set(tabs_vec.clone());
+
+                                            // アクティブタブのインデックスを調整
+                                            if tabs_vec.is_empty() {
+                                                active_tab_index.set(None);
+                                            } else if Some(index) == active_tab_index.get() {
+                                                // 閉じたタブがアクティブだった場合、前のタブか最後のタブをアクティブにする
+                                                let new_index = if index > 0 { index - 1 } else { 0 };
+                                                active_tab_index.set(Some(new_index.min(tabs_vec.len() - 1)));
+                                            } else if let Some(active_idx) = active_tab_index.get() {
+                                                // 閉じたタブがアクティブタブより前にあった場合、インデックスを調整
+                                                if index < active_idx {
+                                                    active_tab_index.set(Some(active_idx - 1));
+                                                }
+                                            }
+                                        }
+                                        style="
+                                            background: transparent;
+                                            border: none;
+                                            color: #606366;
+                                            cursor: pointer;
+                                            padding: 2px 4px;
+                                            font-size: 16px;
+                                            line-height: 1;
+                                            display: flex;
+                                            align-items: center;
+                                            justify-content: center;
+                                            border-radius: 2px;
+                                        "
+                                        onmouseover="this.style.background='#4E5157'; this.style.color='#A9B7C6';"
+                                        onmouseout="this.style.background='transparent'; this.style.color='#606366';"
+                                    >
+                                        "×"
+                                    </button>
+                                </div>
+                            }
+                        }).collect_view().into_any()
                     }
                 }}
             </div>
