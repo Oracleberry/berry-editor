@@ -29,17 +29,20 @@ pub struct EditorTheme {
     pub caret_row: &'static str,       // #26282E (Active line highlight)
 
     // Syntax Highlighting (Pixel-Analyzed from Screenshot)
-    pub syntax_keyword: &'static str,      // pub, struct, impl, fn
-    pub syntax_function: &'static str,     // function names
-    pub syntax_type: &'static str,         // TextBuffer, String, Option
-    pub syntax_identifier: &'static str,   // rope, file_path (variables/fields)
-    pub syntax_string: &'static str,       // "plaintext" (string literals)
-    pub syntax_number: &'static str,       // 0, 42 (numeric literals)
-    pub syntax_comment: &'static str,      // // comments
-    pub syntax_doc_comment: &'static str,  // /// doc comments
-    pub syntax_attribute: &'static str,    // #[derive(Clone)]
-    pub syntax_macro: &'static str,        // println!, vec!
-    pub syntax_constant: &'static str,     // CONSTANTS
+    pub syntax_keyword: &'static str,        // fn, struct, impl (orange)
+    pub syntax_keyword_import: &'static str, // use, mod (blue - different from keywords)
+    pub syntax_function_def: &'static str,   // main, new (function definition names - yellow)
+    pub syntax_function_call: &'static str,  // init_berry_editor() (function calls - blue)
+    pub syntax_type: &'static str,           // TextBuffer, String, Option (purple-pink)
+    pub syntax_module: &'static str,         // berry_editor, std (module/crate names - orange)
+    pub syntax_identifier: &'static str,     // rope, file_path (variables/fields - white)
+    pub syntax_string: &'static str,         // "plaintext" (string literals - green)
+    pub syntax_number: &'static str,         // 0, 42 (numeric literals - cyan)
+    pub syntax_comment: &'static str,        // // comments (gray)
+    pub syntax_doc_comment: &'static str,    // /// doc comments (dark green)
+    pub syntax_attribute: &'static str,      // #[derive(Clone)] (yellow)
+    pub syntax_macro: &'static str,          // println!, vec! (cyan-blue)
+    pub syntax_constant: &'static str,       // CONSTANTS (purple)
 }
 
 /// RustRover theme - pixel-perfect colors from actual screenshot
@@ -66,18 +69,21 @@ pub const RUSTROVER_DARCULA: EditorTheme = EditorTheme {
     line_numbers: "#4B5059",    // Gutter text (darker)
     caret_row: "#26282E",       // Active line highlight (darker)
 
-    // Syntax Highlighting - Pixel-analyzed from screenshot
-    syntax_keyword: "#CF8E6D",      // Orange: pub, struct, impl, fn
-    syntax_function: "#FFC66D",     // Yellow: function names
-    syntax_type: "#C77DBB",         // Purple-pink: TextBuffer, String, Option
-    syntax_identifier: "#BCBEC4",   // White-ish: rope, file_path (variables/fields)
-    syntax_string: "#6AAB73",       // Green: "plaintext" string literals
-    syntax_number: "#2AACB8",       // Cyan-blue: 0, 42 numeric literals
-    syntax_comment: "#7A7E85",      // Gray: // comments
-    syntax_doc_comment: "#5F826B",  // Dark green: /// doc comments
-    syntax_attribute: "#B3AE60",    // Yellow: #[derive(Clone)]
-    syntax_macro: "#BCBEC4",        // White-ish: println!, vec!
-    syntax_constant: "#9876AA",     // Purple: CONSTANTS
+    // Syntax Highlighting - Pixel-analyzed from screenshot comparison
+    syntax_keyword: "#CF8E6D",        // Orange: fn, struct, impl, let, mut
+    syntax_keyword_import: "#4F9EE3", // Blue: use, mod (import keywords)
+    syntax_function_def: "#FFC66D",   // Yellow: main, new (function definition names)
+    syntax_function_call: "#56A8F5",  // Bright blue: init_berry_editor() (function calls)
+    syntax_type: "#C77DBB",           // Purple-pink: TextBuffer, String, Option
+    syntax_module: "#E8BF6A",         // Tan/orange: berry_editor, std (module/crate names)
+    syntax_identifier: "#BCBEC4",     // White-ish: rope, file_path (variables/fields)
+    syntax_string: "#6AAB73",         // Green: "plaintext" string literals
+    syntax_number: "#2AACB8",         // Cyan-blue: 0, 42 numeric literals
+    syntax_comment: "#7A7E85",        // Gray: // comments
+    syntax_doc_comment: "#5F826B",    // Dark green: /// doc comments
+    syntax_attribute: "#B3AE60",      // Yellow: #[derive(Clone)]
+    syntax_macro: "#4F9EE3",          // Blue: println!, vec! (macros like import)
+    syntax_constant: "#9876AA",       // Purple: CONSTANTS
 };
 
 impl EditorTheme {

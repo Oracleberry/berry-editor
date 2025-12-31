@@ -24,18 +24,21 @@ pub const LINE_HEIGHT: f64 = 20.0;
 /// トークンの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenKind {
-    Keyword,     // fn, pub, struct, let, mut
-    Function,    // function names
-    Type,        // String, usize, custom types
-    Identifier,  // variable/field names (default text)
-    String,      // string literals
-    Number,      // numeric literals
-    Comment,     // comments
-    DocComment,  // /// doc comments
-    Attribute,   // #[derive]
-    Macro,       // println!, vec!
-    Constant,    // CONSTANTS
-    Punctuation, // symbols, operators
+    Keyword,        // fn, pub, struct, let, mut (orange)
+    KeywordImport,  // use, mod (blue)
+    FunctionDef,    // function definition names (yellow)
+    FunctionCall,   // function calls identifier() (bright blue)
+    Type,           // String, usize, custom types (purple-pink)
+    Module,         // module/crate names identifier:: (tan/orange)
+    Identifier,     // variable/field names (white)
+    String,         // string literals (green)
+    Number,         // numeric literals (cyan)
+    Comment,        // comments (gray)
+    DocComment,     // /// doc comments (dark green)
+    Attribute,      // #[derive] (yellow)
+    Macro,          // println!, vec! (blue)
+    Constant,       // CONSTANTS (purple)
+    Punctuation,    // symbols, operators (white)
 }
 
 /// シンタックストークン
@@ -164,8 +167,11 @@ impl CanvasRenderer {
         for token in tokens {
             let color = match token.kind {
                 TokenKind::Keyword => theme.syntax_keyword,
-                TokenKind::Function => theme.syntax_function,
+                TokenKind::KeywordImport => theme.syntax_keyword_import,
+                TokenKind::FunctionDef => theme.syntax_function_def,
+                TokenKind::FunctionCall => theme.syntax_function_call,
                 TokenKind::Type => theme.syntax_type,
+                TokenKind::Module => theme.syntax_module,
                 TokenKind::Identifier => theme.syntax_identifier,
                 TokenKind::String => theme.syntax_string,
                 TokenKind::Number => theme.syntax_number,
@@ -282,7 +288,7 @@ impl CanvasRenderer {
                 }
                 let ident: String = chars[current_pos..end].iter().collect();
 
-                // マクロ呼び出しチェック
+                // マクロ呼び出しチェック identifier!
                 let is_macro = end < chars.len() && chars[end] == '!';
                 if is_macro {
                     end += 1;
@@ -295,15 +301,34 @@ impl CanvasRenderer {
                     continue;
                 }
 
-                // 関数名検出: `fn` の直後の識別子
+                // モジュール名チェック identifier::
+                let is_module = end + 1 < chars.len() && chars[end] == ':' && chars[end + 1] == ':';
+
+                // 関数呼び出しチェック identifier(
+                // 空白をスキップして (  をチェック
+                let mut peek = end;
+                while peek < chars.len() && chars[peek].is_whitespace() {
+                    peek += 1;
+                }
+                let is_function_call = peek < chars.len() && chars[peek] == '(';
+
+                // 関数定義名検出: `fn` の直後の識別子
                 let kind = if prev_token_was_fn {
                     prev_token_was_fn = false;
-                    TokenKind::Function
+                    TokenKind::FunctionDef
+                } else if is_module {
+                    TokenKind::Module
+                } else if is_function_call {
+                    TokenKind::FunctionCall
                 } else {
                     match ident.as_str() {
+                        // Import keywords (blue)
+                        "use" | "mod" => TokenKind::KeywordImport,
+
+                        // Regular keywords (orange)
                         "fn" | "pub" | "struct" | "enum" | "impl" | "trait" | "type" | "let" | "mut" |
                         "const" | "static" | "if" | "else" | "match" | "for" | "while" | "loop" |
-                        "return" | "break" | "continue" | "use" | "mod" | "crate" | "self" | "Self" |
+                        "return" | "break" | "continue" | "crate" | "self" | "Self" |
                         "super" | "as" | "in" | "ref" | "move" | "unsafe" | "async" | "await" |
                         "dyn" | "where" | "true" | "false" => {
                             // `fn` キーワードを記憶
