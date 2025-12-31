@@ -6,18 +6,26 @@
 /// Editor theme definition with all colors
 #[derive(Debug, Clone, Copy)]
 pub struct EditorTheme {
-    // UI Colors
-    pub bg_main: &'static str,         // Main background
-    pub bg_canvas: &'static str,       // Editor background
-    pub bg_sidebar: &'static str,      // Sidebar background
-    pub bg_status_bar: &'static str,   // Status bar background
-    pub border: &'static str,          // Separator lines
+    // Backgrounds (The "Blacks")
+    pub bg_main: &'static str,         // #2B2B2B (Window/Tabs)
+    pub bg_editor: &'static str,       // #1E1E1E (Code Area)
+    pub bg_sidebar: &'static str,      // #3C3F41 (Project Tree)
+    pub bg_status_bar: &'static str,   // #2D2D30 (Bottom bar)
 
-    // Editor Essentials
-    pub cursor: &'static str,          // Cursor color
-    pub selection: &'static str,       // Selection background
-    pub line_numbers: &'static str,    // Gutter text
-    pub caret_row: &'static str,       // Current line highlight
+    // UI Elements
+    pub border: &'static str,          // #323232 (Separator)
+    pub scrollbar: &'static str,       // #4E5254 (Thumb color)
+
+    // Text (The "Whites")
+    pub text_default: &'static str,    // #A9B7C6 (Standard text)
+    pub text_dim: &'static str,        // #858585 (Comments/Disabled)
+    pub text_header: &'static str,     // #BBBBBB (Sidebar headers)
+
+    // Selection & Focus
+    pub cursor: &'static str,          // #BBBBBB (Caret)
+    pub selection: &'static str,       // #214283 (Deep blue)
+    pub line_numbers: &'static str,    // #606366 (Gutter text)
+    pub caret_row: &'static str,       // #323232 (Active line highlight)
 
     // Syntax Highlighting (Darcula)
     pub syntax_keyword: &'static str,    // fn, pub, struct, let, mut
@@ -35,18 +43,26 @@ pub struct EditorTheme {
 
 /// RustRover Darcula theme - official colors
 pub const RUSTROVER_DARCULA: EditorTheme = EditorTheme {
-    // UI Colors
-    bg_main: "#2B2B2B",
-    bg_canvas: "#2B2B2B",
-    bg_sidebar: "#3C3F41",
-    bg_status_bar: "#3C3F41",
-    border: "#323232",
+    // Backgrounds (The "Blacks")
+    bg_main: "#2B2B2B",         // Window/Tabs
+    bg_editor: "#1E1E1E",       // Code Area (darker for contrast)
+    bg_sidebar: "#3C3F41",      // Project Tree
+    bg_status_bar: "#2D2D30",   // Bottom bar
 
-    // Editor Essentials
-    cursor: "#BBBBBB",
-    selection: "#214283",
-    line_numbers: "#606366",
-    caret_row: "#323232",
+    // UI Elements
+    border: "#323232",          // Separator
+    scrollbar: "#4E5254",       // Thumb color
+
+    // Text (The "Whites")
+    text_default: "#A9B7C6",    // Standard text
+    text_dim: "#858585",        // Comments/Disabled
+    text_header: "#BBBBBB",     // Sidebar headers
+
+    // Selection & Focus
+    cursor: "#BBBBBB",          // Caret
+    selection: "#214283",       // Deep blue
+    line_numbers: "#606366",    // Gutter text
+    caret_row: "#323232",       // Active line highlight
 
     // Syntax Highlighting (Darcula - accurate colors from RustRover)
     syntax_keyword: "#CC7832",      // Orange: fn, pub, struct, let, mut, if, else, match
@@ -54,7 +70,7 @@ pub const RUSTROVER_DARCULA: EditorTheme = EditorTheme {
     syntax_type: "#A9B7C6",         // Light gray: String, usize, custom types
     syntax_string: "#6A8759",       // Green: string literals
     syntax_number: "#6897BB",       // Blue: numeric literals
-    syntax_comment: "#808080",      // Gray: comments
+    syntax_comment: "#629755",      // Green-gray: comments (Darcula standard)
     syntax_attribute: "#BBB529",    // Yellow-green: #[derive]
     syntax_macro: "#A9B7C6",        // Light gray: println!, vec!
     syntax_variable: "#A9B7C6",     // Light gray: local variables

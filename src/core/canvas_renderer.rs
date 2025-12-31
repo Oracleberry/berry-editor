@@ -8,13 +8,13 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use crate::theme::{EditorTheme, RUSTROVER_DARCULA};
 
 /// IntelliJ Darculaカラースキーム (Backward compatibility)
-pub const COLOR_BACKGROUND: &str = "#2B2B2B";
-pub const COLOR_FOREGROUND: &str = "#A9B7C6";
-pub const COLOR_CURSOR: &str = "#BBBBBB";
-pub const COLOR_SELECTION: &str = "#214283";
-pub const COLOR_GUTTER_BG: &str = "#313335";
-pub const COLOR_GUTTER_FG: &str = "#606366";
-pub const COLOR_LINE_HIGHLIGHT: &str = "#323232";
+pub const COLOR_BACKGROUND: &str = "#1E1E1E";  // Editor background (darker)
+pub const COLOR_FOREGROUND: &str = "#A9B7C6";  // Default text
+pub const COLOR_CURSOR: &str = "#BBBBBB";      // Caret
+pub const COLOR_SELECTION: &str = "#214283";   // Selection
+pub const COLOR_GUTTER_BG: &str = "#313335";   // Gutter background
+pub const COLOR_GUTTER_FG: &str = "#606366";   // Line numbers
+pub const COLOR_LINE_HIGHLIGHT: &str = "#323232"; // Current line
 
 /// フォント設定
 pub const FONT_FAMILY: &str = "JetBrains Mono";
@@ -108,7 +108,7 @@ impl CanvasRenderer {
     /// Canvas全体をクリア
     pub fn clear(&self, width: f64, height: f64) {
         let theme = EditorTheme::current();
-        self.context.set_fill_style(&theme.bg_canvas.into());
+        self.context.set_fill_style(&theme.bg_editor.into());
         self.context.fill_rect(0.0, 0.0, width, height);
     }
 
@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn test_color_constants() {
-        assert_eq!(COLOR_BACKGROUND, "#1E1E1E");
-        assert_eq!(COLOR_FOREGROUND, "#A9B7C6");
+        assert_eq!(COLOR_BACKGROUND, "#1E1E1E");  // Darker editor background
+        assert_eq!(COLOR_FOREGROUND, "#A9B7C6");  // Default text color
     }
 
     #[test]
