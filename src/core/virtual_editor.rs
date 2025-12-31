@@ -1062,11 +1062,21 @@ pub fn VirtualEditorPanel(
                                 .unwrap_or_default()
                         };
 
+                        // 選択範囲の正規化（逆方向選択に対応）
+                        let (norm_start_line, norm_start_col, norm_end_line, norm_end_col) =
+                            if start_line > end_line || (start_line == end_line && start_col > end_col) {
+                                // 逆方向選択 - 座標を入れ替える
+                                (end_line, end_col, start_line, start_col)
+                            } else {
+                                // 順方向選択 - そのまま
+                                (start_line, start_col, end_line, end_col)
+                            };
+
                         renderer.draw_selection(
-                            start_line,
-                            start_col,
-                            end_line,
-                            end_col,
+                            norm_start_line,
+                            norm_start_col,
+                            norm_end_line,
+                            norm_end_col,
                             tab.scroll_top,
                             get_line_text,
                         );
