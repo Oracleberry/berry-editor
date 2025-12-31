@@ -8,13 +8,13 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use crate::theme::{EditorTheme, RUSTROVER_DARCULA};
 
 /// IntelliJ Darculaカラースキーム (Backward compatibility)
-pub const COLOR_BACKGROUND: &str = "#1E1E1E";  // Editor background (darker)
-pub const COLOR_FOREGROUND: &str = "#A9B7C6";  // Default text
+pub const COLOR_BACKGROUND: &str = "#1E1F22";  // Editor background (pixel-perfect)
+pub const COLOR_FOREGROUND: &str = "#BCBEC4";  // Default text (pixel-perfect)
 pub const COLOR_CURSOR: &str = "#BBBBBB";      // Caret
 pub const COLOR_SELECTION: &str = "#214283";   // Selection
 pub const COLOR_GUTTER_BG: &str = "#313335";   // Gutter background
-pub const COLOR_GUTTER_FG: &str = "#606366";   // Line numbers
-pub const COLOR_LINE_HIGHLIGHT: &str = "#323232"; // Current line
+pub const COLOR_GUTTER_FG: &str = "#4B5059";   // Line numbers (pixel-perfect)
+pub const COLOR_LINE_HIGHLIGHT: &str = "#26282E"; // Current line (pixel-perfect)
 
 /// フォント設定
 pub const FONT_FAMILY: &str = "JetBrains Mono";
@@ -24,16 +24,18 @@ pub const LINE_HEIGHT: f64 = 20.0;
 /// トークンの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenKind {
-    Keyword,    // fn, pub, struct, let, mut
-    Function,   // function names
-    Type,       // String, usize, custom types
-    String,     // string literals
-    Number,     // numeric literals
-    Comment,    // comments
-    Attribute,  // #[derive]
-    Macro,      // println!, vec!
-    Constant,   // CONSTANTS
-    Text,       // default text
+    Keyword,     // fn, pub, struct, let, mut
+    Function,    // function names
+    Type,        // String, usize, custom types
+    Identifier,  // variable/field names (default text)
+    String,      // string literals
+    Number,      // numeric literals
+    Comment,     // comments
+    DocComment,  // /// doc comments
+    Attribute,   // #[derive]
+    Macro,       // println!, vec!
+    Constant,    // CONSTANTS
+    Punctuation, // symbols, operators
 }
 
 /// シンタックストークン
@@ -164,13 +166,15 @@ impl CanvasRenderer {
                 TokenKind::Keyword => theme.syntax_keyword,
                 TokenKind::Function => theme.syntax_function,
                 TokenKind::Type => theme.syntax_type,
+                TokenKind::Identifier => theme.syntax_identifier,
                 TokenKind::String => theme.syntax_string,
                 TokenKind::Number => theme.syntax_number,
                 TokenKind::Comment => theme.syntax_comment,
+                TokenKind::DocComment => theme.syntax_doc_comment,
                 TokenKind::Attribute => theme.syntax_attribute,
                 TokenKind::Macro => theme.syntax_macro,
                 TokenKind::Constant => theme.syntax_constant,
-                TokenKind::Text => theme.syntax_default,
+                TokenKind::Punctuation => theme.syntax_identifier,
             };
 
             self.context.set_fill_style(&color.into());
@@ -189,7 +193,20 @@ impl CanvasRenderer {
         let mut prev_token_was_fn = false;
 
         while current_pos < chars.len() {
-            // コメント
+            // ドキュメントコメント ///
+            if current_pos + 2 < chars.len()
+                && chars[current_pos] == '/'
+                && chars[current_pos + 1] == '/'
+                && chars[current_pos + 2] == '/' {
+                let comment: String = chars[current_pos..].iter().collect();
+                tokens.push(SyntaxToken {
+                    text: comment,
+                    kind: TokenKind::DocComment,
+                });
+                break;
+            }
+
+            // 通常のコメント //
             if current_pos + 1 < chars.len() && chars[current_pos] == '/' && chars[current_pos + 1] == '/' {
                 let comment: String = chars[current_pos..].iter().collect();
                 tokens.push(SyntaxToken {
@@ -307,7 +324,7 @@ impl CanvasRenderer {
                         // 全大文字は定数と判断
                         _ if ident.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) && ident.len() > 1 => TokenKind::Constant,
 
-                        _ => TokenKind::Text,
+                        _ => TokenKind::Identifier,
                     }
                 };
 
@@ -322,7 +339,7 @@ impl CanvasRenderer {
             // その他の文字（記号など）
             tokens.push(SyntaxToken {
                 text: chars[current_pos].to_string(),
-                kind: TokenKind::Text,
+                kind: TokenKind::Punctuation,
             });
             current_pos += 1;
         }
@@ -467,8 +484,8 @@ mod tests {
 
     #[test]
     fn test_color_constants() {
-        assert_eq!(COLOR_BACKGROUND, "#1E1E1E");  // Darker editor background
-        assert_eq!(COLOR_FOREGROUND, "#A9B7C6");  // Default text color
+        assert_eq!(COLOR_BACKGROUND, "#1E1F22");  // Pixel-perfect editor background
+        assert_eq!(COLOR_FOREGROUND, "#BCBEC4");  // Pixel-perfect default text color
     }
 
     #[test]
