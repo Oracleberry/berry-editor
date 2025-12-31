@@ -49,11 +49,11 @@
         body {
             /* JetBrains Mono - IntelliJ's official font */
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
-            background: #2B2B2B; /* IntelliJ Darcula background */
+            background: #2B2D30; /* RustRover main background */
             color: #a9b7c6; /* Darcula text color */
-            /* フォントレンダリング最適化 - Sharper rendering */
-            -webkit-font-smoothing: subpixel-antialiased;
-            -moz-osx-font-smoothing: auto;
+            /* フォントレンダリング最適化 - Grayscale antialiasing for sharp text */
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
             text-rendering: optimizeLegibility;
             /* ✅ タブ数字を等幅化 */
             font-feature-settings: "tnum";
@@ -190,19 +190,19 @@
             min-height: 0;
             outline: none !important; /* フォーカス時の枠を消す */
             position: relative;
-            background: #2B2B2B;
+            background: #1E1F22; /* RustRover editor background */
         }
 
         .berry-editor-tab-bar {
             display: flex;
-            background: #2B2B2B; /* Same as editor background */
+            background: #2B2D30; /* RustRover tab bar background */
             border-bottom: 1px solid #323232; /* Thin border */
             min-height: 32px; /* Slightly smaller */
         }
 
         .berry-editor-tab {
             padding: 4px 12px; /* Tighter padding */
-            background: #2B2B2B; /* Same as editor background */
+            background: #2B2D30; /* RustRover inactive tab background */
             border-right: 1px solid #323232; /* Thin border */
             cursor: pointer;
             display: flex;
@@ -233,7 +233,7 @@
 
         .berry-editor-pane {
             flex: 1; /* ✅ これで残りの高さをすべて占有させる */
-            background: #2B2B2B;
+            background: #1E1F22; /* RustRover editor background */
             position: relative;
             overflow: hidden; /* Canvas内部でスクロールを管理するため */
             min-height: 0; /* ✅ Flexbox内の潰れ防止 */
@@ -249,11 +249,12 @@
             display: block;
             outline: none;
             cursor: text;
-            /* 高品質なCanvasレンダリング設定 */
-            image-rendering: auto; /* Let devicePixelRatio handle quality */
-            /* サブピクセルレンダリングでシャープに */
-            -webkit-font-smoothing: subpixel-antialiased;
-            -moz-osx-font-smoothing: auto;
+            /* 高品質なCanvasレンダリング設定 - Sharp text like RustRover */
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            /* Grayscale antialiasing for sharp, clear text */
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
             /* GPU加速で滑らかに */
             will-change: transform;
             transform: translateZ(0);
@@ -274,7 +275,7 @@
 
         .berry-editor-status-bar {
             height: 22px; /* IntelliJ standard height */
-            background: #2B2B2B; /* Same as editor background */
+            background: #2B2D30; /* RustRover status bar background */
             color: #afb1b3;
             display: flex;
             align-items: center;
@@ -311,7 +312,7 @@
         .berry-editor-bottom-panel {
             height: 200px;
             border-top: 1px solid #323232; /* Darcula border */
-            background: #2B2B2B; /* IntelliJ Darcula background */
+            background: #2B2D30; /* RustRover panel background */
             overflow-y: auto;
         }
 
@@ -1031,17 +1032,17 @@
         ::-webkit-scrollbar {
             width: 10px;
             height: 10px;
-            background: #2B2B2B; /* Matches editor background */
+            background: #2B2D30; /* RustRover scrollbar track */
         }
 
         ::-webkit-scrollbar-track {
-            background: #2B2B2B;
+            background: #2B2D30;
         }
 
         ::-webkit-scrollbar-thumb {
             background: #4e5254; /* Subtle gray thumb */
             border-radius: 5px;
-            border: 2px solid #2B2B2B; /* Creates padding effect */
+            border: 2px solid #2B2D30; /* Creates padding effect */
         }
 
         ::-webkit-scrollbar-thumb:hover {
@@ -1054,13 +1055,13 @@
 
         /* Horizontal scrollbar */
         ::-webkit-scrollbar-corner {
-            background: #2B2B2B;
+            background: #2B2D30;
         }
 
         /* Firefox scrollbar styling */
         * {
             scrollbar-width: thin;
-            scrollbar-color: #4e5254 #2B2B2B;
+            scrollbar-color: #4e5254 #2B2D30;
         }
     </style>
     <script>

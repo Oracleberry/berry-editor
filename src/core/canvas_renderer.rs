@@ -145,7 +145,8 @@ impl CanvasRenderer {
         self.context.set_text_align("right");
 
         for line_num in start_line..end_line {
-            let y = (line_num - start_line) as f64 * self.line_height + 15.0;
+            // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+            let y = ((line_num - start_line) as f64 * self.line_height + 15.0).round();
             let _ = self.context.fill_text(
                 &(line_num + 1).to_string(),
                 self.gutter_width - 10.0,
@@ -167,8 +168,9 @@ impl CanvasRenderer {
 
     /// シンタックスハイライト付きでテキスト行を描画
     pub fn draw_line_highlighted(&self, y_offset: f64, text: &str, theme: &EditorTheme) {
-        let x_base = self.gutter_width + 15.0; // 左パディング
-        let y = y_offset + 15.0; // ベースライン調整
+        // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+        let x_base = (self.gutter_width + 15.0).round();
+        let y = (y_offset + 15.0).round();
 
         // トークンに分解してハイライト
         let tokens = self.tokenize_rust(text);
@@ -194,7 +196,8 @@ impl CanvasRenderer {
             };
 
             self.context.set_fill_style(&color.into());
-            let _ = self.context.fill_text(&token.text, x_base + x_offset, y);
+            // X座標も整数に丸める
+            let _ = self.context.fill_text(&token.text, (x_base + x_offset).round(), y);
 
             // 次のトークンの位置を計算
             x_offset += self.measure_text(&token.text);
@@ -391,8 +394,9 @@ impl CanvasRenderer {
     /// カーソルを描画（縦線）
     /// line_text: カーソルがある行のテキスト全体
     pub fn draw_cursor(&self, line: usize, col: usize, scroll_top: f64, line_text: &str) {
-        let x = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, col);
-        let y = line as f64 * self.line_height - scroll_top;
+        // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+        let x = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(line_text, col)).round();
+        let y = (line as f64 * self.line_height - scroll_top).round();
 
         self.context.set_stroke_style(&COLOR_CURSOR.into());
         self.context.set_line_width(2.0);
@@ -421,9 +425,10 @@ impl CanvasRenderer {
             // 単一行の選択
             let line_text = get_line_text(start_line);
             // 日本語などマルチバイト文字の幅を正確に計算
-            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, start_col);
-            let x_end = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, end_col);
-            let y = start_line as f64 * self.line_height - scroll_top;
+            // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+            let x_start = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, start_col)).round();
+            let x_end = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&line_text, end_col)).round();
+            let y = (start_line as f64 * self.line_height - scroll_top).round();
 
             self.context
                 .fill_rect(x_start, y, x_end - x_start, self.line_height);
@@ -432,9 +437,10 @@ impl CanvasRenderer {
             // 最初の行: start_colから行末まで
             let first_line_text = get_line_text(start_line);
             let first_line_chars: Vec<char> = first_line_text.chars().collect();
-            let x_start = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, start_col);
-            let x_end_first = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, first_line_chars.len());
-            let y_first = start_line as f64 * self.line_height - scroll_top;
+            // ピクセルグリッドに合わせて整数に丸める
+            let x_start = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, start_col)).round();
+            let x_end_first = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&first_line_text, first_line_chars.len())).round();
+            let y_first = (start_line as f64 * self.line_height - scroll_top).round();
 
             self.context.fill_rect(
                 x_start,
@@ -447,9 +453,10 @@ impl CanvasRenderer {
             for line in (start_line + 1)..end_line {
                 let middle_line_text = get_line_text(line);
                 let middle_line_chars: Vec<char> = middle_line_text.chars().collect();
-                let x_start_middle = self.gutter_width + 15.0;
-                let x_end_middle = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&middle_line_text, middle_line_chars.len());
-                let y_middle = line as f64 * self.line_height - scroll_top;
+                // ピクセルグリッドに合わせて整数に丸める
+                let x_start_middle = (self.gutter_width + 15.0).round();
+                let x_end_middle = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&middle_line_text, middle_line_chars.len())).round();
+                let y_middle = (line as f64 * self.line_height - scroll_top).round();
 
                 self.context.fill_rect(
                     x_start_middle,
@@ -461,9 +468,10 @@ impl CanvasRenderer {
 
             // 最後の行: 行頭からend_colまで
             let last_line_text = get_line_text(end_line);
-            let x_start_last = self.gutter_width + 15.0;
-            let x_end_last = self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&last_line_text, end_col);
-            let y_last = end_line as f64 * self.line_height - scroll_top;
+            // ピクセルグリッドに合わせて整数に丸める
+            let x_start_last = (self.gutter_width + 15.0).round();
+            let x_end_last = (self.gutter_width + 15.0 + self.calculate_x_offset_from_text(&last_line_text, end_col)).round();
+            let y_last = (end_line as f64 * self.line_height - scroll_top).round();
 
             self.context.fill_rect(
                 x_start_last,
