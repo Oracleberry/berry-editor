@@ -1883,3 +1883,30 @@ pub fn VirtualEditorPanel(
         </div>
     }
 }
+
+#[cfg(test)]
+mod lsp_tests {
+    use super::*;
+
+    #[test]
+    fn test_position_creation() {
+        let pos = Position::new(0, 0);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.column, 0);
+
+        let pos2 = Position::new(100, 50);
+        assert_eq!(pos2.line, 100);
+        assert_eq!(pos2.column, 50);
+    }
+
+    #[test]
+    fn test_position_from_cursor() {
+        // Verify Position can be created from cursor coordinates
+        let line = 5;
+        let col = 10;
+        let position = Position::new(line, col);
+
+        assert_eq!(position.line, line);
+        assert_eq!(position.column, col);
+    }
+}
