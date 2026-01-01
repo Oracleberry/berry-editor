@@ -10,6 +10,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 
+    <!-- VS Code Codicons - Icon Font -->
+    <link data-trunk rel="copy-dir" href="assets/fonts" data-target-path="fonts" />
+    <link rel="stylesheet" href="fonts/codicon.css">
+
     <script type="module">
       // Tauri 2.0 の invoke を WASM から呼べるようにグローバルに露出させる
       window.berry_invoke = async (cmd, args) => {
@@ -49,12 +53,13 @@
         body {
             /* JetBrains Mono - IntelliJ's official font */
             font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
-            background: #2B2D30; /* RustRover main background */
+            background: #1E1F22; /* RustRover main background (darker) */
             color: #a9b7c6; /* Darcula text color */
-            /* フォントレンダリング最適化 - Grayscale antialiasing for sharp text */
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-            text-rendering: optimizeLegibility;
+            /* ✅ 修正：OSのフォントレンダリングを最大限に引き出す */
+            -webkit-font-smoothing: subpixel-antialiased; /* グレースケールではなく液晶最適化 */
+            -moz-osx-font-smoothing: auto;
+            text-rendering: optimizeSpeed; /* エディタでは幾何学精度より描画速度/ピクセル整合性を優先 */
+            letter-spacing: -0.01em; /* わずかに詰めて密度を上げる */
             /* ✅ タブ数字を等幅化 */
             font-feature-settings: "tnum";
             font-variant-ligatures: none;
@@ -78,8 +83,8 @@
             width: 250px;
             min-width: 250px;
             max-width: 250px;
-            background: #2B2D30; /* RustRover sidebar background */
-            border-right: 1px solid #323232; /* Thin dark border */
+            background: #1E1F22; /* RustRover sidebar background (same as editor) */
+            border-right: 1px solid #1E1F22; /* Darker border to match */
             overflow-y: auto;
             display: flex !important;
             flex-direction: column;
@@ -88,8 +93,8 @@
 
         .berry-editor-sidebar-header {
             padding: 8px 12px; /* Tighter padding */
-            background: #2B2D30; /* RustRover sidebar background */
-            border-bottom: 1px solid #323232;
+            background: #1E1F22; /* RustRover sidebar background (same as editor) */
+            border-bottom: 1px solid #1E1F22;
             font-size: 12px; /* RustRover standard size */
             font-weight: 400; /* Normal weight */
             color: #bbbbbb; /* Lighter gray for header */
@@ -118,7 +123,7 @@
             overflow-y: auto;
             padding: 2px 0; /* Reduced padding for density */
             min-height: 100px;
-            background: #2B2D30; /* RustRover sidebar background */
+            background: #1E1F22; /* RustRover sidebar background (same as editor) */
         }
 
         .berry-editor-file-item {
@@ -131,7 +136,7 @@
             display: flex !important;
             align-items: center;
             font-size: 13px; /* RustRover standard size */
-            font-weight: 400; /* Normal weight matching RustRover */
+            font-weight: 300; /* Light weight matching editor */
             user-select: none;
             position: relative;
             white-space: nowrap;
@@ -195,15 +200,15 @@
 
         .berry-editor-tab-bar {
             display: flex;
-            background: #2B2D30; /* RustRover tab bar background */
-            border-bottom: 1px solid #323232; /* Thin border */
+            background: #1E1F22; /* RustRover tab bar background (same as editor) */
+            border-bottom: 1px solid #1E1F22; /* Darker border */
             min-height: 32px; /* Slightly smaller */
         }
 
         .berry-editor-tab {
             padding: 4px 12px; /* Tighter padding */
-            background: #2B2D30; /* RustRover inactive tab background */
-            border-right: 1px solid #323232; /* Thin border */
+            background: #1E1F22; /* RustRover inactive tab background (same as editor) */
+            border-right: 1px solid #1E1F22; /* Darker border */
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -213,7 +218,7 @@
         }
 
         .berry-editor-tab.active {
-            background: #4e5254; /* Slightly lighter for active */
+            background: #1E1F22; /* Active tab matches editor background */
             border-bottom: none; /* No blue line */
             color: #ffffff;
         }
@@ -243,21 +248,27 @@
 
         /* ✅ Canvas はコンテナを完全に埋める */
         .berry-editor-pane canvas {
-            flex: 1; /* ✅ 親の高さに合わせる */
-            width: 100%;
-            height: 100%;
+            /* Rust側でwidth/heightを明示的に設定するため、CSSでは指定しない */
+            /* flex: 1は削除（Canvasには適用できない） */
             display: block;
             outline: none;
             cursor: text;
-            /* 高品質なCanvasレンダリング設定 - Sharp text like RustRover */
+            /* ✅ 修正：Safari/Tauri環境でコントラストを最大化 */
             image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
-            /* Grayscale antialiasing for sharp, clear text */
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
+            image-rendering: auto; /* pixelated よりもブラウザのサブピクセルに任せる */
+            /* ✅ 追加：暗い背景でのコントラストを RustRover に最適化 */
+            color-profile: sRGB;
+            /* サブピクセルアンチエイリアシングでネイティブアプリと同等の鮮明さ */
+            -webkit-font-smoothing: subpixel-antialiased;
+            -moz-osx-font-smoothing: auto;
+            /* ✅ 修正：エディタでは描画速度/ピクセル整合性を優先 */
+            text-rendering: optimizeSpeed;
             /* GPU加速で滑らかに */
             will-change: transform;
             transform: translateZ(0);
+            /* Rust側で設定したサイズが上書きされないようにする */
+            max-width: 100%;
+            max-height: 100%;
         }
 
         /* ✅ Hidden input for IME positioning (Canvas mode) */
@@ -288,7 +299,7 @@
         }
 
         /* Darcula Syntax Highlighting - IntelliJ IDEA colors */
-        .syntax-keyword { color: #CC7832; font-weight: bold; } /* Orange - IntelliJ keywords */
+        .syntax-keyword { color: #CC7832; font-weight: 500; } /* ✅ RustRoverの見本に合わせた適度な太さ */
         .syntax-function { color: #FFC66D; } /* Yellow - IntelliJ functions */
         .syntax-type { color: #A9B7C6; } /* Light gray - IntelliJ types */
         .syntax-string { color: #6A8759; } /* Green - IntelliJ strings */
@@ -1041,7 +1052,7 @@
 
         ::-webkit-scrollbar-thumb {
             background: #4e5254; /* Subtle gray thumb */
-            border-radius: 5px;
+            border-radius: 0px; /* ✅ 丸みを消す - RustRoverは完全に角ばっている */
             border: 2px solid #2B2D30; /* Creates padding effect */
         }
 

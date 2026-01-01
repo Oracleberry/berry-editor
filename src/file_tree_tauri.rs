@@ -6,58 +6,53 @@ use crate::tauri_bindings::{self, FileNode};
 use leptos::task::spawn_local;
 use crate::web_worker::{IndexerWorker, ProgressData};
 
-/// ✅ IntelliJ Pattern: SVG-based file/folder icon component (Flat Design)
+/// ✅ VS Code Style: Icon component using codicon font (matching VS Code exactly)
 #[component]
 fn FileIcon(is_dir: bool, expanded: bool, name: String) -> impl IntoView {
     if is_dir {
-        // IntelliJ風のフラットフォルダアイコン（展開/非展開）
+        // VS Code folder style: just the folder icon, no chevron
         if expanded {
             view! {
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right: 6px; flex-shrink: 0;">
-                    <path d="M1.5 3C1.22 3 1 3.22 1 3.5V4.5H15V6C15 6.55 14.55 7 14 7H2V13C2 13.55 2.45 14 3 14H13C13.55 14 14 13.55 14 13V7H14.5C14.78 7 15 6.78 15 6.5V4C15 3.45 14.55 3 14 3H7.5L6.5 2H1.5V3Z" fill="#6E9ECF"/>
-                    <path d="M1 4.5H7L8 3.5H14.5C14.78 3.5 15 3.72 15 4V6H2V13.5C2 13.78 2.22 14 2.5 14H13.5C13.78 14 14 13.78 14 13.5V7H14.5" stroke="#5A8AC4" stroke-width="0.5" opacity="0.5"/>
-                </svg>
+                <i class="codicon codicon-folder-opened" style="margin-right: 4px; flex-shrink: 0; font-size: 16px; color: #DCAA6F;"></i>
             }.into_any()
         } else {
             view! {
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right: 6px; flex-shrink: 0;">
-                    <path d="M1.5 3C1.22 3 1 3.22 1 3.5V13C1 13.55 1.45 14 2 14H14C14.55 14 15 13.55 15 13V5C15 4.45 14.55 4 14 4H7L6 3H1.5Z" fill="#9AA7B0"/>
-                    <path d="M1.5 3H6L7 4H14C14.55 4 15 4.45 15 5V13C15 13.55 14.55 14 14 14H2C1.45 14 1 13.55 1 13V3.5C1 3.22 1.22 3 1.5 3Z" stroke="#7D8A94" stroke-width="0.5" opacity="0.4"/>
-                </svg>
+                <i class="codicon codicon-folder" style="margin-right: 4px; flex-shrink: 0; font-size: 16px; color: #C5C5C5;"></i>
             }.into_any()
         }
     } else {
-        // 拡張子に応じたIntelliJ風のフラットファイルアイコン
+        // VS Code file icons
         let extension = name.split('.').last().unwrap_or("");
-        let (bg_color, badge_color) = match extension {
-            "rs" => ("#6C707E", "#E44D26"),      // Rust - 赤バッジ
-            "toml" => ("#6C707E", "#9C9C9C"),    // Config - グレーバッジ
-            "md" => ("#6C707E", "#4A90E2"),      // Markdown - 青バッジ
-            "js" => ("#6C707E", "#F7DF1E"),      // JavaScript - 黄バッジ
-            "ts" => ("#6C707E", "#3178C6"),      // TypeScript - 青バッジ
-            "tsx" => ("#6C707E", "#3178C6"),     // TSX - 青バッジ
-            "jsx" => ("#6C707E", "#61DAFB"),     // JSX - シアンバッジ
-            "html" => ("#6C707E", "#E34F26"),    // HTML - オレンジバッジ
-            "css" => ("#6C707E", "#1572B6"),     // CSS - 青バッジ
-            "scss" | "sass" => ("#6C707E", "#CD6799"), // Sass - ピンクバッジ
-            "json" => ("#6C707E", "#5E97D0"),    // JSON - 青バッジ
-            "yaml" | "yml" => ("#6C707E", "#CB4335"), // YAML - 赤バッジ
-            "xml" => ("#6C707E", "#E37933"),     // XML - オレンジバッジ
-            "py" => ("#6C707E", "#3776AB"),      // Python - 青バッジ
-            "java" => ("#6C707E", "#EA2D2E"),    // Java - 赤バッジ
-            "go" => ("#6C707E", "#00ADD8"),      // Go - シアンバッジ
-            "sh" | "bash" => ("#6C707E", "#89E051"), // Shell - 緑バッジ
-            _ => ("#6C707E", "#AFB1B3"),         // Default - グレーバッジ
+
+        // Check for .disabled suffix
+        let is_disabled = name.ends_with(".disabled");
+
+        let (icon_class, color) = if is_disabled {
+            ("exclude", "#C5C5C5")  // VS Code uses exclude icon for disabled files
+        } else {
+            match extension {
+                "rs" => ("file", "#C5C5C5"),                    // Rust - simple file icon
+                "toml" => ("settings-gear", "#C5C5C5"),         // Config - gear
+                "md" => ("markdown", "#519ABA"),                // Markdown - blue
+                "js" => ("symbol-misc", "#F1DD3F"),             // JavaScript - yellow
+                "ts" | "tsx" => ("symbol-misc", "#3B8AD8"),     // TypeScript - blue
+                "jsx" => ("symbol-misc", "#61DAFB"),            // JSX - cyan
+                "html" => ("file-code", "#E37933"),             // HTML - orange
+                "css" | "scss" | "sass" => ("symbol-misc", "#519ABA"), // CSS - blue
+                "json" => ("json", "#FBC02D"),                  // JSON - yellow
+                "yaml" | "yml" => ("gear", "#CB4335"),          // YAML - red
+                "xml" => ("file-code", "#E37933"),              // XML - orange
+                "py" => ("symbol-misc", "#3776AB"),             // Python - blue
+                "java" => ("symbol-misc", "#EA2D2E"),           // Java - red
+                "go" => ("symbol-misc", "#00ADD8"),             // Go - cyan
+                "sh" | "bash" => ("terminal-bash", "#89E051"), // Shell - green
+                "lock" => ("lock", "#C5C5C5"),                  // Lock files
+                _ => ("file", "#C5C5C5"),                       // Default - gray file icon
+            }
         };
 
         view! {
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right: 6px; flex-shrink: 0;">
-                // Base file shape
-                <path d="M3 1C2.45 1 2 1.45 2 2V14C2 14.55 2.45 15 3 15H13C13.55 15 14 14.55 14 14V5L10 1H3Z" fill=bg_color/>
-                <path d="M10 1V4C10 4.55 10.45 5 11 5H14" fill="#5A5D6B"/>
-                // Extension badge
-                <rect x="2.5" y="11" width="11" height="3" rx="0.5" fill=badge_color opacity="0.9"/>
-            </svg>
+            <i class=format!("codicon codicon-{}", icon_class) style=format!("margin-right: 4px; flex-shrink: 0; font-size: 16px; color: {};", color)></i>
         }.into_any()
     }
 }
@@ -128,7 +123,7 @@ pub fn FileTreePanelTauri(
     };
 
     view! {
-        <div class="berry-editor-sidebar">
+        <div class="berry-editor-sidebar" style="background: #1E1F22 !important; border-right: 1px solid #1E1F22 !important;">
             <div class="berry-editor-sidebar-header">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span>"EXPLORER"</span>
@@ -140,8 +135,8 @@ pub fn FileTreePanelTauri(
                         style="
                             font-size: 11px;
                             padding: 2px 6px;
-                            background: #2d2d2d;
-                            border: 1px solid #3e3e3e;
+                            background: #1E1F22;
+                            border: 1px solid #1E1F22;
                             color: #cccccc;
                             cursor: pointer;
                             border-radius: 3px;
@@ -172,7 +167,7 @@ pub fn FileTreePanelTauri(
                     }
                 }}
             </div>
-            <div class="berry-editor-file-tree">
+            <div class="berry-editor-file-tree" style="background: #1E1F22 !important;">
                 {move || {
                     if is_loading.get() {
                         view! {

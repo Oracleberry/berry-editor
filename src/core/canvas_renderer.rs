@@ -18,8 +18,9 @@ pub const COLOR_LINE_HIGHLIGHT: &str = "#26282E"; // Current line (pixel-perfect
 
 /// フォント設定
 pub const FONT_FAMILY: &str = "JetBrains Mono";
-pub const FONT_SIZE: f64 = 14.0;  // RustRover standard size
+pub const FONT_SIZE: f64 = 13.0;  // RustRover actual size (smaller and crisper)
 pub const LINE_HEIGHT: f64 = 20.0; // RustRover standard line height
+pub const LETTER_SPACING: f64 = 0.0; // No extra spacing for sharp rendering
 
 /// トークンの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +61,26 @@ pub struct CanvasRenderer {
 impl CanvasRenderer {
     /// Canvas要素から描画エンジンを作成
     pub fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
+        // ✅ Canvasコンテキストオプション設定（ネイティブアプリの質感に近づける）
+        use wasm_bindgen::JsValue;
+        let context_options = js_sys::Object::new();
+
+        // alpha: false - 背景が透けないことを明示してテキスト品質向上
+        let _ = js_sys::Reflect::set(
+            &context_options,
+            &JsValue::from_str("alpha"),
+            &JsValue::from_bool(false)
+        );
+
+        // desynchronized: true - 低遅延モードでカーソルの動きをキビキビと
+        let _ = js_sys::Reflect::set(
+            &context_options,
+            &JsValue::from_str("desynchronized"),
+            &JsValue::from_bool(true)
+        );
+
         let context = canvas
-            .get_context("2d")
+            .get_context_with_context_options("2d", &context_options)
             .map_err(|_| "Failed to get 2d context")?
             .ok_or("2d context is None")?
             .dyn_into::<CanvasRenderingContext2d>()
@@ -70,15 +89,63 @@ impl CanvasRenderer {
         // Retinaディスプレイ対応: devicePixelRatioでスケーリング
         let window = web_sys::window().ok_or("no global window")?;
         let dpr = window.device_pixel_ratio();
-        context.scale(dpr, dpr).map_err(|_| "Failed to scale context")?;
 
-        // フォント品質設定
-        // Normal weight (400) matching RustRover
-        context.set_font(&format!("400 {}px '{}'", FONT_SIZE, FONT_FAMILY));
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&format!("🎨 CanvasRenderer: DPR = {}, applying transform", dpr).into());
+
+        // ✅ setTransform()を使用してスケーリングをリセットしてから設定
+        // これにより、複数回呼ばれても累積されない
+        // DPRが2.0なら、Canvasの内部解像度を2倍にしてCSSで元のサイズに戻す
+        context
+            .set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0)
+            .map_err(|_| "Failed to set transform")?;
+
+        // フォント品質設定（DPR適用後に設定）
+        // Weight 300 (Light) - RustRoverの見本に合わせた軽量なフォント
+        let font_string = format!("300 {}px '{}'", FONT_SIZE, FONT_FAMILY);
+
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&format!("🎨 CanvasRenderer::new() - Setting font: {}", font_string).into());
+
+        context.set_font(&font_string);
+
+        // ✅ 設定直後にフォントを読み取って確認
+        #[cfg(debug_assertions)]
+        {
+            let actual_font = context.font();
+            web_sys::console::log_1(&format!("🎨 CanvasRenderer::new() - Font after set_font(): {}", actual_font).into());
+        }
 
         // 高品質なテキストレンダリングを有効化
-        context.set_image_smoothing_enabled(false); // Disable for sharper text
+        context.set_image_smoothing_enabled(false); // Disable for sharper edges
         context.set_text_baseline("alphabetic");
+
+        // テキストレンダリング品質の最適化
+        // optimizeSpeed: エディタではピクセル整合性と描画速度を優先
+        let _ = js_sys::Reflect::set(
+            &context,
+            &JsValue::from_str("fontKerning"),
+            &JsValue::from_str("normal")
+        );
+        let _ = js_sys::Reflect::set(
+            &context,
+            &JsValue::from_str("textRendering"),
+            &JsValue::from_str("optimizeSpeed")
+        );
+
+        // Letter spacing for ultra-crisp rendering
+        let _ = js_sys::Reflect::set(
+            &context,
+            &JsValue::from_str("letterSpacing"),
+            &JsValue::from_str(&format!("{}px", LETTER_SPACING))
+        );
+
+        // macOS/WebKit向けフォントスムージング最適化
+        let _ = js_sys::Reflect::set(
+            &context,
+            &JsValue::from_str("imageSmoothingQuality"),
+            &JsValue::from_str("high")
+        );
 
         // 文字幅を実測
         let char_width_ascii = context
@@ -159,8 +226,16 @@ impl CanvasRenderer {
 
     /// テキスト行を描画
     pub fn draw_line(&self, line_num: usize, y_offset: f64, text: &str, color: &str) {
-        let x = self.gutter_width + 15.0; // 左パディング
-        let y = y_offset + 15.0; // ベースライン調整
+        // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+        let x = (self.gutter_width + 15.0).round();
+        let y = (y_offset + 15.0).round();
+
+        // ✅ 最初の行を描画する時だけフォントを確認（デバッグ用）
+        #[cfg(debug_assertions)]
+        if line_num == 0 {
+            let current_font = self.context.font();
+            web_sys::console::log_1(&format!("🎨 draw_line() - Current font: {}", current_font).into());
+        }
 
         self.context.set_fill_style(&color.into());
         let _ = self.context.fill_text(text, x, y);
@@ -387,8 +462,12 @@ impl CanvasRenderer {
 
     /// 指定座標にテキストを描画（IME未確定文字用）
     pub fn draw_text_at(&self, x: f64, y: f64, text: &str, color: &str) {
+        // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
+        let x_rounded = x.round();
+        let y_rounded = y.round();
+
         self.context.set_fill_style(&color.into());
-        let _ = self.context.fill_text(text, x, y);
+        let _ = self.context.fill_text(text, x_rounded, y_rounded);
     }
 
     /// カーソルを描画（縦線）
@@ -536,5 +615,6 @@ mod tests {
         assert_eq!(FONT_FAMILY, "JetBrains Mono");
         assert_eq!(FONT_SIZE, 13.0);
         assert_eq!(LINE_HEIGHT, 20.0);
+        assert_eq!(LETTER_SPACING, 0.0);
     }
 }

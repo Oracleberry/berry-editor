@@ -80,14 +80,14 @@ pub fn CommandPalette(
                             .into_iter()
                             .map(|sym| {
                                 let kind_icon = match sym.kind {
-                                    tauri_bindings::SymbolKind::Function => "🔧",
-                                    tauri_bindings::SymbolKind::Struct => "📦",
-                                    tauri_bindings::SymbolKind::Enum => "🔢",
-                                    tauri_bindings::SymbolKind::Trait => "🎯",
-                                    tauri_bindings::SymbolKind::Impl => "⚙️",
-                                    tauri_bindings::SymbolKind::Const => "🔒",
-                                    tauri_bindings::SymbolKind::Static => "📌",
-                                    tauri_bindings::SymbolKind::Module => "📁",
+                                    tauri_bindings::SymbolKind::Function => "symbol-function",
+                                    tauri_bindings::SymbolKind::Struct => "symbol-struct",
+                                    tauri_bindings::SymbolKind::Enum => "symbol-enum",
+                                    tauri_bindings::SymbolKind::Trait => "symbol-interface",
+                                    tauri_bindings::SymbolKind::Impl => "gear",
+                                    tauri_bindings::SymbolKind::Const => "symbol-constant",
+                                    tauri_bindings::SymbolKind::Static => "pin",
+                                    tauri_bindings::SymbolKind::Module => "symbol-folder",
                                 };
 
                                 PaletteItem {
@@ -244,7 +244,7 @@ fn PaletteItemView(
 
     view! {
         <div class=class on:click=move |_| on_click()>
-            <span class=icon_class>{item.icon}</span>
+            <i class=format!("codicon codicon-{} {}", item.icon, icon_class)></i>
             <div class="berry-palette-content">
                 <div class="berry-palette-label">{item.label}</div>
                 {item.description.map(|desc| {
@@ -270,7 +270,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                     label: file.clone(),
                     description: None,
                     action_type: ActionType::File,
-                    icon: "📄".to_string(),
+                    icon: "file".to_string(),
                     action: format!("open:{}", file),
                 });
             }
@@ -283,7 +283,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "Git: Commit".to_string(),
                 description: Some("Create a new commit".to_string()),
                 action_type: ActionType::GitAction,
-                icon: "🔧".to_string(),
+                icon: "git-commit".to_string(),
                 action: "git:commit".to_string(),
             },
             PaletteItem {
@@ -291,7 +291,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "Git: Push".to_string(),
                 description: Some("Push to remote".to_string()),
                 action_type: ActionType::GitAction,
-                icon: "🔧".to_string(),
+                icon: "repo-push".to_string(),
                 action: "git:push".to_string(),
             },
             PaletteItem {
@@ -299,7 +299,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "Git: Pull".to_string(),
                 description: Some("Pull from remote".to_string()),
                 action_type: ActionType::GitAction,
-                icon: "🔧".to_string(),
+                icon: "repo-pull".to_string(),
                 action: "git:pull".to_string(),
             },
         ]);
@@ -311,7 +311,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "File: Save".to_string(),
                 description: Some("Save current file".to_string()),
                 action_type: ActionType::EditorAction,
-                icon: "💾".to_string(),
+                icon: "save".to_string(),
                 action: "editor:save".to_string(),
             },
             PaletteItem {
@@ -319,7 +319,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "File: Close".to_string(),
                 description: Some("Close current file".to_string()),
                 action_type: ActionType::EditorAction,
-                icon: "❌".to_string(),
+                icon: "close".to_string(),
                 action: "editor:close".to_string(),
             },
             PaletteItem {
@@ -327,7 +327,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
                 label: "Format Document".to_string(),
                 description: Some("Format the current file".to_string()),
                 action_type: ActionType::EditorAction,
-                icon: "✨".to_string(),
+                icon: "symbol-color".to_string(),
                 action: "editor:format".to_string(),
             },
         ]);
@@ -338,7 +338,7 @@ fn load_palette_items(items: RwSignal<Vec<PaletteItem>>) {
             label: "Settings".to_string(),
             description: Some("Open settings".to_string()),
             action_type: ActionType::Settings,
-            icon: "⚙️".to_string(),
+            icon: "settings-gear".to_string(),
             action: "settings:open".to_string(),
         });
 
@@ -428,7 +428,7 @@ mod tests {
             label: "Test Item".to_string(),
             description: None,
             action_type: ActionType::File,
-            icon: "📄".to_string(),
+            icon: "file".to_string(),
             action: "test:action".to_string(),
         };
 

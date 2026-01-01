@@ -156,7 +156,8 @@ pub fn SearchPanel(
                                                 view! {
                                                     <div class="berry-search-file-group">
                                                         <div class="berry-search-file-header">
-                                                            "📄 " {filename.clone()} " (" {result_count} " results)"
+                                                            <i class="codicon codicon-file"></i>
+                                                            " " {filename.clone()} " (" {result_count} " results)"
                                                         </div>
                                                         <div class="berry-search-file-results">
                                                             {results.into_iter().map(|result| {
