@@ -6,11 +6,17 @@
 //! - Draw cursor
 
 use crate::buffer::TextBuffer;
+use crate::completion_widget::CompletionWidget;
 use crate::core::canvas_renderer::{CanvasRenderer, LINE_HEIGHT};
+use crate::diagnostics_panel::DiagnosticsPanel;
+use crate::hover_tooltip::HoverTooltip;
+use crate::lsp_ui::{CompletionItem, Diagnostic, HoverInfo, LspIntegration};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::EditorTheme;
+use crate::types::Position;
 use leptos::html::Canvas;
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
 
@@ -287,6 +293,60 @@ fn find_column_from_x_position(renderer: &CanvasRenderer, line_text: &str, targe
     chars.len()
 }
 
+/// ✅ LSP Integration: Canvas pixel → LSP position (line, column)
+fn canvas_pixel_to_lsp_position(
+    renderer: &CanvasRenderer,
+    pixel_x: f64,
+    pixel_y: f64,
+    scroll_top: f64,
+    buffer: &TextBuffer,
+) -> Position {
+    // Calculate line from Y coordinate
+    let line = ((pixel_y + scroll_top) / LINE_HEIGHT) as usize;
+
+    // Get the line text
+    let line_text = if line < buffer.len_lines() {
+        buffer.line(line).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Calculate column from X coordinate using measureText
+    let adjusted_x = pixel_x - renderer.gutter_width() - 15.0;
+    let column = find_column_from_x_position(renderer, &line_text, adjusted_x);
+
+    Position { line, column }
+}
+
+/// ✅ LSP Integration: LSP position (line, column) → Canvas pixel (x, y)
+fn lsp_position_to_canvas_pixel(
+    renderer: &CanvasRenderer,
+    position: Position,
+    scroll_top: f64,
+    buffer: &TextBuffer,
+) -> (f64, f64) {
+    // Calculate Y from line
+    let y = (position.line as f64) * LINE_HEIGHT - scroll_top;
+
+    // Get line text up to cursor position
+    let line_text = if position.line < buffer.len_lines() {
+        buffer.line(position.line).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Calculate X using measureText for precise positioning (handles multi-byte chars)
+    let text_before_cursor: String = line_text
+        .chars()
+        .take(position.column)
+        .collect();
+    let text_width = renderer.measure_text(&text_before_cursor);
+
+    let x = renderer.gutter_width() + 15.0 + text_width;
+
+    (x, y)
+}
+
 #[component]
 pub fn VirtualEditorPanel(
     #[prop(into)] selected_file: Signal<Option<(String, String)>>,
@@ -318,6 +378,24 @@ pub fn VirtualEditorPanel(
     // マウスドラッグ中かどうか
     let is_dragging = RwSignal::new(false);
 
+    // ✅ LSP Integration: Hover debounce timer
+    let hover_debounce_timer = RwSignal::new(0u32);
+
+    // ✅ LSP Integration: Completion state
+    let completion_items = RwSignal::new(Vec::<CompletionItem>::new());
+    let show_completion = RwSignal::new(false);
+    let completion_selected_index = RwSignal::new(0usize);
+
+    // ✅ LSP Integration: Hover state
+    let hover_info = RwSignal::new(Option::<HoverInfo>::None);
+    let hover_pixel_position = RwSignal::new(Option::<(f64, f64)>::None);
+
+    // ✅ LSP Integration: Diagnostics state
+    let diagnostics = RwSignal::new(Vec::<Diagnostic>::new());
+
+    // ✅ LSP Integration: LSP client
+    let lsp = RwSignal::new(LspIntegration::new());
+
     // ファイルが選択されたらタブを作成または切り替え
     Effect::new(move |_| {
         let current_file = selected_file.get();
@@ -335,8 +413,66 @@ pub fn VirtualEditorPanel(
                 }
             });
 
+            // ✅ LSP: Initialize LSP for the file and request diagnostics
+            let lsp_client = lsp.get_untracked();
+            lsp_client.set_file_path(path.clone());
+
+            spawn_local(async move {
+                leptos::logging::log!("🔍 LSP: Initializing for file: {}", path);
+                match lsp_client.request_diagnostics().await {
+                    Ok(diags) => {
+                        diagnostics.set(diags);
+                        leptos::logging::log!("✅ LSP: Diagnostics loaded");
+                    }
+                    Err(e) => {
+                        leptos::logging::log!("❌ LSP: Diagnostics error: {:?}", e);
+                    }
+                }
+            });
+
             render_trigger.set(0);
         }
+    });
+
+    // ✅ LSP: Buffer change detection for diagnostics update (debounced 500ms)
+    let diagnostics_debounce_timer = RwSignal::new(0u32);
+    Effect::new(move |_| {
+        let _ = render_trigger.get(); // Track buffer changes
+
+        // Debounce diagnostics requests
+        let timer_id = diagnostics_debounce_timer.get() + 1;
+        diagnostics_debounce_timer.set(timer_id);
+
+        let lsp_client = lsp.get_untracked();
+        spawn_local(async move {
+            // Debounce: wait 500ms
+            #[cfg(target_arch = "wasm32")]
+            {
+                use wasm_bindgen_futures::JsFuture;
+                use web_sys::window;
+                if let Some(win) = window() {
+                    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                        let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500);
+                    });
+                    let _ = JsFuture::from(promise).await;
+                }
+            }
+
+            // Check if timer was cancelled
+            if diagnostics_debounce_timer.get_untracked() != timer_id {
+                return;
+            }
+
+            match lsp_client.request_diagnostics().await {
+                Ok(diags) => {
+                    diagnostics.set(diags);
+                    leptos::logging::log!("✅ LSP: Diagnostics updated");
+                }
+                Err(e) => {
+                    leptos::logging::log!("❌ LSP: Diagnostics error: {:?}", e);
+                }
+            }
+        });
     });
 
     // 後方互換性：current_tabはMemoで計算される読み取り専用の値
@@ -401,6 +537,48 @@ pub fn VirtualEditorPanel(
         let key = ev.key();
         let mut buffer_changed = false;
 
+        // ✅ LSP: Completion widget navigation (when active)
+        if show_completion.get() {
+            match key.as_str() {
+                "ArrowDown" => {
+                    completion_selected_index.update(|idx| {
+                        let max = completion_items.get_untracked().len().saturating_sub(1);
+                        *idx = (*idx + 1).min(max);
+                    });
+                    return;
+                }
+                "ArrowUp" => {
+                    completion_selected_index.update(|idx| {
+                        *idx = idx.saturating_sub(1);
+                    });
+                    return;
+                }
+                "Enter" | "Tab" => {
+                    // Select current completion item
+                    let selected_idx = completion_selected_index.get_untracked();
+                    let items = completion_items.get_untracked();
+                    if let Some(item) = items.get(selected_idx) {
+                        let label = item.label.clone();
+                        let char_idx = tab.buffer.line_to_char(tab.cursor_line) + tab.cursor_col;
+                        tab.buffer.insert(char_idx, &label);
+                        tab.cursor_col += label.len();
+                        current_tab.set(Some(tab.clone()));
+                        show_completion.set(false);
+                        render_trigger.update(|v| *v += 1);
+                    }
+                    return;
+                }
+                "Escape" => {
+                    show_completion.set(false);
+                    return;
+                }
+                _ => {
+                    // Close completion on other keys
+                    show_completion.set(false);
+                }
+            }
+        }
+
         // Ctrl/Cmd + Z (Undo)
         if (ev.ctrl_key() || ev.meta_key()) && key.as_str() == "z" {
             if tab.undo() {
@@ -419,6 +597,59 @@ pub fn VirtualEditorPanel(
                 render_trigger.update(|v| *v += 1);
                 leptos::logging::log!("Redo executed");
             }
+            return;
+        }
+
+        // ✅ LSP: Ctrl/Cmd + Space (Trigger Code Completion)
+        if (ev.ctrl_key() || ev.meta_key()) && key.as_str() == " " {
+            let position = Position::new(tab.cursor_line, tab.cursor_col);
+            let lsp_client = lsp.get_untracked();
+
+            spawn_local(async move {
+                leptos::logging::log!("🔍 LSP: Requesting completions at {:?}", position);
+                match lsp_client.request_completions(position).await {
+                    Ok(items) if !items.is_empty() => {
+                        completion_items.set(items);
+                        show_completion.set(true);
+                        leptos::logging::log!("✅ LSP: Completion widget shown");
+                    }
+                    Ok(_) => {
+                        leptos::logging::log!("⚠️ LSP: No completions available");
+                    }
+                    Err(e) => {
+                        leptos::logging::log!("❌ LSP: Completion error: {:?}", e);
+                    }
+                }
+            });
+            return;
+        }
+
+        // ✅ LSP: F12 (Goto Definition)
+        if key.as_str() == "F12" {
+            let position = Position::new(tab.cursor_line, tab.cursor_col);
+            let lsp_client = lsp.get_untracked();
+
+            spawn_local(async move {
+                leptos::logging::log!("🔍 LSP: Goto definition at {:?}", position);
+                match lsp_client.goto_definition(position).await {
+                    Ok(def_position) => {
+                        // Jump to definition location
+                        tabs.update(|tabs_vec| {
+                            if let Some(active_idx) = active_tab_index.get_untracked() {
+                                if let Some(tab) = tabs_vec.get_mut(active_idx) {
+                                    tab.cursor_line = def_position.line;
+                                    tab.cursor_col = def_position.column;
+                                    leptos::logging::log!("✅ LSP: Jumped to {:?}", def_position);
+                                }
+                            }
+                        });
+                        render_trigger.update(|v| *v += 1);
+                    }
+                    Err(e) => {
+                        leptos::logging::log!("❌ LSP: Goto definition error: {:?}", e);
+                    }
+                }
+            });
             return;
         }
 
@@ -544,6 +775,23 @@ pub fn VirtualEditorPanel(
                 tab.cursor_col += 1;
                 buffer_changed = true;
                 leptos::logging::log!("Inserted: '{}' at line={}, col={}", k, tab.cursor_line, tab.cursor_col - 1);
+
+                // ✅ LSP: Auto-trigger completion on '.' or ':'
+                if k == "." || k == ":" {
+                    let position = Position::new(tab.cursor_line, tab.cursor_col);
+                    let lsp_client = lsp.get_untracked();
+
+                    spawn_local(async move {
+                        match lsp_client.request_completions(position).await {
+                            Ok(items) if !items.is_empty() => {
+                                completion_items.set(items);
+                                show_completion.set(true);
+                                leptos::logging::log!("✅ LSP: Auto-completion triggered");
+                            }
+                            _ => {}
+                        }
+                    });
+                }
             }
 
             // Backspace
@@ -920,10 +1168,6 @@ pub fn VirtualEditorPanel(
 
     // マウス移動（ドラッグ中）
     let on_mousemove = move |ev: leptos::ev::MouseEvent| {
-        if !is_dragging.get() {
-            return;
-        }
-
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -952,15 +1196,59 @@ pub fn VirtualEditorPanel(
                 // 列位置を計算（measureText()を使って正確に）
                 let col = find_column_from_x_position(&renderer, &line_text, text_x);
 
-                tab.cursor_line = line;
-                tab.cursor_col = col.min(line_len);
-                tab.selection_end = Some((line, col.min(line_len)));
+                // ✅ LSP: Handle dragging vs hovering
+                if is_dragging.get() {
+                    // Dragging - update selection
+                    tab.cursor_line = line;
+                    tab.cursor_col = col.min(line_len);
+                    tab.selection_end = Some((line, col.min(line_len)));
 
-                leptos::logging::log!("🖱️ Mouse move: line={}, col={}, selection_end=({}, {})",
-                    line, col, line, col.min(line_len));
+                    leptos::logging::log!("🖱️ Mouse move: line={}, col={}, selection_end=({}, {})",
+                        line, col, line, col.min(line_len));
 
-                current_tab.set(Some(tab));
-                render_trigger.update(|v| *v += 1);
+                    current_tab.set(Some(tab));
+                    render_trigger.update(|v| *v += 1);
+                } else if !show_completion.get() {
+                    // ✅ LSP: Hovering - request hover info (debounced)
+                    let position = canvas_pixel_to_lsp_position(&renderer, x, y, tab.scroll_top, &tab.buffer);
+                    let lsp_client = lsp.get_untracked();
+
+                    // Increment timer for debounce cancellation
+                    let timer_id = hover_debounce_timer.get() + 1;
+                    hover_debounce_timer.set(timer_id);
+
+                    spawn_local(async move {
+                        // Debounce: wait 300ms
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            use wasm_bindgen_futures::JsFuture;
+                            use web_sys::window;
+                            if let Some(win) = window() {
+                                let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 300);
+                                });
+                                let _ = JsFuture::from(promise).await;
+                            }
+                        }
+
+                        // Check if timer was cancelled by another mousemove
+                        if hover_debounce_timer.get_untracked() != timer_id {
+                            return;
+                        }
+
+                        match lsp_client.request_hover(position).await {
+                            Ok(Some(info)) => {
+                                hover_info.set(Some(info));
+                                hover_pixel_position.set(Some((x, y)));
+                                leptos::logging::log!("✅ LSP: Hover info received");
+                            }
+                            _ => {
+                                hover_info.set(None);
+                                hover_pixel_position.set(None);
+                            }
+                        }
+                    });
+                }
             }
         }
     };
@@ -1513,6 +1801,83 @@ pub fn VirtualEditorPanel(
                         cursor_y.get(),
                         LINE_HEIGHT
                     )
+                />
+
+                // ✅ LSP: Completion Widget Overlay
+                {move || {
+                    if show_completion.get() {
+                        // Get current tab for cursor position
+                        if let Some(tab) = current_tab.get() {
+                            // Get renderer for coordinate conversion
+                            if let Some(canvas_el) = canvas_ref.get() {
+                                if let Ok(renderer) = CanvasRenderer::new((*canvas_el).clone().unchecked_into()) {
+                                    // Convert LSP position to pixel coordinates
+                                    let position = Position::new(tab.cursor_line, tab.cursor_col);
+                                    let (pixel_x, pixel_y) = lsp_position_to_canvas_pixel(
+                                        &renderer,
+                                        position,
+                                        tab.scroll_top,
+                                        &tab.buffer,
+                                    );
+
+                                    return view! {
+                                        <CompletionWidget
+                                            items=completion_items
+                                            position=Position::new(pixel_x as usize, (pixel_y + 20.0) as usize)
+                                            on_select=move |item: CompletionItem| {
+                                                // Insert completion into buffer
+                                                tabs.update(|tabs_vec| {
+                                                    if let Some(active_idx) = active_tab_index.get_untracked() {
+                                                        if let Some(tab) = tabs_vec.get_mut(active_idx) {
+                                                            let char_idx = tab.buffer.line_to_char(tab.cursor_line) + tab.cursor_col;
+                                                            tab.buffer.insert(char_idx, &item.label);
+                                                            tab.cursor_col += item.label.len();
+                                                        }
+                                                    }
+                                                });
+                                                show_completion.set(false);
+                                                render_trigger.update(|v| *v += 1);
+                                            }
+                                        />
+                                    }.into_any();
+                                }
+                            }
+                        }
+                    }
+
+                    view! { <></> }.into_any()
+                }}
+
+                // ✅ LSP: Hover Tooltip Overlay
+                {move || {
+                    if let Some(info) = hover_info.get() {
+                        if let Some((pixel_x, pixel_y)) = hover_pixel_position.get() {
+                            return view! {
+                                <HoverTooltip
+                                    hover_info=hover_info
+                                    position=hover_pixel_position
+                                />
+                            }.into_any();
+                        }
+                    }
+                    view! { <></> }.into_any()
+                }}
+
+                // ✅ LSP: Diagnostics Panel (below editor)
+                <DiagnosticsPanel
+                    diagnostics=diagnostics
+                    on_click=move |line: u32, character: u32| {
+                        // Jump to diagnostic location
+                        tabs.update(|tabs_vec| {
+                            if let Some(active_idx) = active_tab_index.get_untracked() {
+                                if let Some(tab) = tabs_vec.get_mut(active_idx) {
+                                    tab.cursor_line = line as usize;
+                                    tab.cursor_col = character as usize;
+                                }
+                            }
+                        });
+                        render_trigger.update(|v| *v += 1);
+                    }
                 />
             </div>
         </div>
