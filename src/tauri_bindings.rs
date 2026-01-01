@@ -88,13 +88,19 @@ extern "C" {
 /// Check if running in Tauri context
 /// Returns false in test environment (wasm-bindgen-test)
 pub fn is_tauri_context() -> bool {
-    // ✅ Check if window.__TAURI__ exists to detect Tauri environment
+    // ✅ Check if window.berry_invoke exists to detect Tauri environment
     // In WASM test environment (wasm-bindgen-test), this will be false
     #[cfg(target_arch = "wasm32")]
     {
         use wasm_bindgen::JsCast;
         if let Some(window) = web_sys::window() {
-            let js_val = js_sys::Reflect::get(&window, &"__TAURI__".into()).ok();
+            // Check for berry_invoke bridge function
+            let js_val = js_sys::Reflect::get(&window, &"berry_invoke".into()).ok();
+            if js_val.is_some() && !js_val.unwrap().is_undefined() {
+                return true;
+            }
+            // Fallback: Check for __TAURI_INTERNALS__ (Tauri v2)
+            let js_val = js_sys::Reflect::get(&window, &"__TAURI_INTERNALS__".into()).ok();
             return js_val.is_some() && !js_val.unwrap().is_undefined();
         }
         false
