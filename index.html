@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BerryEditor - 100% Rust Code Editor</title>
 
+    <!-- JetBrains Mono Font - Essential for IntelliJ look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
     <!-- VS Code Codicons - Icon Font -->
     <link data-trunk rel="copy-dir" href="assets/fonts" data-target-path="fonts" />
     <link rel="stylesheet" href="fonts/codicon.css">
@@ -31,164 +36,257 @@
     </script>
     <link data-trunk rel="rust" data-wasm-opt="0" data-target-name="berry_editor"/>
     <style>
+        :root {
+            --char-width: 7.8125px; /* JetBrains Mono 13px */
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            background: #1e1e1e;
-            color: #d4d4d4;
+
+        /* 絶対に必要：最上位から高さを固定 */
+        html, body {
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            padding: 0;
             overflow: hidden;
+        }
+
+        body {
+            /* JetBrains Mono - IntelliJ's official font */
+            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+            background: #1E1F22; /* RustRover main background (darker) */
+            color: #a9b7c6; /* Darcula text color */
+            -webkit-font-smoothing: subpixel-antialiased;
+            -moz-osx-font-smoothing: auto;
+            text-rendering: optimizeSpeed;
+            letter-spacing: -0.01em;
+            font-feature-settings: "tnum";
+            font-variant-ligatures: none;
+        }
+
+        /* Leptosがマウントされるルート要素も高さを100%にする */
+        #berry-editor-wasm-root {
+            height: 100%;
+            width: 100%;
+            display: flex;
         }
 
         .berry-editor-container {
             display: flex;
-            height: 100vh;
-            width: 100vw;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
         }
 
         .berry-editor-sidebar {
             width: 250px;
-            background: #252525;
-            border-right: 1px solid #3e3e3e;
+            min-width: 250px;
+            max-width: 250px;
+            background: #1E1F22;
+            border-right: 1px solid #1E1F22;
             overflow-y: auto;
-            display: flex;
+            display: flex !important;
             flex-direction: column;
+            flex-shrink: 0;
         }
 
         .berry-editor-sidebar-header {
-            padding: 12px 16px;
-            background: #2d2d2d;
-            border-bottom: 1px solid #3e3e3e;
-            font-size: 11px;
-            font-weight: 600;
-            color: #858585;
+            padding: 8px 12px;
+            background: #1E1F22;
+            border-bottom: 1px solid #1E1F22;
+            font-size: 12px;
+            font-weight: 400;
+            color: #bbbbbb;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
         }
 
         .berry-editor-refresh-btn {
             background: none;
             border: none;
-            color: #858585;
+            color: #afb1b3;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 14px;
             padding: 0 4px;
         }
 
         .berry-editor-refresh-btn:hover {
-            color: #d4d4d4;
+            color: #ffffff;
         }
 
         .berry-editor-file-tree {
             flex: 1;
             overflow-y: auto;
+            padding: 2px 0;
+            min-height: 100px;
+            background: #1E1F22;
         }
 
         .berry-editor-file-item {
-            padding: 4px 8px;
+            padding: 3px 8px;
             cursor: pointer;
-            color: #d4d4d4;
-            font-size: 13px;
-            display: flex;
+            color: #afb1b3 !important;
+            background: transparent !important;
+            border: none !important;
+            min-height: 20px !important;
+            display: flex !important;
             align-items: center;
+            font-size: 13px;
+            font-weight: 300;
             user-select: none;
+            position: relative;
+            white-space: nowrap;
+            line-height: 1.3;
+            font-family: 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
         }
 
         .berry-editor-file-item:hover {
-            background: rgba(255,255,255,0.05);
+            background: #464a4d !important;
+        }
+
+        .berry-editor-file-item.selected {
+            background: #2d333b !important;
+            color: #ffffff !important;
         }
 
         .berry-editor-folder-icon {
             margin-right: 4px;
             width: 16px;
-            display: inline-block;
-            text-align: center;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 10px;
+            color: #858585;
+            transition: transform 0.1s ease;
         }
 
-        .berry-editor-folder-icon.collapsed::before {
-            content: '▶';
-            font-size: 10px;
-        }
-
-        .berry-editor-folder-icon.expanded::before {
-            content: '▼';
-            font-size: 10px;
+        .berry-editor-folder-icon.expanded {
+            transform: rotate(90deg);
         }
 
         .berry-editor-file-icon {
             margin-right: 6px;
+            width: 18px;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
         }
 
         .berry-editor-main {
             flex: 1;
             display: flex;
             flex-direction: column;
+            min-width: 0;
+            min-height: 0;
+            outline: none !important;
+            position: relative;
+            background: #1E1F22;
         }
 
         .berry-editor-tab-bar {
             display: flex;
-            background: #252525;
-            border-bottom: 1px solid #3e3e3e;
-            min-height: 35px;
+            background: #1E1F22;
+            border-bottom: 1px solid #1E1F22;
+            min-height: 32px;
         }
 
         .berry-editor-tab {
-            padding: 8px 16px;
-            background: #252525;
-            border-right: 1px solid #3e3e3e;
+            padding: 4px 12px;
+            background: #1E1F22;
+            border-right: 1px solid #1E1F22;
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 13px;
-            color: #d4d4d4;
+            font-size: 12px;
+            color: #afb1b3;
         }
 
         .berry-editor-tab.active {
-            background: #1e1e1e;
-            border-bottom: 2px solid #007acc;
+            background: #1E1F22;
+            border-bottom: none;
+            color: #ffffff;
         }
 
         .berry-editor-tab-close {
             background: none;
             border: none;
-            color: #858585;
+            color: #afb1b3;
             cursor: pointer;
-            font-size: 16px;
-            padding: 0 4px;
+            font-size: 14px;
+            padding: 0 2px;
         }
 
         .berry-editor-tab-close:hover {
-            color: #d4d4d4;
+            color: #ffffff;
         }
 
         .berry-editor-pane {
             flex: 1;
-            background: #1e1e1e;
-            overflow: auto;
+            background: #1E1F22;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+            width: 100%;
+            display: flex;
+        }
+
+        /* Canvas はコンテナを完全に埋める */
+        .berry-editor-pane canvas {
+            display: block;
+            outline: none;
+            cursor: text;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: auto;
+            color-profile: sRGB;
+            -webkit-font-smoothing: subpixel-antialiased;
+            -moz-osx-font-smoothing: auto;
+            text-rendering: optimizeSpeed;
+            will-change: transform;
+            transform: translateZ(0);
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+        /* Hidden input for IME positioning (Canvas mode) */
+        input[type="text"] {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1;
+            color: transparent;
+            background: transparent;
+            border: none;
+            outline: none;
+            caret-color: transparent;
         }
 
         .berry-editor-status-bar {
-            height: 24px;
-            background: #007acc;
-            color: white;
+            height: 22px;
+            background: #2B2D30;
+            color: #afb1b3;
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 0 12px;
             font-size: 11px;
             gap: 16px;
+            border-top: 1px solid #323232;
+            box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.03);
         }
 
-        /* Syntax highlighting colors */
-        .syntax-keyword { color: #569cd6; }
-        .syntax-function { color: #dcdcaa; }
-        .syntax-type { color: #4ec9b0; }
-        .syntax-string { color: #ce9178; }
-        .syntax-number { color: #b5cea8; }
-        .syntax-comment { color: #6a9955; font-style: italic; }
-        .syntax-operator { color: #d4d4d4; }
-        .syntax-identifier { color: #d4d4d4; }
+        /* Darcula Syntax Highlighting - IntelliJ IDEA colors */
+        .syntax-keyword { color: #CC7832; font-weight: 500; }
+        .syntax-function { color: #FFC66D; }
+        .syntax-type { color: #A9B7C6; }
+        .syntax-string { color: #6A8759; }
+        .syntax-number { color: #6897BB; }
+        .syntax-comment { color: #629755; font-style: italic; }
+        .syntax-operator { color: #A9B7C6; }
+        .syntax-identifier { color: #A9B7C6; }
+        .syntax-attribute { color: #BBB529; }
+        .syntax-constant { color: #9876AA; }
 
         /* Main editor area layout */
         .berry-editor-main-area {
