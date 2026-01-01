@@ -44,7 +44,13 @@ impl VirtualScroll {
 
     /// Update scroll position (WASM-compatible version)
     pub fn set_scroll_top(&mut self, scroll_top: f64) {
-        let new_scroll = scroll_top.max(0.0);
+        // ✅ FIX: Calculate maximum scroll position to prevent scrolling beyond content
+        // 2行分の余裕を追加
+        let content_height = self.total_lines as f64 * self.line_height;
+        let max_scroll = (content_height - self.viewport_height + 2.0 * self.line_height).max(0.0);
+
+        // ✅ FIX: Clamp scroll position to [0, max_scroll] range
+        let new_scroll = scroll_top.max(0.0).min(max_scroll);
 
         // Estimate scroll velocity based on delta (simplified for WASM)
         let scroll_delta = (new_scroll - self.last_scroll_pos) / self.line_height;

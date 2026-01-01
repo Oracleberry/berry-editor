@@ -186,6 +186,72 @@ impl EditorTab {
         self.cursor_col = sc;
         self.clear_selection();
     }
+
+    // カーソルが見える範囲にスクロールを調整
+    fn scroll_into_view(&mut self, canvas_height: f64) {
+        let line_height = 20.0; // LINE_HEIGHT
+        let cursor_y = self.cursor_line as f64 * line_height;
+        let visible_lines = (canvas_height / line_height).floor();
+        let total_lines = self.buffer.len_lines();
+
+        // カーソルが上に隠れている場合
+        if cursor_y < self.scroll_top {
+            self.scroll_top = cursor_y;
+        }
+        // カーソルが下に隠れている場合（1行分のマージン）
+        else if cursor_y + line_height > self.scroll_top + canvas_height {
+            self.scroll_top = cursor_y + line_height - canvas_height;
+        }
+
+        // ✅ FIX: 最大スクロール位置 = コンテンツ高さ - ビューポート高さ + 2行分の余裕
+        let content_height = total_lines as f64 * line_height;
+        let max_scroll = (content_height - canvas_height + 2.0 * line_height).max(0.0);
+
+        // ✅ FIX: スクロール位置を0～max_scrollの範囲内に制限
+        self.scroll_top = self.scroll_top.max(0.0).min(max_scroll);
+    }
+
+    // 指定位置の単語の境界を取得
+    fn get_word_bounds(&self, line: usize, col: usize) -> (usize, usize) {
+        let line_text = self.buffer.line(line).unwrap_or_default();
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if col >= chars.len() {
+            return (chars.len(), chars.len());
+        }
+
+        // 単語の文字かどうかを判定（英数字、アンダースコア、日本語など）
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c > '\u{007F}';
+
+        // クリック位置が単語文字でない場合は空の選択
+        if !is_word_char(chars[col]) {
+            return (col, col);
+        }
+
+        // 単語の開始位置を探す
+        let mut start = col;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+
+        // 単語の終了位置を探す
+        let mut end = col;
+        while end < chars.len() && is_word_char(chars[end]) {
+            end += 1;
+        }
+
+        (start, end)
+    }
+
+    // カーソル位置の単語を選択
+    fn select_word_at_cursor(&mut self) {
+        let (start, end) = self.get_word_bounds(self.cursor_line, self.cursor_col);
+        if start < end {
+            self.selection_start = Some((self.cursor_line, start));
+            self.selection_end = Some((self.cursor_line, end));
+            self.cursor_col = end;
+        }
+    }
 }
 
 /// マウスのX座標から、テキスト内の列位置を正確に計算する
@@ -725,6 +791,12 @@ pub fn VirtualEditorPanel(
             }
         }
 
+        // カーソルが見える範囲にスクロール調整
+        if let Some(canvas) = canvas_ref.get() {
+            let height = canvas.height() as f64;
+            tab.scroll_into_view(height);
+        }
+
         // タブを更新
         current_tab.set(Some(tab));
 
@@ -928,6 +1000,66 @@ pub fn VirtualEditorPanel(
         }
     };
 
+    // ダブルクリックで単語選択
+    let on_dblclick = move |ev: leptos::ev::MouseEvent| {
+        leptos::logging::log!("🖱️ DOUBLE CLICK EVENT FIRED");
+
+        let Some(canvas) = canvas_ref.get() else {
+            leptos::logging::log!("❌ Canvas ref not found");
+            return;
+        };
+
+        let Some(mut tab) = current_tab.get() else {
+            leptos::logging::log!("❌ Current tab not found");
+            return;
+        };
+
+        let rect = canvas.get_bounding_client_rect();
+        let x = ev.client_x() as f64 - rect.left();
+        let y = ev.client_y() as f64 - rect.top();
+
+        // カーソル位置を計算
+        if let Ok(renderer) = CanvasRenderer::new((*canvas).clone().unchecked_into()) {
+            // ガター幅を超えているか確認
+            if x > renderer.gutter_width() {
+                let text_x = x - renderer.gutter_width() - 15.0;
+                let clicked_line = ((y + tab.scroll_top) / LINE_HEIGHT).floor() as usize;
+
+                // 行範囲内に制限
+                let line = clicked_line.min(tab.buffer.len_lines().saturating_sub(1));
+
+                // 行のテキストを取得
+                let line_text = tab.buffer.line(line)
+                    .map(|s| s.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+
+                let line_len = line_text.chars().count();
+
+                // 列位置を計算（measureText()を使って正確に）
+                let col = find_column_from_x_position(&renderer, &line_text, text_x);
+
+                tab.cursor_line = line;
+                tab.cursor_col = col.min(line_len);
+
+                // 単語選択を実行
+                tab.select_word_at_cursor();
+
+                leptos::logging::log!("🖱️ Double click: line={}, col={}, selected word", line, col);
+
+                current_tab.set(Some(tab));
+                render_trigger.update(|v| *v += 1);
+            }
+        }
+
+        // ドラッグ状態をリセット（ダブルクリック後にドラッグさせない）
+        is_dragging.set(false);
+
+        // IME inputに再フォーカス
+        if let Some(input) = ime_input_ref.get() {
+            let _ = input.focus();
+        }
+    };
+
     // ホイールでスクロール
     let on_wheel = move |ev: leptos::ev::WheelEvent| {
         ev.prevent_default();
@@ -936,15 +1068,28 @@ pub fn VirtualEditorPanel(
             return;
         };
 
+        let Some(canvas) = canvas_ref.get() else {
+            return;
+        };
+
         // スクロール量（1行 = LINE_HEIGHT）
         let delta = ev.delta_y();
         let scroll_lines = (delta / LINE_HEIGHT).round();
 
-        tab.scroll_top = (tab.scroll_top + scroll_lines * LINE_HEIGHT).max(0.0);
+        // ✅ FIX: 新しいスクロール位置を計算
+        let new_scroll = tab.scroll_top + scroll_lines * LINE_HEIGHT;
 
-        // 最大スクロール位置を計算
-        let max_scroll = (tab.buffer.len_lines() as f64 * LINE_HEIGHT).max(0.0);
-        tab.scroll_top = tab.scroll_top.min(max_scroll);
+        // ✅ FIX: Canvasの実際のクライアント高さを取得
+        let canvas_height = canvas.client_height() as f64;
+        let total_lines = tab.buffer.len_lines();
+        let content_height = total_lines as f64 * LINE_HEIGHT;
+
+        // ✅ FIX: 最大スクロール位置 = コンテンツ高さ - ビューポート高さ + 2行分の余裕
+        // コンテンツがビューポートより小さい場合は0
+        let max_scroll = (content_height - canvas_height + 2.0 * LINE_HEIGHT).max(0.0);
+
+        // ✅ FIX: スクロール位置を0～max_scrollの範囲内に制限
+        tab.scroll_top = new_scroll.max(0.0).min(max_scroll);
 
         current_tab.set(Some(tab));
         render_trigger.update(|v| *v += 1);
@@ -1021,13 +1166,26 @@ pub fn VirtualEditorPanel(
             (height * dpr) as u32
         );
 
-        // ✅ 物理ピクセルサイズを設定（Retina対応）
-        canvas.set_width((width * dpr) as u32);
-        canvas.set_height((height * dpr) as u32);
+        // ✅ Canvas要素をHtmlCanvasElementにキャスト
+        let canvas_el: HtmlCanvasElement = (*canvas).clone().unchecked_into();
 
-        // CSSサイズは元のまま（ブラウザが自動的にスケーリング）
-        // Note: Canvasの物理サイズとCSSサイズを分離することで、
-        // Retinaディスプレイで高解像度レンダリングを実現
+        // ✅ CSSサイズを明示的に設定（論理ピクセル）
+        // web_sys::HtmlElement の style() を使用するために、明示的にキャストしてアクセス
+        use wasm_bindgen::JsCast;
+        let html_el: &web_sys::HtmlElement = canvas_el.as_ref();
+        let _ = html_el
+            .style()
+            .set_property("width", &format!("{}px", width));
+        let _ = html_el
+            .style()
+            .set_property("height", &format!("{}px", height));
+
+        // ✅ 物理ピクセルサイズを設定（Retina対応）
+        canvas_el.set_width((width * dpr) as u32);
+        canvas_el.set_height((height * dpr) as u32);
+
+        // Note: CSSサイズ（論理ピクセル）と物理サイズ（実ピクセル）を分離することで、
+        // Retinaディスプレイで高解像度レンダリングを実現し、ぼやけを完全に解消
 
         // レンダリング
         let tab_data = current_tab.get();
@@ -1043,7 +1201,6 @@ pub fn VirtualEditorPanel(
                 tab.cursor_line,
                 tab.cursor_col
             );
-            let canvas_el: HtmlCanvasElement = (*canvas).clone().unchecked_into();
 
             if let Ok(renderer) = CanvasRenderer::new(canvas_el) {
                 // Canvas全体をクリア
@@ -1190,7 +1347,7 @@ pub fn VirtualEditorPanel(
             style="display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;"
         >
             // タブバー
-            <div class="berry-editor-tabs" style="display: flex; background: #2B2B2B; border-bottom: 1px solid #323232; min-height: 35px;">
+            <div class="berry-editor-tabs" style="display: flex; background: #313335; border-bottom: 1px solid #1E1F22; min-height: 35px;">
                 {move || {
                     let tabs_vec = current_tab.tabs.get();
                     let active_index = current_tab.active_index.get();
@@ -1298,14 +1455,14 @@ pub fn VirtualEditorPanel(
                 }}
             </div>
 
-            <div class="berry-editor-pane" style="flex: 1; min-height: 0; display: flex; background: #2B2B2B;">
+            <div class="berry-editor-pane" style="flex: 1; min-height: 0; display: flex; background: #1E1F22;">
                 <canvas
                     node_ref=canvas_ref
                     on:mousedown=on_mousedown
                     on:mousemove=on_mousemove
                     on:mouseup=on_mouseup
+                    on:dblclick=on_dblclick
                     on:wheel=on_wheel
-                    style="width: 100%; height: 100%; display: block;"
                 />
 
                 // 隠しinput要素（IME候補ウィンドウの位置制御用）
