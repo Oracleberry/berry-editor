@@ -6,11 +6,11 @@ use crate::tauri_bindings::{self, FileNode};
 use leptos::task::spawn_local;
 use crate::web_worker::{IndexerWorker, ProgressData};
 
-/// ✅ VS Code Style: Icon component using codicon font (matching VS Code exactly)
+/// ✅ VS Code Pattern: Codicon-based file/folder icon component
 #[component]
 fn FileIcon(is_dir: bool, expanded: bool, name: String) -> impl IntoView {
     if is_dir {
-        // VS Code folder style: just the folder icon, no chevron
+        // Folder icons using Codicons
         if expanded {
             view! {
                 <i class="codicon codicon-folder-opened" style="margin-right: 4px; flex-shrink: 0; font-size: 16px; color: #DCAA6F;"></i>
@@ -21,34 +21,24 @@ fn FileIcon(is_dir: bool, expanded: bool, name: String) -> impl IntoView {
             }.into_any()
         }
     } else {
-        // VS Code file icons
+        // File icons using Codicons - map extensions to appropriate icons
         let extension = name.split('.').last().unwrap_or("");
-
-        // Check for .disabled suffix
-        let is_disabled = name.ends_with(".disabled");
-
-        let (icon_class, color) = if is_disabled {
-            ("exclude", "#C5C5C5")  // VS Code uses exclude icon for disabled files
-        } else {
-            match extension {
-                "rs" => ("file", "#C5C5C5"),                    // Rust - simple file icon
-                "toml" => ("settings-gear", "#C5C5C5"),         // Config - gear
-                "md" => ("markdown", "#519ABA"),                // Markdown - blue
-                "js" => ("symbol-misc", "#F1DD3F"),             // JavaScript - yellow
-                "ts" | "tsx" => ("symbol-misc", "#3B8AD8"),     // TypeScript - blue
-                "jsx" => ("symbol-misc", "#61DAFB"),            // JSX - cyan
-                "html" => ("file-code", "#E37933"),             // HTML - orange
-                "css" | "scss" | "sass" => ("symbol-misc", "#519ABA"), // CSS - blue
-                "json" => ("json", "#FBC02D"),                  // JSON - yellow
-                "yaml" | "yml" => ("gear", "#CB4335"),          // YAML - red
-                "xml" => ("file-code", "#E37933"),              // XML - orange
-                "py" => ("symbol-misc", "#3776AB"),             // Python - blue
-                "java" => ("symbol-misc", "#EA2D2E"),           // Java - red
-                "go" => ("symbol-misc", "#00ADD8"),             // Go - cyan
-                "sh" | "bash" => ("terminal-bash", "#89E051"), // Shell - green
-                "lock" => ("lock", "#C5C5C5"),                  // Lock files
-                _ => ("file", "#C5C5C5"),                       // Default - gray file icon
-            }
+        let (icon_class, color) = match extension {
+            "rs" => ("file-code", "#E44D26"),        // Rust - red
+            "toml" => ("settings-gear", "#9C9C9C"),  // Config - gray
+            "md" => ("markdown", "#4A90E2"),         // Markdown - blue
+            "js" | "jsx" => ("file-code", "#F7DF1E"), // JavaScript - yellow
+            "ts" | "tsx" => ("file-code", "#3178C6"), // TypeScript - blue
+            "html" => ("file-code", "#E34F26"),      // HTML - orange
+            "css" | "scss" | "sass" => ("file-code", "#1572B6"), // CSS - blue
+            "json" => ("json", "#5E97D0"),           // JSON - blue
+            "yaml" | "yml" => ("file-code", "#CB4335"), // YAML - red
+            "xml" => ("file-code", "#E37933"),       // XML - orange
+            "py" => ("file-code", "#3776AB"),        // Python - blue
+            "java" => ("file-code", "#EA2D2E"),      // Java - red
+            "go" => ("file-code", "#00ADD8"),        // Go - cyan
+            "sh" | "bash" => ("terminal", "#89E051"), // Shell - green
+            _ => ("file", "#C5C5C5"),                // Default - gray
         };
 
         view! {
@@ -123,7 +113,7 @@ pub fn FileTreePanelTauri(
     };
 
     view! {
-        <div class="berry-editor-sidebar" style="background: #1E1F22 !important; border-right: 1px solid #1E1F22 !important;">
+        <div class="berry-editor-sidebar">
             <div class="berry-editor-sidebar-header">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span>"EXPLORER"</span>
@@ -135,8 +125,8 @@ pub fn FileTreePanelTauri(
                         style="
                             font-size: 11px;
                             padding: 2px 6px;
-                            background: #1E1F22;
-                            border: 1px solid #1E1F22;
+                            background: #2d2d2d;
+                            border: 1px solid #3e3e3e;
                             color: #cccccc;
                             cursor: pointer;
                             border-radius: 3px;
@@ -167,7 +157,7 @@ pub fn FileTreePanelTauri(
                     }
                 }}
             </div>
-            <div class="berry-editor-file-tree" style="background: #1E1F22 !important;">
+            <div class="berry-editor-file-tree">
                 {move || {
                     if is_loading.get() {
                         view! {
