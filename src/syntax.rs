@@ -81,6 +81,8 @@ impl SyntaxHighlighter {
             "rust" | "rs" => self.highlight_rust(line),
             "javascript" | "js" | "typescript" | "ts" => self.highlight_javascript(line),
             "python" | "py" => self.highlight_python(line),
+            "html" | "htm" => self.highlight_html(line),
+            "css" => self.highlight_css(line),
             _ => vec![SyntaxToken {
                 token_type: TokenType::Identifier,
                 text: line.to_string(),
@@ -241,6 +243,249 @@ impl SyntaxHighlighter {
                 end: offset + text.len(),
             });
         }
+    }
+
+    fn highlight_html(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+
+        // HTML/XML comments: <!-- ... -->
+        if line.trim_start().starts_with("<!--") {
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Comment,
+                text: line.to_string(),
+                start: 0,
+                end: line.len(),
+            });
+            return tokens;
+        }
+
+        let mut pos = 0;
+        let line_bytes = line.as_bytes();
+
+        while pos < line_bytes.len() {
+            // HTML Tags: < tag >
+            if line_bytes[pos] == b'<' {
+                let tag_start = pos;
+                pos += 1;
+
+                // Find tag end
+                while pos < line_bytes.len() && line_bytes[pos] != b'>' {
+                    pos += 1;
+                }
+
+                if pos < line_bytes.len() {
+                    pos += 1; // Include '>'
+                    let tag_text = &line[tag_start..pos];
+
+                    // Distinguish opening/closing tags
+                    if tag_text.starts_with("</") || tag_text.starts_with("<!") {
+                        tokens.push(SyntaxToken {
+                            token_type: TokenType::Keyword,
+                            text: tag_text.to_string(),
+                            start: tag_start,
+                            end: pos,
+                        });
+                    } else {
+                        tokens.push(SyntaxToken {
+                            token_type: TokenType::Function, // Opening tags as functions
+                            text: tag_text.to_string(),
+                            start: tag_start,
+                            end: pos,
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // Strings: "..." or '...'
+            if line_bytes[pos] == b'"' || line_bytes[pos] == b'\'' {
+                let quote = line_bytes[pos];
+                let str_start = pos;
+                pos += 1;
+
+                while pos < line_bytes.len() && line_bytes[pos] != quote {
+                    if line_bytes[pos] == b'\\' {
+                        pos += 2; // Skip escaped character
+                    } else {
+                        pos += 1;
+                    }
+                }
+
+                if pos < line_bytes.len() {
+                    pos += 1; // Include closing quote
+                }
+
+                tokens.push(SyntaxToken {
+                    token_type: TokenType::String,
+                    text: line[str_start..pos].to_string(),
+                    start: str_start,
+                    end: pos,
+                });
+                continue;
+            }
+
+            pos += 1;
+        }
+
+        if tokens.is_empty() {
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Identifier,
+                text: line.to_string(),
+                start: 0,
+                end: line.len(),
+            });
+        }
+
+        tokens
+    }
+
+    fn highlight_css(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+
+        // CSS comments: /* ... */
+        if line.trim_start().starts_with("/*") {
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Comment,
+                text: line.to_string(),
+                start: 0,
+                end: line.len(),
+            });
+            return tokens;
+        }
+
+        let mut pos = 0;
+        let line_bytes = line.as_bytes();
+
+        // CSS selectors, properties, and values
+        let css_keywords = [
+            "color", "background", "margin", "padding", "border", "width", "height",
+            "display", "position", "top", "left", "right", "bottom", "flex", "grid",
+            "font", "text", "line", "letter", "word", "white", "opacity", "transform",
+            "transition", "animation", "cursor", "overflow", "z-index", "visibility",
+        ];
+
+        while pos < line_bytes.len() {
+            // Selectors: . # :: : > + ~
+            if line_bytes[pos] == b'.' || line_bytes[pos] == b'#' || line_bytes[pos] == b':' {
+                let selector_start = pos;
+                pos += 1;
+
+                while pos < line_bytes.len()
+                    && (line_bytes[pos].is_ascii_alphanumeric() || line_bytes[pos] == b'-' || line_bytes[pos] == b'_') {
+                    pos += 1;
+                }
+
+                tokens.push(SyntaxToken {
+                    token_type: TokenType::Function, // Selectors as functions (yellow)
+                    text: line[selector_start..pos].to_string(),
+                    start: selector_start,
+                    end: pos,
+                });
+                continue;
+            }
+
+            // Strings: "..." or '...'
+            if line_bytes[pos] == b'"' || line_bytes[pos] == b'\'' {
+                let quote = line_bytes[pos];
+                let str_start = pos;
+                pos += 1;
+
+                while pos < line_bytes.len() && line_bytes[pos] != quote {
+                    if line_bytes[pos] == b'\\' {
+                        pos += 2;
+                    } else {
+                        pos += 1;
+                    }
+                }
+
+                if pos < line_bytes.len() {
+                    pos += 1;
+                }
+
+                tokens.push(SyntaxToken {
+                    token_type: TokenType::String,
+                    text: line[str_start..pos].to_string(),
+                    start: str_start,
+                    end: pos,
+                });
+                continue;
+            }
+
+            // Numbers with units: 10px, 1.5em, 50%, #FFF, #FFFFFF
+            if line_bytes[pos].is_ascii_digit() || line_bytes[pos] == b'#' {
+                let num_start = pos;
+
+                if line_bytes[pos] == b'#' {
+                    pos += 1;
+                    // Hex color: #RGB or #RRGGBB
+                    while pos < line_bytes.len() && line_bytes[pos].is_ascii_hexdigit() {
+                        pos += 1;
+                    }
+                } else {
+                    // Regular number
+                    while pos < line_bytes.len()
+                        && (line_bytes[pos].is_ascii_digit() || line_bytes[pos] == b'.') {
+                        pos += 1;
+                    }
+
+                    // CSS units: px, em, rem, %, vh, vw, etc.
+                    while pos < line_bytes.len()
+                        && line_bytes[pos].is_ascii_alphabetic() {
+                        pos += 1;
+                    }
+                }
+
+                tokens.push(SyntaxToken {
+                    token_type: TokenType::Number,
+                    text: line[num_start..pos].to_string(),
+                    start: num_start,
+                    end: pos,
+                });
+                continue;
+            }
+
+            // Keywords (property names)
+            if line_bytes[pos].is_ascii_alphabetic() || line_bytes[pos] == b'-' {
+                let word_start = pos;
+
+                while pos < line_bytes.len()
+                    && (line_bytes[pos].is_ascii_alphanumeric() || line_bytes[pos] == b'-') {
+                    pos += 1;
+                }
+
+                let word = &line[word_start..pos];
+
+                if css_keywords.iter().any(|&kw| word.starts_with(kw)) {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Keyword,
+                        text: word.to_string(),
+                        start: word_start,
+                        end: pos,
+                    });
+                } else {
+                    tokens.push(SyntaxToken {
+                        token_type: TokenType::Identifier,
+                        text: word.to_string(),
+                        start: word_start,
+                        end: pos,
+                    });
+                }
+                continue;
+            }
+
+            pos += 1;
+        }
+
+        if tokens.is_empty() {
+            tokens.push(SyntaxToken {
+                token_type: TokenType::Identifier,
+                text: line.to_string(),
+                start: 0,
+                end: line.len(),
+            });
+        }
+
+        tokens
     }
 }
 

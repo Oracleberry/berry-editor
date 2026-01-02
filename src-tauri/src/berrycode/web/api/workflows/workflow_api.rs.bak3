@@ -1,0 +1,2168 @@
+//! Workflow API - n8n-style Pipeline Execution
+//!
+//! ワークフロー（パイプライン）の実行・管理のためのAPIエンドポイント
+
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
+    response::Response,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::berrycode::pipeline::{
+    create_full_dev_pipeline, create_tdd_loop_preset, ExecutionRecord, Pipeline, PipelineContext,
+    WorkflowProgressMessage,
+};
+use crate::berrycode::workflow::{Workflow, WorkflowNode, Connection, NodeType};
+use crate::berrycode::agents::{create_agent, AgentContext, AgentConfig};
+use crate::berrycode::git_ops::GitOps;
+use crate::berrycode::llm::LLMClient;
+use crate::berrycode::repomap::RepoMap;
+use crate::berrycode::models::Model;
+use crate::berrycode::web::infrastructure::database::Database;
+use crate::berrycode::web::infrastructure::error::{WebError, WebResult};
+use crate::berrycode::web::infrastructure::session_db::SessionDbStore;
+use crate::berrycode::trigger::{Trigger, TriggerManager, TriggerType};
+use crate::berrycode::notifications::Notifier;
+
+/// Workflow API state
+#[derive(Clone)]
+pub struct WorkflowApiState {
+    pub session_store: SessionDbStore,
+    pub db: Database,
+    /// パイプラインの実行状態を保持
+    pub running_pipelines: Arc<Mutex<std::collections::HashMap<String, PipelineContext>>>,
+    /// セッションIDごとのワークフロー進捗ブロードキャスター
+    pub progress_broadcasters: Arc<Mutex<std::collections::HashMap<String, tokio::sync::broadcast::Sender<WorkflowProgressMessage>>>>,
+    /// 一時停止フラグ (execution_id -> is_paused)
+    pub pause_flags: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+    /// 再開シグナル (execution_id -> Sender)
+    pub resume_signals: Arc<Mutex<std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<()>>>>,
+    /// キャンセルフラグ (execution_id -> is_cancelled)
+    pub cancel_flags: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+    /// トリガーマネージャー
+    pub trigger_manager: Arc<Mutex<crate::trigger::TriggerManager>>,
+    /// 通知システム
+    pub notifier: Notifier,
+}
+
+/// パイプライン実行リクエスト
+#[derive(Debug, Deserialize)]
+pub struct StartWorkflowRequest {
+    /// パイプラインID (preset名: "tdd-loop" or "full-dev" or カスタム)
+    pub pipeline_id: String,
+    /// 初期プロンプト（要件、タスク説明など）
+    pub initial_prompt: String,
+    /// プロジェクトルート（オプション、指定がなければセッションのプロジェクトルートを使用）
+    pub project_root: Option<String>,
+}
+
+/// パイプライン実行レスポンス
+#[derive(Debug, Serialize)]
+pub struct StartWorkflowResponse {
+    pub status: String,
+    pub message: String,
+    pub execution_id: String,
+}
+
+/// パイプライン状態レスポンス
+#[derive(Debug, Serialize)]
+pub struct WorkflowStatusResponse {
+    pub pipeline_name: String,
+    pub current_node_id: String,
+    pub loop_count: usize,
+    pub execution_history: Vec<ExecutionRecord>,
+    pub completed: bool,
+}
+
+/// プリセット一覧レスポンス
+#[derive(Debug, Serialize)]
+pub struct PresetsResponse {
+    pub presets: Vec<PresetInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PresetInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// プリセット一覧を取得
+pub async fn get_presets() -> WebResult<Json<PresetsResponse>> {
+    Ok(Json(PresetsResponse {
+        presets: vec![
+            PresetInfo {
+                id: "tdd-loop".to_string(),
+                name: "TDD Loop".to_string(),
+                description: "テスト → 失敗したら修正 → 再テスト を繰り返す".to_string(),
+            },
+            PresetInfo {
+                id: "full-dev".to_string(),
+                name: "Full Development".to_string(),
+                description: "設計 → 実装 → テスト → 修正 → リファクタ の完全フロー".to_string(),
+            },
+        ],
+    }))
+}
+
+/// ワークフローを開始
+pub async fn start_workflow(
+    State(state): State<WorkflowApiState>,
+    Path(session_id): Path<String>,
+    Json(payload): Json<StartWorkflowRequest>,
+) -> WebResult<Json<StartWorkflowResponse>> {
+    tracing::info!(
+        "Starting workflow '{}' for session {}",
+        payload.pipeline_id,
+        session_id
+    );
+
+    // セッションを取得
+    let session = state
+        .session_store
+        .get_session(&session_id)
+        .await
+        .ok_or_else(|| WebError::NotFound("セッションが見つかりません".to_string()))?;
+
+    // プロジェクトルートを決定
+    let project_root = if let Some(root) = payload.project_root {
+        PathBuf::from(root)
+    } else {
+        session.project_root.clone()
+    };
+
+    // パイプラインを取得（プリセットまたはカスタム）
+    let pipeline = match payload.pipeline_id.as_str() {
+        "tdd-loop" => create_tdd_loop_preset(),
+        "full-dev" => create_full_dev_pipeline(),
+        _ => {
+            return Err(WebError::BadRequest(format!(
+                "不明なパイプラインID: {}",
+                payload.pipeline_id
+            )))
+        }
+    };
+
+    let execution_id = format!("{}-{}", session_id, uuid::Uuid::new_v4());
+    let pipeline_name = pipeline.name.clone();
+
+    // レスポンス用にクローン
+    let response_execution_id = execution_id.clone();
+    let response_pipeline_name = pipeline.name.clone();
+
+    // 進捗ブロードキャスターを作成
+    let (progress_tx, _progress_rx) = tokio::sync::broadcast::channel::<WorkflowProgressMessage>(100);
+
+    // セッションIDで進捗ブロードキャスターを保存
+    state.progress_broadcasters
+        .lock()
+        .await
+        .insert(session_id.clone(), progress_tx.clone());
+
+    // 再開シグナルチャネルを作成
+    let (resume_tx, mut resume_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.resume_signals
+        .lock()
+        .await
+        .insert(execution_id.clone(), resume_tx);
+
+    // 一時停止フラグを初期化
+    state.pause_flags
+        .lock()
+        .await
+        .insert(execution_id.clone(), false);
+
+    // バックグラウンドで実行
+    let running_pipelines = state.running_pipelines.clone();
+    let broadcasters = state.progress_broadcasters.clone();
+    let pause_flags = state.pause_flags.clone();
+    let resume_signals = state.resume_signals.clone();
+    let session_id_clone = session_id.clone();
+    let execution_id_clone = execution_id.clone();
+    let db = state.db.clone();
+    let pipeline_id = payload.pipeline_id.clone();
+    let notifier = state.notifier.clone();
+
+    tokio::spawn(async move {
+        let start_time = chrono::Utc::now();
+
+        // 実行ログをDBに記録（開始）
+        if let Err(e) = db.save_workflow_execution(
+            &execution_id,
+            &session_id_clone,
+            &pipeline_id,
+            &pipeline_name,
+            "running",
+            None,
+            None,
+        ).await {
+            tracing::error!("Failed to save workflow execution start: {}", e);
+        }
+
+        // mpsc チャネルを作成してbroadcastに変換
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // 別タスクでmpscからbroadcastに転送
+        let progress_tx_clone = progress_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let _ = progress_tx_clone.send(msg);
+            }
+        });
+
+        // スナップショット保存のコールバックを作成
+        let db_for_snapshot = db.clone();
+        let snapshot_saver: crate::pipeline::SnapshotSaver = std::sync::Arc::new(
+            move |snapshot_id: String, execution_id: String, node_id: String, node_name: String, snapshot_data: String| {
+                let db = db_for_snapshot.clone();
+                Box::pin(async move {
+                    db.save_snapshot(&snapshot_id, &execution_id, &node_id, &node_name, &snapshot_data)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to save snapshot: {}", e))
+                })
+            },
+        );
+
+        // キャンセルフラグを初期化
+        state.cancel_flags
+            .lock()
+            .await
+            .insert(execution_id.clone(), false);
+
+        match pipeline.run(
+            &project_root,
+            payload.initial_prompt,
+            Some(tx),
+            Some(execution_id.clone()),
+            Some(snapshot_saver),
+            Some(state.pause_flags.clone()),
+            Some(state.resume_signals.clone()),
+            Some(state.cancel_flags.clone()),
+        ).await {
+            Ok(context) => {
+                tracing::info!("Pipeline completed successfully: {}", pipeline_name);
+
+                let end_time = chrono::Utc::now();
+                let duration = end_time.signed_duration_since(start_time);
+                let duration_str = format!("{}分{}秒", duration.num_minutes(), duration.num_seconds() % 60);
+
+                // 実行ログをDBに更新（成功）
+                let execution_log = serde_json::to_string(&context.execution_history).unwrap_or_default();
+                if let Err(e) = db.update_workflow_execution(
+                    &execution_id,
+                    "completed",
+                    Some(end_time),
+                    context.loop_count,
+                    None,
+                    Some(&execution_log),
+                ).await {
+                    tracing::error!("Failed to update workflow execution: {}", e);
+                }
+
+                // 通知送信
+                if let Err(e) = notifier.send_workflow_complete(
+                    &pipeline_name,
+                    true,
+                    &duration_str,
+                    context.loop_count,
+                ).await {
+                    tracing::error!("Failed to send completion notification: {}", e);
+                }
+
+                running_pipelines
+                    .lock()
+                    .await
+                    .insert(execution_id, context);
+            }
+            Err(e) => {
+                tracing::error!("Pipeline failed: {}", e);
+
+                let end_time = chrono::Utc::now();
+                let duration = end_time.signed_duration_since(start_time);
+                let duration_str = format!("{}分{}秒", duration.num_minutes(), duration.num_seconds() % 60);
+
+                // 実行ログをDBに更新（失敗）
+                if let Err(update_err) = db.update_workflow_execution(
+                    &execution_id,
+                    "failed",
+                    Some(end_time),
+                    0,
+                    Some(&e.to_string()),
+                    None,
+                ).await {
+                    tracing::error!("Failed to update workflow execution: {}", update_err);
+                }
+
+                // エラー通知送信
+                if let Err(notify_err) = notifier.send_workflow_error(
+                    &pipeline_name,
+                    &e.to_string(),
+                ).await {
+                    tracing::error!("Failed to send error notification: {}", notify_err);
+                }
+            }
+        }
+
+        // 完了したらブロードキャスターを削除
+        broadcasters.lock().await.remove(&session_id_clone);
+        // 一時停止関連のクリーンアップ
+        pause_flags.lock().await.remove(&execution_id_clone);
+        resume_signals.lock().await.remove(&execution_id_clone);
+    });
+
+    Ok(Json(StartWorkflowResponse {
+        status: "started".to_string(),
+        message: format!("ワークフロー '{}' を開始しました", response_pipeline_name),
+        execution_id: response_execution_id,
+    }))
+}
+
+/// ワークフローの状態を取得
+pub async fn get_workflow_status(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<WorkflowStatusResponse>> {
+    let pipelines = state.running_pipelines.lock().await;
+
+    let context = pipelines
+        .get(&execution_id)
+        .ok_or_else(|| WebError::NotFound("実行中のワークフローが見つかりません".to_string()))?;
+
+    Ok(Json(WorkflowStatusResponse {
+        pipeline_name: "Pipeline".to_string(), // TODO: パイプライン名を保持
+        current_node_id: context.current_node_id.clone(),
+        loop_count: context.loop_count,
+        execution_history: context.execution_history.clone(),
+        completed: true, // TODO: 実行中かどうかを判定
+    }))
+}
+
+/// ワークフローを一時停止
+pub async fn pause_workflow(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Pausing workflow: {}", execution_id);
+
+    // 一時停止フラグを設定
+    let mut pause_flags = state.pause_flags.lock().await;
+    pause_flags.insert(execution_id.clone(), true);
+
+    // パイプラインコンテキストの状態を更新
+    let mut pipelines = state.running_pipelines.lock().await;
+    if let Some(context) = pipelines.get_mut(&execution_id) {
+        context.state = crate::pipeline::PipelineState::Paused {
+            at_node: context.current_node_id.clone(),
+        };
+        tracing::info!("Workflow paused at node: {}", context.current_node_id);
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "paused",
+        "message": "ワークフローを一時停止しました"
+    })))
+}
+
+/// ワークフローを再開
+pub async fn resume_workflow(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Resuming workflow: {}", execution_id);
+
+    // 一時停止フラグを解除
+    let mut pause_flags = state.pause_flags.lock().await;
+    pause_flags.insert(execution_id.clone(), false);
+
+    // 再開シグナルを送信
+    let resume_signals = state.resume_signals.lock().await;
+    if let Some(tx) = resume_signals.get(&execution_id) {
+        let _ = tx.send(());
+        tracing::info!("Resume signal sent for workflow: {}", execution_id);
+    }
+
+    // パイプラインコンテキストの状態を更新
+    let mut pipelines = state.running_pipelines.lock().await;
+    if let Some(context) = pipelines.get_mut(&execution_id) {
+        context.state = crate::pipeline::PipelineState::Running;
+        tracing::info!("Workflow resumed");
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "resumed",
+        "message": "ワークフローを再開しました"
+    })))
+}
+
+/// ワークフローをキャンセル
+pub async fn cancel_workflow(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Cancelling workflow: {}", execution_id);
+
+    // キャンセルフラグを設定
+    let mut cancel_flags = state.cancel_flags.lock().await;
+    cancel_flags.insert(execution_id.clone(), true);
+
+    // パイプラインコンテキストの状態を更新
+    let mut pipelines = state.running_pipelines.lock().await;
+    if let Some(context) = pipelines.get_mut(&execution_id) {
+        context.state = crate::pipeline::PipelineState::Failed {
+            error: "Cancelled by user".to_string(),
+        };
+        tracing::info!("Workflow cancelled: {}", execution_id);
+    }
+
+    // DBの実行ログも更新
+    if let Err(e) = state.db.update_workflow_execution(
+        &execution_id,
+        "cancelled",
+        Some(chrono::Utc::now()),
+        0,
+        Some("Cancelled by user"),
+        None,
+    ).await {
+        tracing::error!("Failed to update workflow execution status: {}", e);
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "cancelled",
+        "message": "ワークフローをキャンセルしました"
+    })))
+}
+
+/// カスタムワークフローを作成
+#[derive(Debug, Deserialize)]
+pub struct CreateWorkflowTemplateRequest {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub definition: String,  // JSON形式でパイプライン定義
+}
+
+pub async fn create_workflow_template(
+    State(state): State<WorkflowApiState>,
+    Json(payload): Json<CreateWorkflowTemplateRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    // バリデーション: definitionがJSONとして正しいかチェック
+    serde_json::from_str::<serde_json::Value>(&payload.definition)
+        .map_err(|e| WebError::BadRequest(format!("Invalid workflow definition: {}", e)))?;
+
+    // データベースに保存
+    state.db.create_workflow_template(
+        &payload.id,
+        &payload.name,
+        payload.description.as_deref(),
+        &payload.definition,
+        false, // is_preset = false (ユーザー作成)
+    ).await
+    .map_err(|e| WebError::Internal(format!("Failed to create template: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": payload.id,
+        "status": "created",
+        "message": "ワークフローテンプレートを作成しました"
+    })))
+}
+
+/// ワークフローテンプレート一覧を取得
+pub async fn list_workflow_templates(
+    State(state): State<WorkflowApiState>,
+) -> WebResult<Json<serde_json::Value>> {
+    let templates = state.db.list_workflow_templates().await
+        .map_err(|e| WebError::Internal(format!("Failed to list templates: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "templates": templates
+    })))
+}
+
+/// ワークフローテンプレートを取得
+pub async fn get_workflow_template(
+    State(state): State<WorkflowApiState>,
+    Path(template_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    let template = state.db.get_workflow_template(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get template: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Template not found".to_string()))?;
+
+    Ok(Json(serde_json::to_value(&template).unwrap()))
+}
+
+/// ワークフローテンプレートを更新
+#[derive(Debug, Deserialize)]
+pub struct UpdateWorkflowTemplateRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub definition: String,
+    pub change_description: Option<String>,
+}
+
+pub async fn update_workflow_template(
+    State(state): State<WorkflowApiState>,
+    Path(template_id): Path<String>,
+    Json(payload): Json<UpdateWorkflowTemplateRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    // バリデーション
+    serde_json::from_str::<serde_json::Value>(&payload.definition)
+        .map_err(|e| WebError::BadRequest(format!("Invalid workflow definition: {}", e)))?;
+
+    // テンプレートが存在するか確認
+    state.db.get_workflow_template(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get template: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Template not found".to_string()))?;
+
+    // 更新
+    state.db.update_workflow_template(
+        &template_id,
+        &payload.name,
+        payload.description.as_deref(),
+        &payload.definition,
+        payload.change_description.as_deref(),
+    ).await
+    .map_err(|e| WebError::Internal(format!("Failed to update template: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": template_id,
+        "status": "updated",
+        "message": "ワークフローテンプレートを更新しました"
+    })))
+}
+
+/// ワークフローテンプレートを削除
+pub async fn delete_workflow_template(
+    State(state): State<WorkflowApiState>,
+    Path(template_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    // テンプレートが存在するか確認
+    state.db.get_workflow_template(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get template: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Template not found".to_string()))?;
+
+    // 削除
+    state.db.delete_workflow_template(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to delete template: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": template_id,
+        "status": "deleted",
+        "message": "ワークフローテンプレートを削除しました"
+    })))
+}
+
+/// ワークフロー実行ログを検索
+#[derive(Debug, Deserialize)]
+pub struct SearchExecutionLogsQuery {
+    pub session_id: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
+pub async fn search_execution_logs(
+    State(state): State<WorkflowApiState>,
+    axum::extract::Query(query): axum::extract::Query<SearchExecutionLogsQuery>,
+) -> WebResult<Json<serde_json::Value>> {
+    let limit = query.limit.unwrap_or(50);
+    let offset = query.offset.unwrap_or(0);
+
+    let executions = state.db.search_workflow_executions(
+        query.session_id.as_deref(),
+        query.pipeline_id.as_deref(),
+        query.status.as_deref(),
+        limit,
+        offset,
+    ).await
+    .map_err(|e| WebError::Internal(format!("Failed to search executions: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "executions": executions,
+        "count": executions.len(),
+        "limit": limit,
+        "offset": offset
+    })))
+}
+
+/// ワークフロー実行ログ詳細を取得
+pub async fn get_execution_log(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    let execution = state.db.get_workflow_execution(&execution_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get execution: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Execution not found".to_string()))?;
+
+    Ok(Json(serde_json::to_value(&execution).unwrap()))
+}
+
+/// トリガーを作成
+#[derive(Debug, Deserialize)]
+pub struct CreateTriggerRequest {
+    pub id: String,
+    pub name: String,
+    pub trigger_type: TriggerType,
+    pub pipeline_id: String,
+    pub enabled: bool,
+    pub project_root: String,
+}
+
+pub async fn create_trigger(
+    State(state): State<WorkflowApiState>,
+    Json(payload): Json<CreateTriggerRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    let trigger = Trigger {
+        id: payload.id.clone(),
+        name: payload.name,
+        trigger_type: payload.trigger_type,
+        pipeline_id: payload.pipeline_id,
+        enabled: payload.enabled,
+        project_root: PathBuf::from(payload.project_root),
+    };
+
+    state.trigger_manager.lock().await.add_trigger(trigger).await
+        .map_err(|e| WebError::Internal(format!("Failed to create trigger: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": payload.id,
+        "status": "created",
+        "message": "トリガーを作成しました"
+    })))
+}
+
+/// トリガー一覧を取得
+pub async fn list_triggers(
+    State(state): State<WorkflowApiState>,
+) -> WebResult<Json<serde_json::Value>> {
+    let triggers = state.trigger_manager.lock().await.list_triggers().await;
+
+    Ok(Json(serde_json::json!({
+        "triggers": triggers
+    })))
+}
+
+/// トリガーを削除
+pub async fn delete_trigger(
+    State(state): State<WorkflowApiState>,
+    Path(trigger_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    state.trigger_manager.lock().await.remove_trigger(&trigger_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to delete trigger: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": trigger_id,
+        "status": "deleted",
+        "message": "トリガーを削除しました"
+    })))
+}
+
+/// トリガーを手動実行
+pub async fn execute_trigger(
+    State(state): State<WorkflowApiState>,
+    Path(trigger_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    state.trigger_manager.lock().await.execute_trigger(&trigger_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to execute trigger: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "id": trigger_id,
+        "status": "executed",
+        "message": "トリガーを実行しました"
+    })))
+}
+
+/// Webhook receiver endpoint
+#[derive(Debug, Deserialize)]
+pub struct WebhookPayload {
+    pub trigger_id: Option<String>,
+    pub secret: Option<String>,
+    pub data: Option<serde_json::Value>,
+}
+
+/// GitHub Webhook payload structures
+#[derive(Debug, Deserialize)]
+pub struct GitHubWebhookPayload {
+    pub action: String,  // "created", "opened", "edited", "closed"
+    pub issue: Option<GitHubIssue>,
+    pub comment: Option<GitHubComment>,
+    pub pull_request: Option<GitHubPullRequest>,
+    pub repository: GitHubRepository,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubIssue {
+    pub number: i64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub labels: Vec<GitHubLabel>,
+    pub user: GitHubUser,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubComment {
+    pub id: i64,
+    pub body: String,
+    pub user: GitHubUser,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubPullRequest {
+    pub number: i64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub user: GitHubUser,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubLabel {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubUser {
+    pub login: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubRepository {
+    pub name: String,
+    pub full_name: String,
+    pub clone_url: String,
+}
+
+pub async fn webhook_receiver(
+    State(state): State<WorkflowApiState>,
+    Json(payload): Json<WebhookPayload>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Webhook received: {:?}", payload.trigger_id);
+
+    // Find webhook trigger
+    let triggers = state.trigger_manager.lock().await.list_triggers().await;
+
+    let trigger = if let Some(trigger_id) = &payload.trigger_id {
+        triggers.iter().find(|t| t.id == *trigger_id)
+    } else {
+        // If no trigger_id specified, find first webhook trigger
+        triggers.iter().find(|t| matches!(t.trigger_type, crate::trigger::TriggerType::Webhook { .. }))
+    };
+
+    if let Some(trigger) = trigger {
+        // Verify secret if configured
+        if let crate::trigger::TriggerType::Webhook { secret: Some(expected_secret), .. } = &trigger.trigger_type {
+            if payload.secret.as_deref() != Some(expected_secret.as_str()) {
+                return Err(WebError::BadRequest("Invalid webhook secret".to_string()));
+            }
+        }
+
+        // Execute the trigger
+        state.trigger_manager.lock().await.execute_trigger(&trigger.id).await
+            .map_err(|e| WebError::Internal(format!("Failed to execute trigger: {}", e)))?;
+
+        Ok(Json(serde_json::json!({
+            "status": "success",
+            "trigger_id": trigger.id,
+            "message": "Webhook processed successfully"
+        })))
+    } else {
+        Err(WebError::NotFound("No webhook trigger found".to_string()))
+    }
+}
+
+/// GitHub Webhook専用エンドポイント
+pub async fn github_webhook_receiver(
+    State(state): State<WorkflowApiState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<GitHubWebhookPayload>,
+) -> WebResult<Json<serde_json::Value>> {
+    // X-GitHub-Event ヘッダーからイベントタイプを取得
+    let event = headers
+        .get("X-GitHub-Event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    tracing::info!("GitHub webhook received - Event: {}, Action: {}", event, payload.action);
+
+    // イベントタイプに応じて処理を分岐
+    match event.as_ref() {
+        "issues" => {
+            handle_github_issue_event(state, payload).await
+        }
+        "issue_comment" => {
+            handle_github_issue_comment_event(state, payload).await
+        }
+        "pull_request" => {
+            handle_github_pr_event(state, payload).await
+        }
+        "pull_request_review_comment" => {
+            handle_github_pr_comment_event(state, payload).await
+        }
+        _ => {
+            tracing::warn!("Unsupported GitHub event type: {}", event);
+            Ok(Json(serde_json::json!({
+                "status": "ignored",
+                "message": format!("Event type '{}' is not supported", event)
+            })))
+        }
+    }
+}
+
+/// GitHub Issue イベント処理
+async fn handle_github_issue_event(
+    state: WorkflowApiState,
+    payload: GitHubWebhookPayload,
+) -> WebResult<Json<serde_json::Value>> {
+    let issue = payload.issue.ok_or_else(|| WebError::BadRequest("No issue in payload".to_string()))?;
+
+    // "opened" アクションの時のみワークフロー実行
+    if payload.action == "opened" {
+        tracing::info!("New issue created: #{} - {}", issue.number, issue.title);
+
+        // bug ラベルがついている場合のみ自動修正
+        let has_bug_label = issue.labels.iter().any(|l| l.name == "bug");
+
+        if has_bug_label {
+            let task_description = format!(
+                "Issue #{}: {}\n\n{}",
+                issue.number,
+                issue.title,
+                issue.body.unwrap_or_default()
+            );
+
+            // TDD Loopワークフローを実行
+            execute_workflow_for_github_event(
+                state,
+                "tdd-loop",
+                task_description,
+                payload.repository.clone_url,
+            ).await?;
+
+            Ok(Json(serde_json::json!({
+                "status": "triggered",
+                "issue_number": issue.number,
+                "message": "Bug fix workflow started"
+            })))
+        } else {
+            Ok(Json(serde_json::json!({
+                "status": "ignored",
+                "message": "Issue does not have 'bug' label"
+            })))
+        }
+    } else {
+        Ok(Json(serde_json::json!({
+            "status": "ignored",
+            "message": format!("Action '{}' is not handled", payload.action)
+        })))
+    }
+}
+
+/// GitHub Issue Comment イベント処理
+async fn handle_github_issue_comment_event(
+    state: WorkflowApiState,
+    payload: GitHubWebhookPayload,
+) -> WebResult<Json<serde_json::Value>> {
+    let comment = payload.comment.ok_or_else(|| WebError::BadRequest("No comment in payload".to_string()))?;
+    let issue = payload.issue.ok_or_else(|| WebError::BadRequest("No issue in payload".to_string()))?;
+
+    // "created" アクションの時のみ処理
+    if payload.action == "created" {
+        tracing::info!("New comment on issue #{}: {}", issue.number, comment.body);
+
+        // コメントに @berrycode が含まれている場合のみ反応
+        if comment.body.contains("@berrycode") {
+            let task = extract_task_from_comment(&comment.body);
+
+            if let Some(task_description) = task {
+                tracing::info!("Extracted task from comment: {}", task_description);
+
+                execute_workflow_for_github_event(
+                    state,
+                    "tdd-loop",
+                    format!("Issue #{} - Comment request: {}", issue.number, task_description),
+                    payload.repository.clone_url,
+                ).await?;
+
+                Ok(Json(serde_json::json!({
+                    "status": "triggered",
+                    "issue_number": issue.number,
+                    "comment_id": comment.id,
+                    "message": "Workflow started based on comment"
+                })))
+            } else {
+                Ok(Json(serde_json::json!({
+                    "status": "ignored",
+                    "message": "Could not extract task from comment"
+                })))
+            }
+        } else {
+            Ok(Json(serde_json::json!({
+                "status": "ignored",
+                "message": "Comment does not mention @berrycode"
+            })))
+        }
+    } else {
+        Ok(Json(serde_json::json!({
+            "status": "ignored",
+            "message": format!("Action '{}' is not handled", payload.action)
+        })))
+    }
+}
+
+/// GitHub Pull Request イベント処理
+async fn handle_github_pr_event(
+    state: WorkflowApiState,
+    payload: GitHubWebhookPayload,
+) -> WebResult<Json<serde_json::Value>> {
+    let pr = payload.pull_request.ok_or_else(|| WebError::BadRequest("No pull_request in payload".to_string()))?;
+
+    tracing::info!("PR event: #{} - Action: {}", pr.number, payload.action);
+
+    // TODO: PR関連の自動処理を追加可能
+    Ok(Json(serde_json::json!({
+        "status": "acknowledged",
+        "pr_number": pr.number,
+        "message": "PR event received but no action taken"
+    })))
+}
+
+/// GitHub Pull Request Comment イベント処理
+async fn handle_github_pr_comment_event(
+    state: WorkflowApiState,
+    payload: GitHubWebhookPayload,
+) -> WebResult<Json<serde_json::Value>> {
+    let comment = payload.comment.ok_or_else(|| WebError::BadRequest("No comment in payload".to_string()))?;
+
+    tracing::info!("PR review comment: {}", comment.body);
+
+    // PRコメントに @berrycode が含まれている場合のみ反応
+    if comment.body.contains("@berrycode") {
+        let task = extract_task_from_comment(&comment.body);
+
+        if let Some(task_description) = task {
+            execute_workflow_for_github_event(
+                state,
+                "tdd-loop",
+                format!("PR Comment request: {}", task_description),
+                payload.repository.clone_url,
+            ).await?;
+
+            Ok(Json(serde_json::json!({
+                "status": "triggered",
+                "comment_id": comment.id,
+                "message": "Workflow started based on PR comment"
+            })))
+        } else {
+            Ok(Json(serde_json::json!({
+                "status": "ignored",
+                "message": "Could not extract task from comment"
+            })))
+        }
+    } else {
+        Ok(Json(serde_json::json!({
+            "status": "ignored",
+            "message": "Comment does not mention @berrycode"
+        })))
+    }
+}
+
+/// WebSocketハンドラー - ワークフロー進捗のリアルタイム配信
+pub async fn workflow_progress_ws(
+    ws: WebSocketUpgrade,
+    Path(session_id): Path<String>,
+    State(state): State<WorkflowApiState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_workflow_progress_socket(socket, session_id, state))
+}
+
+/// ワークフロー進捗WebSocketの処理
+async fn handle_workflow_progress_socket(
+    mut socket: WebSocket,
+    session_id: String,
+    state: WorkflowApiState,
+) {
+    tracing::info!("Workflow progress WebSocket connected for session: {}", session_id);
+
+    // Welcomeメッセージを送信
+    let welcome = serde_json::json!({
+        "type": "connected",
+        "message": "ワークフロー進捗の購読を開始しました"
+    });
+
+    if let Ok(json) = serde_json::to_string(&welcome) {
+        let _ = socket.send(Message::Text(json)).await;
+    }
+
+    // 進捗ブロードキャスターを購読
+    let mut progress_rx = {
+        let broadcasters = state.progress_broadcasters.lock().await;
+        if let Some(tx) = broadcasters.get(&session_id) {
+            tx.subscribe()
+        } else {
+            // ブロードキャスターがまだ存在しない場合は、作成して待機
+            tracing::info!("No active workflow for session {}, waiting...", session_id);
+            drop(broadcasters);
+
+            // 新しいブロードキャスターが作成されるまで定期的にチェック
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                let broadcasters = state.progress_broadcasters.lock().await;
+                if let Some(tx) = broadcasters.get(&session_id) {
+                    break tx.subscribe();
+                }
+                drop(broadcasters);
+            }
+        }
+    };
+
+    // 進捗メッセージを受信してWebSocketに転送
+    loop {
+        tokio::select! {
+            // 進捗ブロードキャストを受信
+            result = progress_rx.recv() => {
+                match result {
+                    Ok(progress) => {
+                        let msg = serde_json::json!({
+                            "type": "workflow_progress",
+                            "node_id": progress.node_id,
+                            "node_name": progress.node_name,
+                            "status": progress.status,
+                            "message": progress.message,
+                            "loop_count": progress.loop_count,
+                        });
+
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            if socket.send(Message::Text(json)).await.is_err() {
+                                tracing::warn!("Failed to send progress message, client disconnected");
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Progress receiver lagged by {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Progress broadcast channel closed");
+
+                        // 完了メッセージを送信
+                        let complete_msg = serde_json::json!({
+                            "type": "workflow_complete",
+                            "message": "ワークフローが完了しました"
+                        });
+
+                        if let Ok(json) = serde_json::to_string(&complete_msg) {
+                            let _ = socket.send(Message::Text(json)).await;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // クライアントからのメッセージを受信（切断検知）
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => {
+                        tracing::info!("Workflow progress WebSocket closed for session: {}", session_id);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    tracing::info!("Workflow progress WebSocket disconnected for session: {}", session_id);
+}
+
+/// スナップショット一覧を取得
+pub async fn list_snapshots(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    let snapshots = state.db.list_snapshots_by_execution(&execution_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to list snapshots: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "execution_id": execution_id,
+        "snapshots": snapshots
+    })))
+}
+
+/// スナップショットにロールバック
+#[derive(Debug, Deserialize)]
+pub struct RollbackRequest {
+    pub project_root: String,
+}
+
+pub async fn rollback_to_snapshot(
+    State(state): State<WorkflowApiState>,
+    Path(snapshot_id): Path<String>,
+    Json(payload): Json<RollbackRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Rolling back to snapshot: {}", snapshot_id);
+
+    // スナップショットデータを取得
+    let snapshot_data = state.db.get_snapshot(&snapshot_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get snapshot: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Snapshot not found".to_string()))?;
+
+    // JSONからWorkflowSnapshotにデシリアライズ
+    let snapshot: crate::pipeline::WorkflowSnapshot = serde_json::from_str(&snapshot_data)
+        .map_err(|e| WebError::Internal(format!("Failed to parse snapshot data: {}", e)))?;
+
+    // ロールバックを実行
+    let project_root = std::path::PathBuf::from(payload.project_root);
+    crate::pipeline::Pipeline::restore_snapshot(&snapshot, &project_root).await
+        .map_err(|e| WebError::Internal(format!("Failed to restore snapshot: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "snapshot_id": snapshot_id,
+        "status": "restored",
+        "message": format!("Successfully rolled back to snapshot {} with {} files restored",
+                          snapshot.snapshot_id, snapshot.files.len())
+    })))
+}
+
+/// メトリクスダッシュボードデータを取得
+pub async fn get_metrics_dashboard(
+    State(state): State<WorkflowApiState>,
+) -> WebResult<Json<serde_json::Value>> {
+    // 全実行履歴を取得
+    let all_executions = state.db.search_workflow_executions(None, None, None, 1000, 0).await
+        .map_err(|e| WebError::Internal(format!("Failed to fetch executions: {}", e)))?;
+
+    // 成功/失敗の集計
+    let total_executions = all_executions.len();
+    let successful_executions = all_executions.iter().filter(|e| e.status == "success" || e.status == "completed").count();
+    let failed_executions = all_executions.iter().filter(|e| e.status == "failed" || e.status == "error").count();
+
+    // パイプライン別の実行回数
+    let mut pipeline_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for exec in &all_executions {
+        *pipeline_counts.entry(exec.pipeline_id.clone()).or_insert(0) += 1;
+    }
+
+    // 平均ループ回数
+    let avg_loop_count = if !all_executions.is_empty() {
+        all_executions.iter().map(|e| e.loop_count).sum::<usize>() as f64 / total_executions as f64
+    } else {
+        0.0
+    };
+
+    // 時系列データ（直近30日）
+    let mut daily_executions: std::collections::HashMap<String, DailyMetrics> = std::collections::HashMap::new();
+    for exec in &all_executions {
+        let date = exec.start_time.format("%Y-%m-%d").to_string();
+        let entry = daily_executions.entry(date).or_insert(DailyMetrics {
+            date: exec.start_time.format("%Y-%m-%d").to_string(),
+            total: 0,
+            successful: 0,
+            failed: 0,
+        });
+        entry.total += 1;
+        if exec.status == "success" || exec.status == "completed" {
+            entry.successful += 1;
+        } else if exec.status == "failed" || exec.status == "error" {
+            entry.failed += 1;
+        }
+    }
+
+    let mut daily_data: Vec<DailyMetrics> = daily_executions.into_values().collect();
+    daily_data.sort_by(|a, b| a.date.cmp(&b.date));
+
+    Ok(Json(serde_json::json!({
+        "summary": {
+            "total_executions": total_executions,
+            "successful_executions": successful_executions,
+            "failed_executions": failed_executions,
+            "success_rate": if total_executions > 0 {
+                (successful_executions as f64 / total_executions as f64) * 100.0
+            } else {
+                0.0
+            },
+            "average_loop_count": avg_loop_count,
+        },
+        "pipeline_distribution": pipeline_counts,
+        "daily_metrics": daily_data,
+    })))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DailyMetrics {
+    date: String,
+    total: usize,
+    successful: usize,
+    failed: usize,
+}
+
+/// ビジュアルフローエディタ用のワークフロー検証
+#[derive(Debug, Deserialize)]
+pub struct ValidateFlowRequest {
+    pub nodes: Vec<FlowNodeDefinition>,
+    pub start_node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FlowNodeDefinition {
+    pub id: String,
+    pub name: String,
+    pub action_type: String,
+    pub next_on_success: Option<String>,
+    pub next_on_failure: Option<String>,
+    pub parallel_nodes: Option<Vec<String>>,
+}
+
+pub async fn validate_flow(
+    Json(payload): Json<ValidateFlowRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    // 開始ノードが存在するか確認
+    if !payload.nodes.iter().any(|n| n.id == payload.start_node_id) {
+        errors.push(format!("Start node '{}' not found", payload.start_node_id));
+    }
+
+    // 各ノードの検証
+    let node_ids: std::collections::HashSet<String> = payload.nodes.iter().map(|n| n.id.clone()).collect();
+
+    for node in &payload.nodes {
+        // 重複ID確認
+        let id_count = payload.nodes.iter().filter(|n| n.id == node.id).count();
+        if id_count > 1 {
+            errors.push(format!("Duplicate node ID: '{}'", node.id));
+        }
+
+        // 参照先ノードの存在確認
+        if let Some(ref next_id) = node.next_on_success {
+            if !node_ids.contains(next_id) {
+                errors.push(format!("Node '{}' references non-existent success node '{}'", node.id, next_id));
+            }
+        }
+
+        if let Some(ref fail_id) = node.next_on_failure {
+            if !node_ids.contains(fail_id) {
+                errors.push(format!("Node '{}' references non-existent failure node '{}'", node.id, fail_id));
+            }
+        }
+
+        // 並列ノードの検証
+        if let Some(ref parallel_ids) = node.parallel_nodes {
+            for parallel_id in parallel_ids {
+                if !node_ids.contains(parallel_id) {
+                    errors.push(format!("Node '{}' references non-existent parallel node '{}'", node.id, parallel_id));
+                }
+                if parallel_id == &node.id {
+                    errors.push(format!("Node '{}' cannot reference itself as parallel node", node.id));
+                }
+            }
+        }
+
+        // 循環参照の簡易チェック
+        if node.next_on_success.as_ref() == Some(&node.id) {
+            warnings.push(format!("Node '{}' has self-loop on success", node.id));
+        }
+    }
+
+    // 到達可能性チェック（簡易版）
+    let mut reachable = std::collections::HashSet::new();
+    let mut to_visit = vec![payload.start_node_id.clone()];
+
+    while let Some(current_id) = to_visit.pop() {
+        if reachable.contains(&current_id) {
+            continue;
+        }
+        reachable.insert(current_id.clone());
+
+        if let Some(node) = payload.nodes.iter().find(|n| n.id == current_id) {
+            if let Some(ref next_id) = node.next_on_success {
+                to_visit.push(next_id.clone());
+            }
+            if let Some(ref fail_id) = node.next_on_failure {
+                to_visit.push(fail_id.clone());
+            }
+            if let Some(ref parallel_ids) = node.parallel_nodes {
+                for pid in parallel_ids {
+                    to_visit.push(pid.clone());
+                }
+            }
+        }
+    }
+
+    for node in &payload.nodes {
+        if !reachable.contains(&node.id) {
+            warnings.push(format!("Node '{}' is unreachable from start node", node.id));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "warnings": warnings,
+        "stats": {
+            "total_nodes": payload.nodes.len(),
+            "reachable_nodes": reachable.len(),
+        }
+    })))
+}
+
+/// ワークフローをビジュアル形式に変換
+pub async fn get_flow_visualization(
+    State(state): State<WorkflowApiState>,
+    Path(template_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    // テンプレートを取得
+    let template = state.db.get_workflow_template(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get template: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Template not found".to_string()))?;
+
+    // 定義をパース
+    let pipeline: crate::pipeline::Pipeline = serde_json::from_str(&template.definition)
+        .map_err(|e| WebError::Internal(format!("Failed to parse workflow definition: {}", e)))?;
+
+    // ノードの位置を自動計算（簡易レイアウト）
+    let mut nodes_with_positions = Vec::new();
+    let mut x = 100.0;
+    let y_base = 200.0;
+    let x_step = 250.0;
+    let mut visited = std::collections::HashSet::new();
+
+    fn layout_nodes(
+        pipeline: &crate::pipeline::Pipeline,
+        node_id: &str,
+        x: &mut f64,
+        y_base: f64,
+        x_step: f64,
+        visited: &mut std::collections::HashSet<String>,
+        result: &mut Vec<serde_json::Value>,
+    ) {
+        if visited.contains(node_id) {
+            return;
+        }
+        visited.insert(node_id.to_string());
+
+        if let Some(node) = pipeline.nodes.get(node_id) {
+            result.push(serde_json::json!({
+                "id": node.id,
+                "name": node.name,
+                "action": format!("{:?}", node.action),
+                "position": {
+                    "x": *x,
+                    "y": y_base,
+                },
+                "next_on_success": node.next_on_success,
+                "next_on_failure": node.next_on_failure,
+                "parallel_nodes": node.parallel_nodes,
+            }));
+
+            *x += x_step;
+
+            // 再帰的にレイアウト
+            if let Some(ref next_id) = node.next_on_success {
+                layout_nodes(pipeline, next_id, x, y_base, x_step, visited, result);
+            }
+            if let Some(ref fail_id) = node.next_on_failure {
+                layout_nodes(pipeline, fail_id, x, y_base + 150.0, x_step, visited, result);
+            }
+        }
+    }
+
+    layout_nodes(&pipeline, &pipeline.start_node_id, &mut x, y_base, x_step, &mut visited, &mut nodes_with_positions);
+
+    Ok(Json(serde_json::json!({
+        "id": pipeline.id,
+        "name": pipeline.name,
+        "start_node_id": pipeline.start_node_id,
+        "max_loops": pipeline.max_loops,
+        "nodes": nodes_with_positions,
+    })))
+}
+
+/// テンプレートのバージョン一覧を取得
+pub async fn list_template_versions(
+    State(state): State<WorkflowApiState>,
+    Path(template_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    let versions = state.db.list_template_versions(&template_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to list versions: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "template_id": template_id,
+        "versions": versions
+    })))
+}
+
+/// 特定バージョンを取得
+pub async fn get_template_version(
+    State(state): State<WorkflowApiState>,
+    Path((template_id, version)): Path<(String, i64)>,
+) -> WebResult<Json<serde_json::Value>> {
+    let version_data = state.db.get_template_version(&template_id, version).await
+        .map_err(|e| WebError::Internal(format!("Failed to get version: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Version not found".to_string()))?;
+
+    Ok(Json(serde_json::to_value(&version_data).unwrap()))
+}
+
+/// バージョンを復元
+pub async fn restore_template_version(
+    State(state): State<WorkflowApiState>,
+    Path((template_id, version)): Path<(String, i64)>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Restoring template {} to version {}", template_id, version);
+
+    state.db.restore_template_version(&template_id, version).await
+        .map_err(|e| WebError::Internal(format!("Failed to restore version: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "template_id": template_id,
+        "restored_version": version,
+        "status": "restored",
+        "message": format!("テンプレートをバージョン{}に復元しました", version)
+    })))
+}
+
+/// ワークフロー実行のパフォーマンス分析を取得
+pub async fn get_performance_analysis(
+    State(state): State<WorkflowApiState>,
+    Path(execution_id): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    // 実行ログを取得
+    let execution = state.db.get_workflow_execution(&execution_id).await
+        .map_err(|e| WebError::Internal(format!("Failed to get execution: {}", e)))?
+        .ok_or_else(|| WebError::NotFound("Execution not found".to_string()))?;
+
+    // 実行ログをパース
+    let execution_history: Vec<crate::pipeline::ExecutionRecord> = if let Some(log) = &execution.execution_log {
+        serde_json::from_str(log).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // パフォーマンス統計を計算
+    let total_duration_ms: u64 = execution_history.iter().map(|r| r.duration_ms).sum();
+    let avg_duration_ms = if !execution_history.is_empty() {
+        total_duration_ms / execution_history.len() as u64
+    } else {
+        0
+    };
+
+    // ノード別統計
+    let mut node_stats: std::collections::HashMap<String, NodePerformanceStats> = std::collections::HashMap::new();
+    for record in &execution_history {
+        let stat = node_stats.entry(record.node_id.clone()).or_insert(NodePerformanceStats {
+            node_id: record.node_id.clone(),
+            node_name: record.node_name.clone(),
+            total_executions: 0,
+            successful_executions: 0,
+            failed_executions: 0,
+            total_duration_ms: 0,
+            avg_duration_ms: 0,
+            min_duration_ms: u64::MAX,
+            max_duration_ms: 0,
+        });
+
+        stat.total_executions += 1;
+        if record.success {
+            stat.successful_executions += 1;
+        } else {
+            stat.failed_executions += 1;
+        }
+        stat.total_duration_ms += record.duration_ms;
+        stat.min_duration_ms = stat.min_duration_ms.min(record.duration_ms);
+        stat.max_duration_ms = stat.max_duration_ms.max(record.duration_ms);
+    }
+
+    // 平均を計算
+    for stat in node_stats.values_mut() {
+        stat.avg_duration_ms = stat.total_duration_ms / stat.total_executions;
+    }
+
+    // ボトルネック（最も時間がかかったノード）
+    let mut sorted_nodes: Vec<_> = node_stats.values().cloned().collect();
+    sorted_nodes.sort_by(|a, b| b.total_duration_ms.cmp(&a.total_duration_ms));
+    let bottlenecks = sorted_nodes.iter().take(5).cloned().collect::<Vec<_>>();
+
+    // 成功率
+    let success_count = execution_history.iter().filter(|r| r.success).count();
+    let success_rate = if !execution_history.is_empty() {
+        (success_count as f64 / execution_history.len() as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(Json(serde_json::json!({
+        "execution_id": execution_id,
+        "pipeline_name": execution.pipeline_name,
+        "status": execution.status,
+        "start_time": execution.start_time,
+        "end_time": execution.end_time,
+        "summary": {
+            "total_nodes_executed": execution_history.len(),
+            "total_duration_ms": total_duration_ms,
+            "avg_duration_ms": avg_duration_ms,
+            "success_rate": success_rate,
+            "loop_count": execution.loop_count,
+        },
+        "node_statistics": node_stats.values().cloned().collect::<Vec<_>>(),
+        "bottlenecks": bottlenecks,
+        "execution_history": execution_history,
+    })))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct NodePerformanceStats {
+    node_id: String,
+    node_name: String,
+    total_executions: u64,
+    successful_executions: u64,
+    failed_executions: u64,
+    total_duration_ms: u64,
+    avg_duration_ms: u64,
+    min_duration_ms: u64,
+    max_duration_ms: u64,
+}
+
+// ============================================================================
+// BerryFlow Visual Workflow API (New Design)
+// ============================================================================
+
+/// BerryFlow ワークフロー実行リクエスト
+#[derive(Debug, Deserialize)]
+pub struct ExecuteVisualWorkflowRequest {
+    pub project_path: String,
+    pub workflow: Workflow,
+}
+
+/// BerryFlow ワークフローを実行
+pub async fn execute_visual_workflow(
+    State(state): State<WorkflowApiState>,
+    Json(payload): Json<ExecuteVisualWorkflowRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Executing BerryFlow workflow: {}", payload.workflow.name);
+
+    let project_path = PathBuf::from(&payload.project_path);
+    let workflow = payload.workflow;
+
+    // ワークフローを検証
+    workflow.validate().map_err(|e| WebError::BadRequest(e.to_string()))?;
+
+    // 実行順序を取得
+    let execution_order = workflow.get_execution_order()
+        .map_err(|e| WebError::BadRequest(format!("Invalid workflow: {}", e)))?;
+
+    let execution_id = uuid::Uuid::new_v4().to_string();
+
+    // Git操作の準備
+    let git_ops = GitOps::new(project_path.clone())
+        .map_err(|e| WebError::BadRequest(format!("Not a git repository: {}", e)))?;
+
+    // LLMクライアントを初期化（.envから読み込み）
+    let model_name = workflow.variables.get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("BERRYCODE_MODEL").ok())
+        .unwrap_or_else(|| "claude-sonnet-4-5@20250929".to_string());
+    let model = Model::new(model_name, None, None, None, false)
+        .map_err(|e| WebError::BadRequest(format!("Failed to create model: {}", e)))?;
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| WebError::BadRequest("OPENAI_API_KEY not set".to_string()))?;
+    let llm_client = std::sync::Arc::new(
+        LLMClient::new(&model, api_key)
+            .map_err(|e| WebError::BadRequest(format!("Failed to create LLM client: {}", e)))?
+    );
+
+    // RepoMapをロード
+    let repo_map = match RepoMap::load_or_build(project_path.clone(), &[]) {
+        Ok(map) => Some(std::sync::Arc::new(map)),
+        Err(e) => {
+            tracing::warn!("Failed to load RepoMap: {}", e);
+            None
+        }
+    };
+
+    // バックグラウンドで実行
+    let workflow_clone = workflow.clone();
+    let execution_id_for_spawn = execution_id.clone();
+    let db = state.db.clone();
+    let notifier = state.notifier.clone();
+
+    tokio::spawn(async move {
+        let execution_id = execution_id_for_spawn;
+        let start_time = chrono::Utc::now();
+
+        // 実行ログをDBに記録（開始）
+        if let Err(e) = db.save_workflow_execution(
+            &execution_id,
+            "berryflow",
+            &workflow_clone.id,
+            &workflow_clone.name,
+            "running",
+            None,
+            None,
+        ).await {
+            tracing::error!("Failed to save workflow execution: {}", e);
+        }
+
+        // ノードを順番に実行
+        let mut execution_results = Vec::new();
+        let mut context_inputs = std::collections::HashMap::new();
+
+        for node_id in execution_order {
+            let node = workflow_clone.nodes.iter()
+                .find(|n| n.id == node_id)
+                .expect("Node not found");
+
+            tracing::info!("Executing node: {} ({})", node.name, node.id);
+
+            // エージェントを作成
+            let agent_role = node.node_type.to_agent_role();
+            let agent = create_agent(agent_role);
+
+            // エージェントコンテキストを準備
+            let agent_context = AgentContext {
+                project_root: project_path.clone(),
+                inputs: context_inputs.clone(),
+                config: AgentConfig {
+                    model: workflow_clone.variables.get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| std::env::var("BERRYCODE_MODEL").ok())
+                        .unwrap_or_else(|| "claude-sonnet-4-5@20250929".to_string()),
+                    max_tokens: node.config.parameters.get("max_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(4096) as usize,
+                    temperature: node.config.parameters.get("temperature")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.7) as f32,
+                    parameters: node.config.parameters.clone(),
+                },
+                llm_client: llm_client.clone(),
+                repo_map: repo_map.clone(),
+            };
+
+            // エージェント実行
+            let node_start = std::time::Instant::now();
+            match agent.execute(&agent_context).await {
+                Ok(output) => {
+                    let duration_ms = node_start.elapsed().as_millis() as u64;
+
+                    tracing::info!("Node {} completed: {}", node.name, output.message);
+
+                    // 出力を次のノードへの入力として保存
+                    context_inputs.insert(
+                        node.id.to_string(),
+                        output.message.clone(),
+                    );
+
+                    // 生成されたファイルを保存
+                    for (file_path, content) in output.files {
+                        if let Err(e) = tokio::fs::write(&file_path, content).await {
+                            tracing::error!("Failed to write file {:?}: {}", file_path, e);
+                        }
+                    }
+
+                    execution_results.push(serde_json::json!({
+                        "node_id": node.id,
+                        "node_name": node.name,
+                        "success": output.success,
+                        "message": output.message,
+                        "duration_ms": duration_ms,
+                    }));
+                }
+                Err(e) => {
+                    tracing::error!("Node {} failed: {}", node.name, e);
+
+                    execution_results.push(serde_json::json!({
+                        "node_id": node.id,
+                        "node_name": node.name,
+                        "success": false,
+                        "error": e.to_string(),
+                    }));
+
+                    // 失敗時は中断
+                    break;
+                }
+            }
+        }
+
+        let end_time = chrono::Utc::now();
+        let all_success = execution_results.iter()
+            .all(|r| r.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+        // 成功時はGitコミット
+        if all_success {
+            match git_ops.auto_commit(&workflow_clone.name).await {
+                Ok(commit_info) => {
+                    tracing::info!("Auto-committed: {}", commit_info.message);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to auto-commit: {}", e);
+                }
+            }
+        }
+
+        // 実行ログを更新
+        let execution_log = serde_json::to_string(&execution_results).unwrap_or_default();
+        let status = if all_success { "completed" } else { "failed" };
+
+        if let Err(e) = db.update_workflow_execution(
+            &execution_id,
+            status,
+            Some(end_time),
+            0,
+            None,
+            Some(&execution_log),
+        ).await {
+            tracing::error!("Failed to update workflow execution: {}", e);
+        }
+
+        // 通知
+        let duration = end_time.signed_duration_since(start_time);
+        let duration_str = format!("{}分{}秒", duration.num_minutes(), duration.num_seconds() % 60);
+
+        if let Err(e) = notifier.send_workflow_complete(
+            &workflow_clone.name,
+            all_success,
+            &duration_str,
+            0,
+        ).await {
+            tracing::error!("Failed to send notification: {}", e);
+        }
+    });
+
+    Ok(Json(serde_json::json!({
+        "status": "started",
+        "execution_id": execution_id,
+        "message": format!("BerryFlow workflow '{}' started", workflow.name)
+    })))
+}
+
+/// BerryFlow ワークフロー保存リクエスト
+#[derive(Debug, Deserialize)]
+pub struct SaveVisualWorkflowRequest {
+    pub project_path: String,
+    pub workflow: Workflow,
+}
+
+/// BerryFlow ワークフローを保存
+pub async fn save_visual_workflow(
+    State(state): State<WorkflowApiState>,
+    Json(payload): Json<SaveVisualWorkflowRequest>,
+) -> WebResult<Json<serde_json::Value>> {
+    tracing::info!("Saving BerryFlow workflow: {}", payload.workflow.name);
+
+    let project_path = PathBuf::from(&payload.project_path);
+    let workflow = payload.workflow;
+
+    // ワークフローを検証
+    workflow.validate().map_err(|e| WebError::BadRequest(e.to_string()))?;
+
+    // .berrycode/workflows/ ディレクトリに保存
+    let workflows_dir = project_path.join(".berrycode").join("workflows");
+    tokio::fs::create_dir_all(&workflows_dir).await
+        .map_err(|e| WebError::Internal(format!("Failed to create workflows dir: {}", e)))?;
+
+    let workflow_file = workflows_dir.join(format!("{}.json", workflow.id));
+    let workflow_json = serde_json::to_string_pretty(&workflow)
+        .map_err(|e| WebError::Internal(format!("Failed to serialize workflow: {}", e)))?;
+
+    tokio::fs::write(&workflow_file, workflow_json).await
+        .map_err(|e| WebError::Internal(format!("Failed to write workflow file: {}", e)))?;
+
+    tracing::info!("Workflow saved to {:?}", workflow_file);
+
+    Ok(Json(serde_json::json!({
+        "status": "saved",
+        "workflow_id": workflow.id,
+        "path": workflow_file.to_string_lossy(),
+        "message": format!("Workflow '{}' saved successfully", workflow.name)
+    })))
+}
+
+/// BerryFlow ワークフローをロード
+pub async fn load_visual_workflow(
+    State(_state): State<WorkflowApiState>,
+    Path((project_path, workflow_id)): Path<(String, String)>,
+) -> WebResult<Json<Workflow>> {
+    tracing::info!("Loading BerryFlow workflow: {}", workflow_id);
+
+    let project_path = PathBuf::from(&project_path);
+    let workflow_file = project_path
+        .join(".berrycode")
+        .join("workflows")
+        .join(format!("{}.json", workflow_id));
+
+    if !workflow_file.exists() {
+        return Err(WebError::NotFound(format!("Workflow '{}' not found", workflow_id)));
+    }
+
+    let workflow_json = tokio::fs::read_to_string(&workflow_file).await
+        .map_err(|e| WebError::Internal(format!("Failed to read workflow file: {}", e)))?;
+
+    let workflow: Workflow = serde_json::from_str(&workflow_json)
+        .map_err(|e| WebError::Internal(format!("Failed to parse workflow: {}", e)))?;
+
+    Ok(Json(workflow))
+}
+
+/// プロジェクトのワークフロー一覧を取得
+pub async fn list_visual_workflows(
+    State(_state): State<WorkflowApiState>,
+    Path(project_path): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    let project_path = PathBuf::from(&project_path);
+    let workflows_dir = project_path.join(".berrycode").join("workflows");
+
+    if !workflows_dir.exists() {
+        return Ok(Json(serde_json::json!({ "workflows": [] })));
+    }
+
+    let mut workflows = Vec::new();
+
+    let mut dir = tokio::fs::read_dir(&workflows_dir).await
+        .map_err(|e| WebError::Internal(format!("Failed to read workflows dir: {}", e)))?;
+
+    while let Some(entry) = dir.next_entry().await
+        .map_err(|e| WebError::Internal(format!("Failed to read dir entry: {}", e)))? {
+
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                if let Ok(workflow) = serde_json::from_str::<Workflow>(&content) {
+                    workflows.push(serde_json::json!({
+                        "id": workflow.id,
+                        "name": workflow.name,
+                        "node_count": workflow.nodes.len(),
+                        "connection_count": workflow.connections.len(),
+                    }));
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "workflows": workflows })))
+}
+
+/// Asset Registryからアイコン一覧を取得
+pub async fn get_workflow_icons(
+    State(_state): State<WorkflowApiState>,
+    Path(project_path): Path<String>,
+) -> WebResult<Json<serde_json::Value>> {
+    use crate::berrycode::asset_registry::AssetRegistry;
+
+    let project_path = PathBuf::from(&project_path);
+    let asset_registry = AssetRegistry::load_from_project(&project_path)
+        .map_err(|e| WebError::Internal(format!("Failed to load asset registry: {}", e)))?;
+
+    let html = asset_registry.get_icon_options_html();
+    let stats = asset_registry.get_stats();
+
+    Ok(Json(serde_json::json!({
+        "icons_html": html,
+        "stats": {
+            "total_icons": stats.total_count,
+            "total_size_bytes": stats.total_size_bytes,
+        }
+    })))
+}
+
+/// ワークフローノードタイプ一覧を取得
+pub async fn get_node_types() -> WebResult<Json<serde_json::Value>> {
+    let node_types = vec![
+        serde_json::json!({
+            "type": "Architect",
+            "name": "Architect",
+            "icon": "🏛️",
+            "description": "System design and architecture"
+        }),
+        serde_json::json!({
+            "type": "UxDesigner",
+            "name": "UX Designer",
+            "icon": "🎨",
+            "description": "User experience design"
+        }),
+        serde_json::json!({
+            "type": "UiDesigner",
+            "name": "UI Designer",
+            "icon": "🖼️",
+            "description": "User interface design"
+        }),
+        serde_json::json!({
+            "type": "Programmer",
+            "name": "Programmer",
+            "icon": "💻",
+            "description": "Code implementation"
+        }),
+        serde_json::json!({
+            "type": "TestGenerator",
+            "name": "Test Generator",
+            "icon": "🧪",
+            "description": "Generate tests"
+        }),
+        serde_json::json!({
+            "type": "TestRunner",
+            "name": "Test Runner",
+            "icon": "▶️",
+            "description": "Run tests"
+        }),
+        serde_json::json!({
+            "type": "BugFixer",
+            "name": "Bug Fixer",
+            "icon": "🐛",
+            "description": "Debug and fix bugs"
+        }),
+        serde_json::json!({
+            "type": "Refactorer",
+            "name": "Refactorer",
+            "icon": "♻️",
+            "description": "Code refactoring"
+        }),
+        serde_json::json!({
+            "type": "DocWriter",
+            "name": "Doc Writer",
+            "icon": "📝",
+            "description": "Write documentation"
+        }),
+        serde_json::json!({
+            "type": "GitCommit",
+            "name": "Git Commit",
+            "icon": "📦",
+            "description": "Commit changes to Git"
+        }),
+    ];
+
+    Ok(Json(serde_json::json!({ "node_types": node_types })))
+}
+
+// ============================================================================
+// GitHub Webhook Helper Functions
+// ============================================================================
+
+/// コメント内容からタスクを抽出
+///
+/// 例:
+/// "@berrycode この関数のエラーハンドリングを追加して"
+/// -> Some("この関数のエラーハンドリングを追加して")
+fn extract_task_from_comment(comment_body: &str) -> Option<String> {
+    // @berrycode の後のテキストを抽出
+    if let Some(pos) = comment_body.find("@berrycode") {
+        let after_mention = &comment_body[pos + "@berrycode".len()..];
+        let task = after_mention.trim();
+
+        if task.is_empty() {
+            None
+        } else {
+            // 最初の段落のみ抽出（改行2つまでまたは最大200文字）
+            let task_text = task
+                .lines()
+                .take_while(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let truncated = if task_text.len() > 500 {
+                format!("{}...", &task_text[..500])
+            } else {
+                task_text
+            };
+
+            Some(truncated)
+        }
+    } else {
+        None
+    }
+}
+
+/// GitHub イベントに対してワークフローを実行
+async fn execute_workflow_for_github_event(
+    state: WorkflowApiState,
+    pipeline_id: &str,
+    task_description: String,
+    _repository_clone_url: String,
+) -> WebResult<()> {
+    tracing::info!("Executing workflow '{}' for GitHub event", pipeline_id);
+    tracing::info!("Task: {}", task_description);
+
+    // パイプラインを取得
+    let pipeline = match pipeline_id {
+        "tdd-loop" => create_tdd_loop_preset(),
+        "full-dev" => create_full_dev_pipeline(),
+        _ => {
+            return Err(WebError::BadRequest(format!(
+                "Unknown pipeline ID: {}",
+                pipeline_id
+            )))
+        }
+    };
+
+    // デフォルトプロジェクトルート（環境変数から取得、なければカレントディレクトリ）
+    let project_root = std::env::var("BERRYCODE_PROJECT_ROOT")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    tracing::info!("Using project root: {:?}", project_root);
+
+    let execution_id = format!("github-{}", uuid::Uuid::new_v4());
+    let pipeline_name = pipeline.name.clone();
+
+    // 進捗ブロードキャスターを作成
+    let (progress_tx, _progress_rx) = tokio::sync::broadcast::channel::<WorkflowProgressMessage>(100);
+
+    // バックグラウンドで実行
+    let db = state.db.clone();
+    let notifier = state.notifier.clone();
+    let pipeline_id_owned = pipeline_id.to_string();
+
+    tokio::spawn(async move {
+        let pipeline_id = &pipeline_id_owned;
+        let start_time = chrono::Utc::now();
+
+        // 実行ログをDBに記録（開始）
+        if let Err(e) = db.save_workflow_execution(
+            &execution_id,
+            "github-webhook",
+            pipeline_id,
+            &pipeline_name,
+            "running",
+            None,
+            None,
+        ).await {
+            tracing::error!("Failed to save workflow execution: {}", e);
+        }
+
+        // mpsc チャネルを作成
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // 別タスクでmpscからbroadcastに転送
+        let progress_tx_clone = progress_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let _ = progress_tx_clone.send(msg);
+            }
+        });
+
+        // スナップショット保存のコールバックを作成
+        let db_for_snapshot = db.clone();
+        let snapshot_saver: crate::pipeline::SnapshotSaver = std::sync::Arc::new(
+            move |snapshot_id: String, execution_id: String, node_id: String, node_name: String, snapshot_data: String| {
+                let db = db_for_snapshot.clone();
+                Box::pin(async move {
+                    db.save_snapshot(&snapshot_id, &execution_id, &node_id, &node_name, &snapshot_data)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to save snapshot: {}", e))
+                })
+            },
+        );
+
+        match pipeline.run(
+            &project_root,
+            task_description.clone(),
+            Some(tx),
+            Some(execution_id.clone()),
+            Some(snapshot_saver),
+            None, // pause_flags
+            None, // resume_signals
+            None, // cancel_flags
+        ).await {
+            Ok(context) => {
+                tracing::info!("GitHub workflow completed successfully: {}", pipeline_name);
+
+                let end_time = chrono::Utc::now();
+                let duration = end_time.signed_duration_since(start_time);
+                let duration_str = format!("{}分{}秒", duration.num_minutes(), duration.num_seconds() % 60);
+
+                // 実行ログをDBに更新（成功）
+                let execution_log = serde_json::to_string(&context.execution_history).unwrap_or_default();
+                if let Err(e) = db.update_workflow_execution(
+                    &execution_id,
+                    "completed",
+                    Some(end_time),
+                    context.loop_count,
+                    None,
+                    Some(&execution_log),
+                ).await {
+                    tracing::error!("Failed to update workflow execution: {}", e);
+                }
+
+                // 通知送信
+                if let Err(e) = notifier.send_workflow_complete(
+                    &pipeline_name,
+                    true,
+                    &duration_str,
+                    context.loop_count,
+                ).await {
+                    tracing::error!("Failed to send completion notification: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("GitHub workflow failed: {}", e);
+
+                let end_time = chrono::Utc::now();
+
+                // 実行ログをDBに更新（失敗）
+                if let Err(update_err) = db.update_workflow_execution(
+                    &execution_id,
+                    "failed",
+                    Some(end_time),
+                    0,
+                    Some(&e.to_string()),
+                    None,
+                ).await {
+                    tracing::error!("Failed to update workflow execution: {}", update_err);
+                }
+
+                // エラー通知送信
+                if let Err(notify_err) = notifier.send_workflow_error(
+                    &pipeline_name,
+                    &e.to_string(),
+                ).await {
+                    tracing::error!("Failed to send error notification: {}", notify_err);
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_task_from_comment() {
+        // 基本的な抽出
+        let comment = "@berrycode この関数のエラーハンドリングを追加して";
+        let task = extract_task_from_comment(comment);
+        assert_eq!(task, Some("この関数のエラーハンドリングを追加して".to_string()));
+
+        // @berrrycodeが途中にある場合
+        let comment = "これは良いアイデアですね。@berrycode ログ機能を実装してください";
+        let task = extract_task_from_comment(comment);
+        assert_eq!(task, Some("ログ機能を実装してください".to_string()));
+
+        // @berrrycodeの後が空の場合
+        let comment = "@berrycode";
+        let task = extract_task_from_comment(comment);
+        assert_eq!(task, None);
+
+        // @berrrycodeがない場合
+        let comment = "普通のコメントです";
+        let task = extract_task_from_comment(comment);
+        assert_eq!(task, None);
+
+        // 複数行のコメント
+        let comment = "@berrycode テストを追加してください\n\n詳細な説明...";
+        let task = extract_task_from_comment(comment);
+        assert_eq!(task, Some("テストを追加してください".to_string()));
+    }
+}

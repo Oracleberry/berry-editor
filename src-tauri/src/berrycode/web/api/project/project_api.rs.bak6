@@ -1,0 +1,318 @@
+//! Project Management API
+//!
+//! プロジェクトの作成、クローン、履歴管理のためのAPIエンドポイント
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::berrycode::berrycode::project_manager::{ProjectManager, Project};
+use crate::berrycode::berrycode::web::infrastructure::error::{WebError, WebResult};
+
+/// Project API state
+#[derive(Clone)]
+pub struct ProjectApiState {
+    pub project_manager: Arc<Mutex<ProjectManager>>,
+}
+
+/// プロジェクト一覧レスポンス
+#[derive(Debug, Serialize)]
+pub struct ProjectsResponse {
+    pub projects: Vec<ProjectItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectItemResponse {
+    pub name: String,
+    pub path: String,
+    pub last_opened: String,
+    pub git_status: GitStatusResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GitStatusResponse {
+    pub is_git_repo: bool,
+    pub branch: Option<String>,
+    pub is_dirty: bool,
+    pub last_commit_msg: Option<String>,
+    pub ahead_behind: Option<(usize, usize)>,
+}
+
+impl From<Project> for ProjectItemResponse {
+    fn from(item: Project) -> Self {
+        Self {
+            name: item.name,
+            path: item.path.to_string_lossy().to_string(),
+            last_opened: item.last_opened.to_string(),
+            git_status: GitStatusResponse {
+                is_git_repo: item.git_status.is_git_repo,
+                branch: item.git_status.branch,
+                is_dirty: item.git_status.is_dirty,
+                last_commit_msg: item.git_status.last_commit_msg,
+                ahead_behind: item.git_status.ahead_behind,
+            },
+        }
+    }
+}
+
+/// プロジェクト一覧取得
+pub async fn get_projects(
+    State(state): State<ProjectApiState>,
+) -> WebResult<Json<ProjectsResponse>> {
+    tracing::debug!("Getting project list");
+
+    let pm = state.project_manager.lock().await;
+    let projects = pm.list_projects();
+
+    let response = ProjectsResponse {
+        projects: projects.into_iter().map(Into::into).collect(),
+    };
+
+    Ok(Json(response))
+}
+
+/// 新規プロジェクト作成リクエスト
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectRequest {
+    pub name: String,
+    pub path: Option<String>,
+    pub init_git: Option<bool>,
+    pub description: Option<String>,  // AI Scaffolding用
+    pub project_type: Option<String>, // "web", "cli", "lib", "api", "mobile"
+}
+
+/// 新規プロジェクト作成レスポンス
+#[derive(Debug, Serialize)]
+pub struct CreateProjectResponse {
+    pub path: String,
+    pub status: String,
+}
+
+/// 新規プロジェクト作成
+pub async fn create_project(
+    State(state): State<ProjectApiState>,
+    Json(payload): Json<CreateProjectRequest>,
+) -> WebResult<Json<CreateProjectResponse>> {
+    tracing::info!(name = %payload.name, "Creating new project");
+
+    let mut pm = state.project_manager.lock().await;
+
+    let path = payload.path.map(PathBuf::from).unwrap_or_else(|| {
+        std::env::current_dir().unwrap().join(&payload.name)
+    });
+
+    // Create directory
+    std::fs::create_dir_all(&path)
+        .map_err(|e| WebError::Internal(format!("ディレクトリ作成に失敗しました: {}", e)))?;
+
+    // Initialize git if requested
+    if payload.init_git.unwrap_or(true) {
+        std::process::Command::new("git")
+            .args(&["init"])
+            .current_dir(&path)
+            .output()
+            .map_err(|e| WebError::Internal(format!("Git初期化に失敗しました: {}", e)))?;
+    }
+
+    // Add to project manager
+    pm.add_or_update_project(path.clone())
+        .map_err(|e| WebError::Internal(format!("プロジェクト登録に失敗しました: {}", e)))?;
+
+    let project_path = path;
+
+    // AI Scaffolding
+    if let Some(description) = payload.description {
+        if !description.trim().is_empty() {
+            tracing::info!("Generating project structure with AI scaffolding");
+
+            let project_type = payload.project_type
+                .as_deref()
+                .and_then(crate::berrycode::scaffolding::ProjectType::from_str)
+                .unwrap_or(crate::berrycode::scaffolding::ProjectType::WebApp);
+
+            // Get API key from environment
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("CLAUDE_API_KEY"))
+                .unwrap_or_default();
+
+            if !api_key.is_empty() {
+                match crate::berrycode::scaffolding::generate_project_structure(
+                    &description,
+                    &payload.name,
+                    project_type,
+                    &api_key,
+                ).await {
+                    Ok(scaffolding) => {
+                        tracing::info!("AI scaffolding generated {} files", scaffolding.files.len());
+
+                        // Create files
+                        for file in scaffolding.files {
+                            let file_path = project_path.join(&file.path);
+
+                            // Create parent directories
+                            if let Some(parent) = file_path.parent() {
+                                std::fs::create_dir_all(parent)
+                                    .map_err(|e| WebError::Internal(format!("Failed to create directory: {}", e)))?;
+                            }
+
+                            // Write file content
+                            std::fs::write(&file_path, &file.content)
+                                .map_err(|e| WebError::Internal(format!("Failed to create file {}: {}", file.path, e)))?;
+
+                            tracing::debug!("Created file: {}", file.path);
+                        }
+
+                        tracing::info!("AI scaffolding completed successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!("AI scaffolding failed: {}", e);
+                        // Continue without scaffolding - project folder already created
+                    }
+                }
+            } else {
+                tracing::warn!("ANTHROPIC_API_KEY not set, skipping AI scaffolding");
+            }
+        }
+    }
+
+    Ok(Json(CreateProjectResponse {
+        path: project_path.to_string_lossy().to_string(),
+        status: "created".to_string(),
+    }))
+}
+
+/// クローンリクエスト
+#[derive(Debug, Deserialize)]
+pub struct CloneRepositoryRequest {
+    pub url: String,
+    pub dest: Option<String>,
+}
+
+/// クローンレスポンス
+#[derive(Debug, Serialize)]
+pub struct CloneRepositoryResponse {
+    pub path: String,
+    pub status: String,
+}
+
+/// リポジトリクローン
+pub async fn clone_repository(
+    State(state): State<ProjectApiState>,
+    Json(payload): Json<CloneRepositoryRequest>,
+) -> WebResult<Json<CloneRepositoryResponse>> {
+    tracing::info!(url = %payload.url, "Cloning repository");
+
+    let mut pm = state.project_manager.lock().await;
+
+    // Extract repository name from URL
+    let repo_name = payload.url
+        .split('/')
+        .last()
+        .and_then(|s| s.strip_suffix(".git").or(Some(s)))
+        .ok_or_else(|| WebError::BadRequest("Invalid repository URL".to_string()))?;
+
+    let dest = payload.dest
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap().join(repo_name));
+
+    // Clone repository using git
+    let output = std::process::Command::new("git")
+        .args(&["clone", &payload.url, dest.to_str().unwrap()])
+        .output()
+        .map_err(|e| WebError::Internal(format!("Gitクローンに失敗しました: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(WebError::Internal(format!(
+            "Gitクローンに失敗しました: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    // Add to project manager
+    pm.add_or_update_project(dest.clone())
+        .map_err(|e| WebError::Internal(format!("プロジェクト登録に失敗しました: {}", e)))?;
+
+    let project_path = dest;
+
+    Ok(Json(CloneRepositoryResponse {
+        path: project_path.to_string_lossy().to_string(),
+        status: "cloned".to_string(),
+    }))
+}
+
+/// プロジェクト削除リクエスト
+#[derive(Debug, Deserialize)]
+pub struct DeleteProjectRequest {
+    pub path: String,
+}
+
+/// プロジェクト削除レスポンス
+#[derive(Debug, Serialize)]
+pub struct DeleteProjectResponse {
+    pub status: String,
+}
+
+/// 既存プロジェクト追加
+#[derive(Debug, Deserialize)]
+pub struct AddProjectRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddProjectResponse {
+    pub path: String,
+    pub status: String,
+}
+
+pub async fn add_project(
+    State(state): State<ProjectApiState>,
+    Json(payload): Json<AddProjectRequest>,
+) -> WebResult<Json<AddProjectResponse>> {
+    tracing::info!(path = %payload.path, "Adding existing project");
+
+    let mut pm = state.project_manager.lock().await;
+    let path = PathBuf::from(&payload.path);
+
+    // パスの存在確認
+    if !path.exists() {
+        return Err(WebError::NotFound(format!("フォルダが見つかりません: {}", payload.path)));
+    }
+
+    // ディレクトリか確認
+    if !path.is_dir() {
+        return Err(WebError::BadRequest(format!("指定されたパスはディレクトリではありません: {}", payload.path)));
+    }
+
+    pm.add_or_update_project(path.clone())
+        .map_err(|e| WebError::Internal(format!("プロジェクトの登録に失敗しました: {}", e)))?;
+
+    Ok(Json(AddProjectResponse {
+        path: path.to_string_lossy().to_string(),
+        status: "added".to_string(),
+    }))
+}
+
+/// プロジェクト削除（履歴から削除）
+pub async fn delete_project(
+    State(state): State<ProjectApiState>,
+    axum::extract::Query(params): axum::extract::Query<DeleteProjectRequest>,
+) -> WebResult<Json<DeleteProjectResponse>> {
+    tracing::info!(path = %params.path, "Deleting project from history");
+
+    let mut pm = state.project_manager.lock().await;
+    let path = PathBuf::from(&params.path);
+
+    pm.remove_project(&path)
+        .map_err(|e| WebError::Internal(format!("プロジェクト削除に失敗しました: {}", e)))?;
+
+    Ok(Json(DeleteProjectResponse {
+        status: "deleted".to_string(),
+    }))
+}

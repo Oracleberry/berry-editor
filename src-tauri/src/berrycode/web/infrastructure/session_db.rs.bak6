@@ -1,0 +1,143 @@
+//! Session management with database backend
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use uuid::Uuid;
+
+use super::database::Database;
+
+/// Session store with database backend
+#[derive(Clone)]
+pub struct SessionDbStore {
+    db: Database,
+}
+
+impl SessionDbStore {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+
+    /// Create a new session
+    pub async fn create_session(&self, project_root: PathBuf) -> anyhow::Result<String> {
+        let session_id = Uuid::new_v4().to_string();
+        self.db.create_session(&session_id, &project_root).await?;
+
+        // Add to recent projects
+        if let Some(path_str) = project_root.to_str() {
+            let _ = self.db.add_recent_project(path_str).await;
+        }
+
+        Ok(session_id)
+    }
+
+    /// Get session by ID
+    pub async fn get_session(&self, session_id: &str) -> Option<Session> {
+        let data = self.db.get_session(session_id).await.ok()??;
+        let chat_history = self
+            .db
+            .get_chat_history(session_id)
+            .await
+            .ok()
+            .unwrap_or_default();
+
+        Some(Session {
+            id: data.id,
+            project_root: data.project_root,
+            files: vec![], // Files not stored in DB
+            chat_history: chat_history
+                .into_iter()
+                .map(|m| ChatMessage {
+                    role: m.role,
+                    content: m.content,
+                })
+                .collect(),
+            created_at: data.created_at,
+            last_activity: data.last_activity,
+            shared: data.shared,
+            share_url: data.share_url,
+        })
+    }
+
+    /// Update session activity
+    pub async fn update_activity(&self, session_id: &str) -> anyhow::Result<()> {
+        self.db.update_session_activity(session_id).await
+    }
+
+    /// Add chat message
+    pub async fn add_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.db.add_chat_message(session_id, role, content).await
+    }
+
+    /// Enable sharing
+    pub async fn enable_sharing(&self, session_id: &str) -> anyhow::Result<String> {
+        let share_url = format!("/share/{}", session_id);
+        self.db.enable_sharing(session_id, &share_url).await?;
+        Ok(share_url)
+    }
+
+    /// Get recent projects
+    pub async fn get_recent_projects(&self, limit: i32) -> anyhow::Result<Vec<super::database::RecentProject>> {
+        self.db.get_recent_projects(limit).await
+    }
+
+    /// Get AI model for a specific task type
+    pub async fn get_model_for_task(
+        &self,
+        session_id: &str,
+        task_type: Option<&str>,
+    ) -> anyhow::Result<String> {
+        use crate::berrycode::berrycode::web::model_settings_api::default_model_for_task_str;
+
+        // If no task type specified, return default global model
+        let task_type_str = match task_type {
+            Some(t) => t,
+            None => {
+                // Return global default from env or fallback
+                return Ok(std::env::var("BERRYCODE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()));
+            }
+        };
+
+        // Try to get from database
+        if let Ok(Some(model)) = self.db.get_model_for_task(session_id, task_type_str).await {
+            if !model.is_empty() {
+                return Ok(model);
+            }
+        }
+
+        // Fallback to default for task type
+        Ok(default_model_for_task_str(task_type_str))
+    }
+
+    /// Health check for readiness probe
+    pub async fn health_check(&self) -> anyhow::Result<()> {
+        // Try a simple database query to check if DB is accessible
+        sqlx::query("SELECT 1")
+            .fetch_one(self.db.pool())
+            .await?;
+        Ok(())
+    }
+}
+
+/// Session data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub project_root: PathBuf,
+    pub files: Vec<PathBuf>,
+    pub chat_history: Vec<ChatMessage>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_activity: chrono::DateTime<chrono::Utc>,
+    pub shared: bool,
+    pub share_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}

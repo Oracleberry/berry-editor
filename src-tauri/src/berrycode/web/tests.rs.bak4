@@ -1,0 +1,323 @@
+//! Comprehensive test suite for BerryCode Web module
+
+#[cfg(test)]
+mod error_tests {
+    use crate::berrycode::web::error::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn test_auth_error_display() {
+        let err = AuthError::InvalidCredentials;
+        assert_eq!(err.to_string(), "Invalid username or password");
+
+        let err = AuthError::TokenExpired;
+        assert_eq!(err.to_string(), "Authentication token has expired");
+
+        let err = AuthError::UserNotFound;
+        assert_eq!(err.to_string(), "User not found");
+    }
+
+    #[test]
+    fn test_file_error_display() {
+        let err = FileError::NotFound("/path/to/file".to_string());
+        assert_eq!(err.to_string(), "File not found: /path/to/file");
+
+        let err = FileError::PermissionDenied("/path/to/file".to_string());
+        assert_eq!(err.to_string(), "Permission denied: /path/to/file");
+
+        let err = FileError::PathTraversal("../../etc/passwd".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Path traversal attempt detected: ../../etc/passwd"
+        );
+    }
+
+    #[test]
+    fn test_validation_error_display() {
+        let err = ValidationError::MissingField("username".to_string());
+        assert_eq!(err.to_string(), "Missing required field: username");
+
+        let err = ValidationError::InvalidFormat {
+            field: "email".to_string(),
+            reason: "Invalid email format".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Invalid format for field 'email': Invalid email format"
+        );
+
+        let err = ValidationError::InvalidLength {
+            field: "password".to_string(),
+            min: 8,
+            max: 128,
+            actual: 3,
+        };
+        assert_eq!(
+            err.to_string(),
+            "Field 'password' length 3 is invalid (expected 8 to 128)"
+        );
+    }
+
+    #[test]
+    fn test_web_error_status_codes() {
+        // Auth errors
+        let err = WebError::Auth(AuthError::InvalidCredentials);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // File errors
+        let err = WebError::File(FileError::NotFound("file.txt".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let err = WebError::File(FileError::PathTraversal("../file".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Validation errors
+        let err = WebError::Validation(ValidationError::MissingField("field".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Terminal errors
+        let err = WebError::Terminal(TerminalError::Timeout);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn test_error_helpers() {
+        // Auth error helpers
+        let err = invalid_credentials();
+        assert!(matches!(err, WebError::Auth(AuthError::InvalidCredentials)));
+
+        let err = token_expired();
+        assert!(matches!(err, WebError::Auth(AuthError::TokenExpired)));
+
+        let err = user_not_found();
+        assert!(matches!(err, WebError::Auth(AuthError::UserNotFound)));
+
+        // File error helpers
+        let err = file_not_found("test.txt");
+        assert!(
+            matches!(err, WebError::File(FileError::NotFound(ref path)) if path == "test.txt")
+        );
+
+        let err = path_traversal("../etc/passwd");
+        assert!(
+            matches!(err, WebError::File(FileError::PathTraversal(ref path)) if path == "../etc/passwd")
+        );
+
+        // Session error helpers
+        let err = session_not_found("session123");
+        assert!(
+            matches!(err, WebError::Session(SessionError::NotFound(ref id)) if id == "session123")
+        );
+
+        // Validation error helpers
+        let err = missing_field("username");
+        assert!(
+            matches!(err, WebError::Validation(ValidationError::MissingField(ref field)) if field == "username")
+        );
+    }
+
+    #[test]
+    fn test_error_conversion() {
+        // std::io::Error to WebError
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let web_err: WebError = io_err.into();
+        assert!(matches!(web_err, WebError::File(FileError::IoError(_))));
+
+        // anyhow::Error to WebError
+        let anyhow_err = anyhow::Error::msg("database error");
+        let web_err: WebError = anyhow_err.into();
+        assert!(matches!(web_err, WebError::Database(_)));
+    }
+}
+
+#[cfg(all(test, feature = "web"))]
+mod auth_tests {
+    use crate::berrycode::web::auth::*;
+    use crate::berrycode::web::error::*;
+
+    #[test]
+    fn test_auth_state_creation() {
+        let auth_state = AuthState::new();
+        // Verify default admin user exists
+        assert!(auth_state.verify_password("admin", "admin"));
+        assert!(!auth_state.verify_password("admin", "wrong_password"));
+        assert!(!auth_state.verify_password("nonexistent", "password"));
+    }
+
+    #[test]
+    fn test_session_creation_and_verification() {
+        let auth_state = AuthState::new();
+        let token = auth_state.create_session("test_user".to_string());
+
+        // Verify session
+        let username = auth_state.verify_session(&token);
+        assert_eq!(username, Some("test_user".to_string()));
+
+        // Verify invalid session
+        let invalid_username = auth_state.verify_session("invalid_token");
+        assert_eq!(invalid_username, None);
+    }
+
+    #[test]
+    fn test_session_destruction() {
+        let auth_state = AuthState::new();
+        let token = auth_state.create_session("test_user".to_string());
+
+        // Verify session exists
+        assert_eq!(
+            auth_state.verify_session(&token),
+            Some("test_user".to_string())
+        );
+
+        // Destroy session
+        auth_state.destroy_session(&token);
+
+        // Verify session no longer exists
+        assert_eq!(auth_state.verify_session(&token), None);
+    }
+
+    #[test]
+    fn test_password_verification() {
+        let auth_state = AuthState::new();
+
+        // Test verification with correct password
+        assert!(auth_state.verify_password("admin", "admin"));
+
+        // Test verification with incorrect password
+        assert!(!auth_state.verify_password("admin", "wrong_password"));
+
+        // Test verification with non-existent user
+        assert!(!auth_state.verify_password("nonexistent_user", "any_password"));
+    }
+}
+
+#[cfg(all(test, feature = "web"))]
+mod file_api_tests {
+    use crate::berrycode::web::file_api::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_file_node_structure() {
+        let node = FileNode {
+            name: "test.rs".to_string(),
+            path: "src/test.rs".to_string(),
+            is_dir: false,
+            children: None,
+            git_status: None,
+        };
+
+        assert_eq!(node.name, "test.rs");
+        assert_eq!(node.path, "src/test.rs");
+        assert!(!node.is_dir);
+        assert!(node.children.is_none());
+
+        let dir_node = FileNode {
+            name: "src".to_string(),
+            path: "src".to_string(),
+            is_dir: true,
+            children: Some(vec![node]),
+            git_status: None,
+        };
+
+        assert!(dir_node.is_dir);
+        assert!(dir_node.children.is_some());
+        assert_eq!(dir_node.children.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_file_content_structure() {
+        let content = FileContent {
+            path: "test.rs".to_string(),
+            content: "fn main() {}".to_string(),
+            language: Some("rust".to_string()),
+        };
+
+        assert_eq!(content.path, "test.rs");
+        assert_eq!(content.content, "fn main() {}");
+        assert_eq!(content.language, Some("rust".to_string()));
+    }
+
+    #[test]
+    fn test_file_save_request() {
+        let request = FileSaveRequest {
+            content: "test content".to_string(),
+        };
+
+        assert_eq!(request.content, "test content");
+    }
+}
+
+#[cfg(all(test, feature = "web"))]
+mod integration_tests {
+    use crate::berrycode::web::error::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn test_comprehensive_error_coverage() {
+        // Test all error types have proper status codes
+        let errors = vec![
+            (
+                WebError::Auth(AuthError::InvalidCredentials),
+                axum::http::StatusCode::UNAUTHORIZED,
+            ),
+            (
+                WebError::Auth(AuthError::InsufficientPermissions),
+                axum::http::StatusCode::FORBIDDEN,
+            ),
+            (
+                WebError::File(FileError::NotFound("test".to_string())),
+                axum::http::StatusCode::NOT_FOUND,
+            ),
+            (
+                WebError::File(FileError::PathTraversal("test".to_string())),
+                axum::http::StatusCode::FORBIDDEN,
+            ),
+            (
+                WebError::Session(SessionError::NotFound("test".to_string())),
+                axum::http::StatusCode::NOT_FOUND,
+            ),
+            (
+                WebError::Terminal(TerminalError::Timeout),
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+            ),
+            (
+                WebError::Git(GitError::RepoNotFound),
+                axum::http::StatusCode::NOT_FOUND,
+            ),
+        ];
+
+        for (error, expected_status) in errors {
+            let response = error.into_response();
+            assert_eq!(
+                response.status(),
+                expected_status,
+                "Status code mismatch for error"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_type_consistency() {
+        // Verify error types are properly categorized
+        use crate::berrycode::web::error::*;
+
+        let auth_err = WebError::Auth(AuthError::InvalidCredentials);
+        assert!(matches!(auth_err, WebError::Auth(_)));
+
+        let file_err = WebError::File(FileError::NotFound("test".to_string()));
+        assert!(matches!(file_err, WebError::File(_)));
+
+        let session_err = WebError::Session(SessionError::NotFound("test".to_string()));
+        assert!(matches!(session_err, WebError::Session(_)));
+
+        let validation_err =
+            WebError::Validation(ValidationError::MissingField("test".to_string()));
+        assert!(matches!(validation_err, WebError::Validation(_)));
+    }
+}

@@ -1,0 +1,98 @@
+//! Terminal API for web terminal
+
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::process::{Command, Stdio};
+
+use crate::berrycode::berrycode::web::infrastructure::session_db::SessionDbStore;
+
+/// Terminal API state
+#[derive(Clone)]
+pub struct TerminalApiState {
+    pub session_store: SessionDbStore,
+}
+
+/// Terminal command request
+#[derive(Debug, Deserialize)]
+pub struct TerminalCommandRequest {
+    pub command: String,
+    pub cwd: Option<String>,
+}
+
+/// Terminal command response
+#[derive(Debug, Serialize)]
+pub struct TerminalCommandResponse {
+    pub output: String,
+    pub exit_code: i32,
+}
+
+/// Execute terminal command
+pub async fn execute_command(
+    Query(session_query): Query<crate::berrycode::web::api::files::file_api::ListFilesQuery>,
+    State(state): State<TerminalApiState>,
+    Json(payload): Json<TerminalCommandRequest>,
+) -> Result<Json<TerminalCommandResponse>, StatusCode> {
+    // Get session
+    let session = state
+        .session_store
+        .get_session(&session_query.session_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let cwd = if let Some(ref custom_cwd) = payload.cwd {
+        session.project_root.join(custom_cwd)
+    } else {
+        session.project_root.clone()
+    };
+
+    // Security: ensure cwd is within project root
+    if !cwd.starts_with(&session.project_root) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Parse command (simple shell parsing)
+    let parts: Vec<&str> = payload.command.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let program = parts[0];
+    let args = &parts[1..];
+
+    // Execute command
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let combined_output = if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{}\n{}", stdout, stderr)
+    };
+
+    Ok(Json(TerminalCommandResponse {
+        output: combined_output,
+        exit_code: output.status.code().unwrap_or(-1),
+    }))
+}
+
+/// Get command history
+pub async fn get_command_history(
+    Query(_session_query): Query<crate::berrycode::web::api::files::file_api::ListFilesQuery>,
+    State(_state): State<TerminalApiState>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    // Placeholder: Return empty history
+    // In a real implementation, this would be stored per-session
+    Ok(Json(vec![]))
+}

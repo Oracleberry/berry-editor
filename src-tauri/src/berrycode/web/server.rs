@@ -1,0 +1,1288 @@
+//! Axum web server
+
+use axum::{
+    middleware,
+    routing::{delete, get, post},
+    Router,
+};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tera::Tera;
+use tokio::sync::Mutex;
+use tower_http::{
+    services::ServeDir,
+    trace::{DefaultMakeSpan, TraceLayer},
+};
+
+// Infrastructure imports
+use super::infrastructure::{
+    auth_db::{login_db, logout_db, register, verify_auth_db, AuthDbState},
+    auth_middleware::{require_auth, AuthState},
+    database::Database,
+    middleware::{error_handler, request_logging, security_headers, nocache_static_files},
+    session_db::SessionDbStore,
+    websocket::{ws_handler, WsState},
+};
+
+// API imports - Files
+use super::api::files::{
+    file_api::{get_file_tree, read_file, write_file, render_markdown, delete_file, apply_edits, FileApiState},
+    search_api::{search_definition, search_file_names, search_files, SearchApiState},
+};
+
+// API imports - Editor
+use super::api::editor::{
+    editor_api::{editor_api_router, EditorApiState},
+    lsp_api::{
+        lsp_goto_definition, lsp_find_references, lsp_rename, lsp_hover, lsp_diagnostics,
+        lsp_code_actions, lsp_completion, lsp_signature_help, lsp_document_symbols, LspApiState
+    },
+    ai_completion_api::{ai_complete, AiCompletionState},
+};
+
+// API imports - Git
+use super::api::git::{
+    git_api::{
+        create_commit, get_git_diff, get_git_status, stage_all_files,
+        get_branches, switch_branch, create_branch, get_commit_history,
+        stage_file, unstage_file, git_push, git_pull, git_fetch,
+        delete_branch, merge_branch, stash_push, stash_list, stash_apply, stash_drop,
+        get_file_history, get_tags, create_tag, delete_tag, get_commit_graph,
+        git_rebase, git_cherry_pick, get_detailed_diff, git_reset, get_blame,
+        compare_branches, get_reflog, get_remotes, add_remote, remove_remote,
+        get_submodules, add_submodule, search_commits, get_bisect_status,
+        create_patch, apply_patch, get_worktrees, gitflow_init,
+        gitflow_feature_start, gitflow_feature_finish,
+        bisect_start, bisect_bad, bisect_good, bisect_skip, bisect_reset, bisect_log,
+        get_file_at_commit,
+        // Merge conflict resolution
+        get_conflicted_files, resolve_conflict, accept_conflict_version, get_three_way_merge,
+        GitApiState
+    },
+    github_api::{clone_repository, fetch_github_repos, github_auth_callback, github_auth_redirect, search_github_repos, GitHubApiState},
+};
+
+// API imports - Terminal
+use super::api::terminal::{
+    terminal_api::{execute_command, get_command_history, TerminalApiState},
+    persistent_terminal_api::{
+        change_directory, execute_persistent_command, get_current_directory,
+        get_persistent_command_history, kill_background_process, list_background_processes,
+        PersistentTerminalApiState,
+    },
+    tasks_api::{run_task, get_task_output, list_tasks, TaskRunnerState},
+};
+
+// API imports - Docker
+use super::api::docker::docker_api::{
+    list_containers, start_container, stop_container, restart_container, remove_container,
+    get_container_logs, get_container_stats, list_images, remove_image, pull_image,
+    list_networks, list_volumes, get_docker_info, DockerApiState,
+};
+
+// API imports - BerryChat
+use super::api::berrychat_api::{
+    list_channels, create_channel, get_channel_messages, send_message, add_reaction,
+    get_thread, berrychat_websocket_handler, BerryChatApiState, list_users, update_presence,
+    send_thread_reply, search_messages,
+};
+
+// API imports - Collaboration
+use super::api::collaboration::{
+    webrtc_api::{
+        start_call, join_call, end_call, leave_call, get_active_calls, webrtc_signaling_handler,
+        WebRTCState,
+    },
+    virtual_office_api::{
+        get_space, list_spaces, get_objects, get_active_users, virtual_office_handler,
+        VirtualOfficeState,
+    },
+    collaboration_api::{
+        create_collaboration_session, join_collaboration_session, get_collaboration_session,
+        leave_collaboration_session, change_collaboration_role, collaboration_ws_handler,
+        CollaborationApiState,
+    },
+};
+
+// API imports - Workflows
+use super::api::workflows::workflow_api::{
+    cancel_workflow, create_trigger, create_workflow_template, delete_trigger, delete_workflow_template,
+    execute_trigger, get_execution_log, get_flow_visualization, get_metrics_dashboard, get_performance_analysis,
+    get_presets, get_template_version, get_workflow_status, get_workflow_template, list_snapshots,
+    list_template_versions, list_triggers, list_workflow_templates, pause_workflow, restore_template_version,
+    resume_workflow, rollback_to_snapshot, search_execution_logs, start_workflow, update_workflow_template,
+    validate_flow, webhook_receiver, github_webhook_receiver, workflow_progress_ws, WorkflowApiState,
+    // BerryFlow Visual Workflow endpoints
+    execute_visual_workflow, save_visual_workflow, load_visual_workflow,
+    list_visual_workflows, get_workflow_icons, get_node_types,
+};
+
+// API imports - Project
+use super::api::project::project_api::{add_project, clone_repository as project_clone, create_project, delete_project, get_projects, ProjectApiState};
+
+// API imports - Settings
+use super::api::settings::{
+    settings_api::{load_settings, save_settings, SettingsApiState},
+    model_settings_api::{
+        get_model_settings, save_model_settings, list_available_models,
+        ModelSettingsApiState,
+    },
+    api_keys_api::{
+        get_api_keys, save_api_keys, delete_api_key, delete_all_api_keys,
+        ApiKeysApiState,
+    },
+};
+
+// API imports - Extensions
+use super::api::extensions::extensions_api::{
+    list_extensions, get_extension, get_extension_source, install_extension,
+    uninstall_extension, toggle_extension, extension_api_call,
+    ExtensionsApiState,
+};
+
+// API imports - Remote
+use super::api::remote::remote_api::{
+    connect, disconnect, list_connections, get_file_tree as get_remote_file_tree,
+    read_file as read_remote_file, write_file as write_remote_file,
+    execute_command as execute_remote_command, test_connection,
+    remote_terminal_ws, start_port_forward, RemoteApiState,
+};
+
+// API imports - Test
+use super::api::test::test_runner_api::{run_tests, TestRunnerState};
+
+// API imports - Voice
+#[cfg(feature = "voice")]
+use super::api::voice::voice_api::{transcribe_audio, health_check as voice_health_check, VoiceApiState};
+
+use super::api::voice::clipboard_api::{get_clipboard, check_clipboard, save_to_clipboard, ClipboardApiState};
+
+// Other imports
+use super::handlers::{berry_editor_page, chat_page, create_session, dashboard_page, devin_page, enable_sharing, favicon, flow_editor, get_current_dir, get_recent_projects, get_session, health_check, readiness_check, index, landing_page, login_page, lsp_test_page, register_page, shared_session, test_page, workflow_history, workflows, HandlerState};
+use crate::berrycode::trigger::TriggerManager;
+
+/// Run the web server
+pub async fn run_server(port: u16, templates_dir: Option<PathBuf>, database_url: String) -> anyhow::Result<()> {
+    // Initialize database
+    tracing::info!("Initializing database...");
+    let db = Database::new(&database_url).await?;
+    tracing::info!("Database initialized successfully");
+
+    // Initialize session store with database
+    let session_store = SessionDbStore::new(db.clone());
+
+    // Initialize auth state with database
+    let auth_state = AuthDbState { db: db.clone() };
+
+    // Initialize auth middleware state
+    let auth_middleware_state = AuthState { db: db.clone() };
+
+    // Load templates
+    let template_path = templates_dir
+        .unwrap_or_else(|| PathBuf::from("templates"))
+        .join("**/*");
+
+    let mut tera = Tera::new(template_path.to_str().unwrap())?;
+    let template_path_str = template_path.to_str().unwrap().to_string();
+
+    // Enable autoreload in debug mode for hot reloading
+    #[cfg(debug_assertions)]
+    {
+        tera.autoescape_on(vec![".html", ".htm", ".xml"]);
+        println!("🔥 Hot reload enabled for templates in debug mode");
+    }
+
+    // Create states
+    let handler_state = HandlerState {
+        session_store: session_store.clone(),
+        tera,
+        #[cfg(debug_assertions)]
+        template_path: template_path_str,
+    };
+
+    let ws_state = WsState {
+        session_store: session_store.clone(),
+    };
+
+    let file_api_state = FileApiState {
+        session_store: session_store.clone(),
+    };
+
+    let terminal_api_state = TerminalApiState {
+        session_store: session_store.clone(),
+    };
+
+    let persistent_terminal_api_state = PersistentTerminalApiState::new(session_store.clone());
+
+    let git_api_state = GitApiState {
+        session_store: session_store.clone(),
+    };
+
+    let search_api_state = SearchApiState {
+        session_store: session_store.clone(),
+    };
+
+    let editor_api_state = EditorApiState::new();
+
+    // Initialize Database API state (for external DB connections)
+    let database_api_state = crate::berrycode::web::api::database::database_api::DatabaseState::new();
+
+    // Initialize LSP API state
+    let lsp_api_state = LspApiState::new();
+
+    // Initialize AI Completion state
+    let ai_completion_state = Arc::new(AiCompletionState::new(db.clone()));
+
+    // Initialize Test Runner state
+    let test_runner_state = Arc::new(Mutex::new(TestRunnerState::new()));
+
+    // Initialize Task Runner state
+    let task_runner_state = TaskRunnerState::new();
+
+    // Initialize Docker API state
+    // ✅ FIX: Docker is optional - app will start without it
+    let docker_api_state = match DockerApiState::new() {
+        Ok(state) => {
+            tracing::info!("✅ Docker API initialized successfully");
+            state
+        },
+        Err(e) => {
+            tracing::warn!("⚠️  Docker daemon not running: {}. Docker features will be disabled.", e);
+            tracing::warn!("💡 To enable Docker features, start Docker Desktop and restart the application.");
+            // Use dummy state - Docker features won't work but app will start
+            DockerApiState::new_dummy()
+        }
+    };
+
+    // Initialize Slack API state
+    let slack_api_state = BerryChatApiState::new(db.pool().clone());
+
+    // Initialize WebRTC API state
+    let webrtc_api_state = WebRTCState::new(db.pool().clone());
+
+    // Initialize Virtual Office API state
+    let virtual_office_state = VirtualOfficeState::new(db.pool().clone());
+
+    // Initialize Model Settings API state
+    let model_settings_api_state = ModelSettingsApiState { db: db.clone() };
+
+    // Initialize API Keys API state
+    let api_keys_api_state = ApiKeysApiState { db: db.clone() };
+
+    // Initialize Collaboration API state
+    let collaboration_api_state = CollaborationApiState::new();
+
+    // Initialize Extensions API state
+    let extensions_dir = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("extensions");
+    let extensions_api_state = ExtensionsApiState::new(session_store.clone(), extensions_dir);
+    // Load extensions from disk
+    if let Err(e) = extensions_api_state.load_extensions().await {
+        tracing::warn!("Failed to load extensions: {}", e);
+    }
+
+    // Initialize Remote API state
+    let remote_api_state = RemoteApiState {
+        connection_manager: Arc::new(crate::berrycode::remote::SshConnectionManager::new()),
+        database: db.clone(),
+    };
+
+    // Initialize Project Manager
+    let project_manager = crate::berrycode::project_manager::ProjectManager::new()?;
+    let project_api_state = ProjectApiState {
+        project_manager: std::sync::Arc::new(tokio::sync::Mutex::new(project_manager)),
+    };
+
+    // Initialize Clipboard API state
+    let clipboard_api_state = ClipboardApiState::new()?;
+
+    // Initialize Settings API state
+    let settings_api_state = SettingsApiState::new();
+
+    // Initialize Voice API state (if feature is enabled)
+    #[cfg(feature = "voice")]
+    let voice_api_state = {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .unwrap_or_else(|_| {
+                tracing::warn!("OPENAI_API_KEY not set, voice transcription will not work");
+                String::new()
+            });
+        VoiceApiState::new(api_key)?
+    };
+
+    // Initialize Trigger Manager
+    let mut trigger_manager = TriggerManager::new();
+    trigger_manager.init().await?;
+
+    let trigger_manager = std::sync::Arc::new(tokio::sync::Mutex::new(trigger_manager));
+
+    // Initialize Notifier from environment variable
+    let slack_webhook = std::env::var("SLACK_WEBHOOK_URL").ok();
+    let notifier = crate::berrycode::notifications::Notifier::new(slack_webhook);
+
+    // Initialize Workflow API state
+    let workflow_api_state = WorkflowApiState {
+        session_store: session_store.clone(),
+        db: db.clone(),
+        running_pipelines: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        progress_broadcasters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        pause_flags: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        resume_signals: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        cancel_flags: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        trigger_manager: trigger_manager.clone(),
+        notifier,
+    };
+
+    // Set up workflow executor for trigger manager
+    {
+        let db_clone = db.clone();
+        let running_pipelines = workflow_api_state.running_pipelines.clone();
+        let progress_broadcasters = workflow_api_state.progress_broadcasters.clone();
+        let pause_flags = workflow_api_state.pause_flags.clone();
+        let resume_signals = workflow_api_state.resume_signals.clone();
+        let cancel_flags = workflow_api_state.cancel_flags.clone();
+
+        let executor: crate::berrycode::trigger::WorkflowExecutor = std::sync::Arc::new(move |pipeline_id: String, project_root: std::path::PathBuf| {
+            let db = db_clone.clone();
+            let running_pipelines = running_pipelines.clone();
+            let progress_broadcasters = progress_broadcasters.clone();
+            let pause_flags = pause_flags.clone();
+            let resume_signals = resume_signals.clone();
+            let cancel_flags = cancel_flags.clone();
+
+            Box::pin(async move {
+                tracing::info!("Trigger executing workflow: {} at {:?}", pipeline_id, project_root);
+
+                // Create a temporary session for triggered workflows
+                let session_id = format!("trigger-{}", uuid::Uuid::new_v4());
+
+                // パイプラインを取得（プリセットまたはカスタム）
+                let pipeline = match pipeline_id.as_str() {
+                    "tdd-loop" => crate::berrycode::pipeline::create_tdd_loop_preset(),
+                    "full-dev" => crate::berrycode::pipeline::create_full_dev_pipeline(),
+                    _ => {
+                        // カスタムテンプレートをDBから取得
+                        match db.get_workflow_template(&pipeline_id).await {
+                            Ok(Some(template)) => {
+                                match serde_json::from_str::<crate::berrycode::pipeline::Pipeline>(&template.definition) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::error!("Failed to parse workflow template {}: {}", pipeline_id, e);
+                                        return;
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::error!("Workflow template not found: {}", pipeline_id);
+                                return;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to fetch workflow template {}: {}", pipeline_id, e);
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                let execution_id = format!("{}-{}", session_id, uuid::Uuid::new_v4());
+                let pipeline_name = pipeline.name.clone();
+
+                // 実行ログをDBに記録（開始）
+                if let Err(e) = db.save_workflow_execution(
+                    &execution_id,
+                    &session_id,
+                    &pipeline_id,
+                    &pipeline_name,
+                    "running",
+                    None,
+                    None,
+                ).await {
+                    tracing::error!("Failed to save workflow execution start: {}", e);
+                }
+
+                // 進捗ブロードキャスターを作成
+                let (progress_tx, _progress_rx) = tokio::sync::broadcast::channel::<crate::berrycode::pipeline::WorkflowProgressMessage>(100);
+
+                // セッションIDで進捗ブロードキャスターを保存
+                progress_broadcasters
+                    .lock()
+                    .await
+                    .insert(session_id.clone(), progress_tx.clone());
+
+                // 再開シグナルチャネルを作成
+                let (resume_tx, _resume_rx) = tokio::sync::mpsc::unbounded_channel();
+                resume_signals
+                    .lock()
+                    .await
+                    .insert(execution_id.clone(), resume_tx);
+
+                // 一時停止フラグを初期化
+                pause_flags
+                    .lock()
+                    .await
+                    .insert(execution_id.clone(), false);
+
+                // キャンセルフラグを初期化
+                cancel_flags
+                    .lock()
+                    .await
+                    .insert(execution_id.clone(), false);
+
+                // mpsc チャネルを作成してbroadcastに変換
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+                // 別タスクでmpscからbroadcastに転送
+                let progress_tx_clone = progress_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = rx.recv().await {
+                        let _ = progress_tx_clone.send(msg);
+                    }
+                });
+
+                // スナップショット保存のコールバックを作成
+                let db_for_snapshot = db.clone();
+                let snapshot_saver: crate::berrycode::pipeline::SnapshotSaver = std::sync::Arc::new(
+                    move |snapshot_id: String, execution_id: String, node_id: String, node_name: String, snapshot_data: String| {
+                        let db = db_for_snapshot.clone();
+                        Box::pin(async move {
+                            db.save_snapshot(&snapshot_id, &execution_id, &node_id, &node_name, &snapshot_data)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("Failed to save snapshot: {}", e))
+                        })
+                    },
+                );
+
+                // バックグラウンドでパイプラインを実行
+                let execution_id_clone = execution_id.clone();
+                let session_id_clone = session_id.clone();
+                let pipeline_id_display = pipeline_id.clone();
+                let project_root_display = project_root.display().to_string();
+                let db_clone = db.clone();
+                let pause_flags_clone = pause_flags.clone();
+                let resume_signals_clone = resume_signals.clone();
+
+                tokio::spawn(async move {
+                    match pipeline.run(
+                        &project_root,
+                        format!("Triggered by automation: {}", pipeline_id),
+                        Some(tx),
+                        Some(execution_id.clone()),
+                        Some(snapshot_saver),
+                        Some(pause_flags),
+                        Some(resume_signals),
+                        Some(cancel_flags),
+                    ).await {
+                        Ok(context) => {
+                            tracing::info!("Triggered pipeline completed successfully: {}", pipeline_name);
+
+                            // 実行ログをDBに更新（成功）
+                            let execution_log = serde_json::to_string(&context.execution_history).unwrap_or_default();
+                            if let Err(e) = db_clone.update_workflow_execution(
+                                &execution_id,
+                                "completed",
+                                Some(chrono::Utc::now()),
+                                context.loop_count,
+                                None,
+                                Some(&execution_log),
+                            ).await {
+                                tracing::error!("Failed to update workflow execution: {}", e);
+                            }
+
+                            running_pipelines
+                                .lock()
+                                .await
+                                .insert(execution_id.clone(), context);
+                        }
+                        Err(e) => {
+                            tracing::error!("Triggered pipeline failed: {}", e);
+
+                            // 実行ログをDBに更新（失敗）
+                            if let Err(update_err) = db_clone.update_workflow_execution(
+                                &execution_id,
+                                "failed",
+                                Some(chrono::Utc::now()),
+                                0,
+                                Some(&e.to_string()),
+                                None,
+                            ).await {
+                                tracing::error!("Failed to update workflow execution: {}", update_err);
+                            }
+                        }
+                    }
+
+                    // 完了したらブロードキャスターを削除
+                    progress_broadcasters.lock().await.remove(&session_id_clone);
+                    // 一時停止関連のクリーンアップ
+                    pause_flags_clone.lock().await.remove(&execution_id_clone);
+                    resume_signals_clone.lock().await.remove(&execution_id_clone);
+                });
+
+                tracing::info!("Started workflow {} for session {} at {}",
+                             pipeline_id_display, session_id, project_root_display);
+            })
+        });
+
+        trigger_manager.lock().await.set_workflow_executor(executor);
+    }
+
+    // Initialize GitHub API state
+    let github_api_state = match GitHubApiState::new(session_store.clone()) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!("Failed to initialize GitHub API: {}. GitHub integration will be disabled.", e);
+            // Continue without GitHub integration
+            return run_server_without_github(
+                port,
+                handler_state,
+                ws_state,
+                file_api_state,
+                terminal_api_state,
+                persistent_terminal_api_state,
+                git_api_state,
+                search_api_state,
+                editor_api_state,
+                database_api_state,
+                lsp_api_state,
+                ai_completion_state,
+                test_runner_state,
+                task_runner_state,
+                project_api_state,
+                workflow_api_state,
+                auth_state,
+                auth_middleware_state.clone(),
+                docker_api_state,
+                slack_api_state,
+                webrtc_api_state,
+                virtual_office_state,
+                model_settings_api_state,
+                api_keys_api_state,
+                extensions_api_state,
+                session_store,
+            )
+            .await;
+        }
+    };
+
+    // Build router
+    let mut app = Router::new()
+        // Health checks (for K8s probes)
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+        // Main pages
+        .route("/", get(landing_page))
+        .route("/app", get(berry_editor_page))
+        .route("/landing", get(landing_page))
+        .route("/dashboard", get(dashboard_page))
+        .route("/lsp-test", get(lsp_test_page))
+        .route("/editor/index.html", get(berry_editor_page))
+        .route("/editor", get(berry_editor_page))
+        .route("/login", get(login_page))
+        .route("/register", get(register_page))
+        .route("/test", get(test_page))
+        .route("/workflows", get(workflows))
+        .route("/workflow/history", get(workflow_history))
+        .route("/workflow/editor", get(flow_editor))
+        .route("/chat/:session_id", get(chat_page))
+        .route("/devin/:session_id", get(devin_page))
+        .route("/share/:session_id", get(shared_session))
+        .route("/favicon.ico", get(favicon))
+        // Session API
+        .route("/api/session", post(create_session))
+        .route("/api/session/:session_id", get(get_session))
+        .route("/api/session/:session_id/share", post(enable_sharing))
+        .route("/api/current-dir", get(get_current_dir))
+        .route("/api/recent-projects", get(get_recent_projects))
+        .with_state(handler_state)
+        // WebSocket
+        .route("/ws/:session_id", get(ws_handler))
+        .with_state(ws_state)
+        // Workflow Progress WebSocket
+        .route("/ws/workflow/:session_id", get(workflow_progress_ws))
+        .with_state(workflow_api_state.clone())
+        // File API
+        .route("/api/files/tree", get(get_file_tree))
+        .route("/api/files/:file_path", get(read_file))
+        .route("/api/files/:file_path", post(write_file))
+        .route("/api/files/preview/markdown", get(render_markdown))
+        .route("/api/files/delete", post(delete_file))
+        .route("/api/files/apply-edits", post(apply_edits))
+        .with_state(file_api_state)
+        // Terminal API (old stateless version - kept for compatibility)
+        .route("/api/terminal/execute", post(execute_command))
+        .route("/api/terminal/history", get(get_command_history))
+        .with_state(terminal_api_state)
+        // Persistent Terminal API (new Devin-style version)
+        .route("/api/persistent-terminal/execute", post(execute_persistent_command))
+        .route("/api/persistent-terminal/history", get(get_persistent_command_history))
+        .route("/api/persistent-terminal/processes", get(list_background_processes))
+        .route("/api/persistent-terminal/kill", post(kill_background_process))
+        .route("/api/persistent-terminal/cd", post(change_directory))
+        .route("/api/persistent-terminal/cwd", get(get_current_directory))
+        .with_state(persistent_terminal_api_state)
+        // Git API
+        .route("/api/git/status", get(get_git_status))
+        .route("/api/git/stage-all", post(stage_all_files))
+        .route("/api/git/commit", post(create_commit))
+        .route("/api/git/diff", get(get_git_diff))
+        .route("/api/git/branches", get(get_branches))
+        .route("/api/git/switch-branch", post(switch_branch))
+        .route("/api/git/create-branch", post(create_branch))
+        .route("/api/git/history", get(get_commit_history))
+        .route("/api/git/stage-file", post(stage_file))
+        .route("/api/git/unstage-file", post(unstage_file))
+        .route("/api/git/push", post(git_push))
+        .route("/api/git/pull", post(git_pull))
+        .route("/api/git/fetch", post(git_fetch))
+        .route("/api/git/delete-branch", post(delete_branch))
+        .route("/api/git/merge-branch", post(merge_branch))
+        .route("/api/git/stash-push", post(stash_push))
+        .route("/api/git/stash-list", get(stash_list))
+        .route("/api/git/stash-apply", post(stash_apply))
+        .route("/api/git/stash-drop", post(stash_drop))
+        .route("/api/git/file-history", get(get_file_history))
+        .route("/api/git/tags", get(get_tags))
+        .route("/api/git/create-tag", post(create_tag))
+        .route("/api/git/delete-tag", post(delete_tag))
+        .route("/api/git/commit-graph", get(get_commit_graph))
+        .route("/api/git/rebase", post(git_rebase))
+        .route("/api/git/cherry-pick", post(git_cherry_pick))
+        .route("/api/git/detailed-diff", get(get_detailed_diff))
+        .route("/api/git/reset", post(git_reset))
+        .route("/api/git/blame", get(get_blame))
+        .route("/api/git/compare-branches", get(compare_branches))
+        .route("/api/git/reflog", get(get_reflog))
+        .route("/api/git/remotes", get(get_remotes))
+        .route("/api/git/add-remote", post(add_remote))
+        .route("/api/git/remove-remote", post(remove_remote))
+        .route("/api/git/submodules", get(get_submodules))
+        .route("/api/git/add-submodule", post(add_submodule))
+        .route("/api/git/search-commits", get(search_commits))
+        .route("/api/git/bisect-status", get(get_bisect_status))
+        .route("/api/git/bisect/start", post(bisect_start))
+        .route("/api/git/bisect/bad", post(bisect_bad))
+        .route("/api/git/bisect/good", post(bisect_good))
+        .route("/api/git/bisect/skip", post(bisect_skip))
+        .route("/api/git/bisect/reset", post(bisect_reset))
+        .route("/api/git/bisect/log", get(bisect_log))
+        .route("/api/git/create-patch", get(create_patch))
+        .route("/api/git/apply-patch", post(apply_patch))
+        .route("/api/git/worktrees", get(get_worktrees))
+        .route("/api/git/file-at-commit", get(get_file_at_commit))
+        .route("/api/git/gitflow-init", post(gitflow_init))
+        .route("/api/git/gitflow-feature-start", post(gitflow_feature_start))
+        .route("/api/git/gitflow-feature-finish", post(gitflow_feature_finish))
+        .route("/api/git/conflicts", get(get_conflicted_files))
+        .route("/api/git/resolve-conflict", post(resolve_conflict))
+        .route("/api/git/accept-version", post(accept_conflict_version))
+        .route("/api/git/three-way-merge", get(get_three_way_merge))
+        .with_state(git_api_state)
+        // Search API
+        .route("/api/search/files", get(search_files))
+        .route("/api/search/filenames", get(search_file_names))
+        .route("/api/search/definition", get(search_definition))
+        .with_state(search_api_state)
+        // GitHub OAuth & API
+        .route("/auth/github", get(github_auth_redirect))
+        .route("/auth/github/callback", get(github_auth_callback))
+        .route("/api/github/repos", get(fetch_github_repos))
+        .route("/api/github/search", get(search_github_repos))
+        .route("/api/github/clone", post(clone_repository))
+        .with_state(github_api_state)
+        // Project Management API
+        .route("/api/projects", get(get_projects))
+        .route("/api/projects", axum::routing::delete(delete_project))
+        .route("/api/projects/add", post(add_project))
+        .route("/api/projects/create", post(create_project))
+        .route("/api/projects/clone", post(project_clone))
+        .with_state(project_api_state)
+        // Workflow API (BerryFlow - n8n-style Pipelines)
+        .route("/api/workflows/presets", get(get_presets))
+        .route("/api/workflows/metrics/dashboard", get(get_metrics_dashboard))
+        .route("/api/workflows/:session_id/start", post(start_workflow))
+        .route("/api/workflows/:execution_id/status", get(get_workflow_status))
+        .route("/api/workflows/:execution_id/pause", post(pause_workflow))
+        .route("/api/workflows/:execution_id/resume", post(resume_workflow))
+        .route("/api/workflows/:execution_id/cancel", post(cancel_workflow))
+        // Workflow Template Management
+        .route("/api/workflows/templates", get(list_workflow_templates))
+        .route("/api/workflows/templates", post(create_workflow_template))
+        .route("/api/workflows/templates/:template_id", get(get_workflow_template))
+        .route("/api/workflows/templates/:template_id", axum::routing::put(update_workflow_template))
+        .route("/api/workflows/templates/:template_id", axum::routing::delete(delete_workflow_template))
+        // Workflow Template Version Management
+        .route("/api/workflows/templates/:template_id/versions", get(list_template_versions))
+        .route("/api/workflows/templates/:template_id/versions/:version", get(get_template_version))
+        .route("/api/workflows/templates/:template_id/versions/:version/restore", post(restore_template_version))
+        // Visual Flow Editor
+        .route("/api/workflows/flow/validate", post(validate_flow))
+        .route("/api/workflows/flow/:template_id/visualize", get(get_flow_visualization))
+        // Workflow Execution Logs
+        .route("/api/workflows/executions/search", get(search_execution_logs))
+        .route("/api/workflows/executions/:execution_id", get(get_execution_log))
+        .route("/api/workflows/executions/:execution_id/performance", get(get_performance_analysis))
+        // Workflow Triggers
+        .route("/api/workflows/triggers", get(list_triggers))
+        .route("/api/workflows/triggers", post(create_trigger))
+        .route("/api/workflows/triggers/:trigger_id", axum::routing::delete(delete_trigger))
+        .route("/api/workflows/triggers/:trigger_id/execute", post(execute_trigger))
+        .route("/api/workflows/webhook", post(webhook_receiver))
+        .route("/api/workflows/github-webhook", post(github_webhook_receiver))
+        // Workflow Snapshots & Rollback
+        .route("/api/workflows/executions/:execution_id/snapshots", get(list_snapshots))
+        .route("/api/workflows/snapshots/:snapshot_id/rollback", post(rollback_to_snapshot))
+        // BerryFlow Visual Workflow API (New Design)
+        .route("/api/workflows/visual/execute", post(execute_visual_workflow))
+        .route("/api/workflows/visual/save", post(save_visual_workflow))
+        .route("/api/workflows/visual/:project_path/:workflow_id", get(load_visual_workflow))
+        .route("/api/workflows/visual/:project_path/list", get(list_visual_workflows))
+        .route("/api/workflows/visual/:project_path/icons", get(get_workflow_icons))
+        .route("/api/workflows/visual/node-types", get(get_node_types))
+        .with_state(workflow_api_state)
+        // Auth API (Database-backed)
+        .route("/api/auth/login", post(login_db))
+        .route("/api/auth/logout", post(logout_db))
+        .route("/api/auth/register", post(register))
+        .route("/api/auth/verify", get(verify_auth_db))
+        .with_state(auth_state)
+        // Database API (External DB Connections)
+        .route("/api/database/connect", post(crate::berrycode::web::api::database::database_api::connect_database))
+        .route("/api/database/disconnect", post(crate::berrycode::web::api::database::database_api::disconnect_database))
+        .route("/api/database/query", post(crate::berrycode::web::api::database::database_api::execute_query))
+        .route("/api/database/schema", post(crate::berrycode::web::api::database::database_api::get_schema))
+        .route("/api/database/table-info", post(crate::berrycode::web::api::database::database_api::get_table_info))
+        .with_state(database_api_state.clone())
+        // LSP API
+        .route("/api/lsp/goto-definition", post(lsp_goto_definition))
+        .route("/api/lsp/find-references", post(lsp_find_references))
+        .route("/api/lsp/rename", post(lsp_rename))
+        .route("/api/lsp/hover", post(lsp_hover))
+        .route("/api/lsp/diagnostics", post(lsp_diagnostics).get(lsp_diagnostics))
+        .route("/api/lsp/code-actions", post(lsp_code_actions))
+        .route("/api/lsp/completion", post(lsp_completion))
+        .route("/api/lsp/signature-help", post(lsp_signature_help))
+        .route("/api/lsp/document-symbols", post(lsp_document_symbols))
+        .with_state(lsp_api_state.clone())
+        // Debug API
+        .route("/api/debug/start", post(super::api::debug::debug_api::start_debug))
+        .route("/api/debug/stop", post(super::api::debug::debug_api::stop_debug))
+        .route("/api/debug/continue", post(super::api::debug::debug_api::continue_execution))
+        .route("/api/debug/step-over", post(super::api::debug::debug_api::step_over))
+        .route("/api/debug/step-into", post(super::api::debug::debug_api::step_into))
+        .route("/api/debug/step-out", post(super::api::debug::debug_api::step_out))
+        .route("/api/debug/breakpoint", post(super::api::debug::debug_api::set_breakpoint))
+        .route("/api/debug/breakpoints", get(super::api::debug::debug_api::get_breakpoints))
+        .route("/api/debug/breakpoints/set", post(super::api::debug::debug_api::set_breakpoints_batch))
+        .route("/api/debug/stack-trace", post(super::api::debug::debug_api::get_stack_trace))
+        .route("/api/debug/scopes", post(super::api::debug::debug_api::get_scopes))
+        .route("/api/debug/variables", post(super::api::debug::debug_api::get_variables))
+        // Advanced debugging features
+        .route("/api/debug/conditional-breakpoint", post(super::api::debug::debug_api::set_conditional_breakpoint))
+        .route("/api/debug/logpoint", post(super::api::debug::debug_api::set_logpoint))
+        .route("/api/debug/watch", post(super::api::debug::debug_api::add_watch_expression))
+        .route("/api/debug/watch/remove", post(super::api::debug::debug_api::remove_watch_expression))
+        .route("/api/debug/watches", post(super::api::debug::debug_api::get_watch_expressions))
+        .route("/api/debug/evaluate", post(super::api::debug::debug_api::evaluate_expression))
+        .route("/api/debug/evaluate-watches", post(super::api::debug::debug_api::evaluate_all_watches))
+        .with_state(super::api::debug::debug_api::DebugState::new())
+        // AI Completion API
+        .route("/api/ai/complete", post(ai_complete))
+        .with_state(ai_completion_state.clone())
+        // Test Runner API
+        .route("/api/test/run", post(run_tests))
+        .with_state(test_runner_state.clone())
+        // Task Runner API
+        .route("/api/tasks/run", post(run_task))
+        .route("/api/tasks/output", get(get_task_output))
+        .route("/api/tasks/list", get(list_tasks))
+        .with_state(task_runner_state.clone())
+        // Docker API
+        .route("/api/docker/containers", get(list_containers))
+        .route("/api/docker/containers/start", post(start_container))
+        .route("/api/docker/containers/stop", post(stop_container))
+        .route("/api/docker/containers/restart", post(restart_container))
+        .route("/api/docker/containers/remove", post(remove_container))
+        .route("/api/docker/containers/logs", get(get_container_logs))
+        .route("/api/docker/containers/stats", get(get_container_stats))
+        .route("/api/docker/images", get(list_images))
+        .route("/api/docker/images/remove", post(remove_image))
+        .route("/api/docker/images/pull", post(pull_image))
+        .route("/api/docker/networks", get(list_networks))
+        .route("/api/docker/volumes", get(list_volumes))
+        .route("/api/docker/info", get(get_docker_info))
+        .with_state(docker_api_state.clone())
+        // Slack API
+        .route("/api/berrychat/ws", get(berrychat_websocket_handler))
+        .route("/api/berrychat/channels", get(list_channels).post(create_channel))
+        .route("/api/berrychat/channels/:channel_id/messages", get(get_channel_messages))
+        // TODO: Implement these handlers in berrychat_api.rs:
+        // .route("/api/berrychat/channels/:channel_id/members", get(get_channel_members))
+        // .route("/api/berrychat/channels/:channel_id/members/:user_id", post(add_channel_member).delete(remove_channel_member))
+        .route("/api/berrychat/messages", post(send_message))
+        .route("/api/berrychat/messages/:message_id/reactions", post(add_reaction))
+        .route("/api/berrychat/messages/:message_id/thread", get(get_thread))
+        // .route("/api/berrychat/messages/:message_id/upload", post(upload_file))
+        .route("/api/berrychat/thread/reply", post(send_thread_reply))
+        .route("/api/berrychat/users", get(list_users))
+        .route("/api/berrychat/presence", post(update_presence))
+        // .route("/api/berrychat/dm", post(create_or_get_dm))
+        .route("/api/berrychat/search", post(search_messages))
+        .with_state(slack_api_state.clone())
+        // WebRTC API
+        .route("/api/webrtc/signaling", get(webrtc_signaling_handler))
+        .route("/api/webrtc/calls", post(start_call))
+        .route("/api/webrtc/calls/join", post(join_call))
+        .route("/api/webrtc/calls/:call_id", delete(end_call))
+        .route("/api/webrtc/calls/:call_id/leave", post(leave_call))
+        .route("/api/webrtc/channels/:channel_id/calls", get(get_active_calls))
+        .with_state(webrtc_api_state.clone())
+        // Virtual Office API
+        .route("/api/virtual-office/ws", get(virtual_office_handler))
+        .route("/api/virtual-office/spaces", get(list_spaces))
+        .route("/api/virtual-office/spaces/:space_id", get(get_space))
+        .route("/api/virtual-office/spaces/:space_id/objects", get(get_objects))
+        .route("/api/virtual-office/spaces/:space_id/users", get(get_active_users))
+        .with_state(virtual_office_state.clone())
+        // Model Settings API
+        .route("/api/model-settings/:session_id", get(get_model_settings))
+        .route("/api/model-settings/:session_id", post(save_model_settings))
+        .route("/api/models/list", get(list_available_models))
+        .with_state(model_settings_api_state.clone())
+        // API Keys API
+        .route("/api/api-keys/:session_id", get(get_api_keys))
+        .route("/api/api-keys/:session_id", post(save_api_keys))
+        .route("/api/api-keys/:session_id/:provider", delete(delete_api_key))
+        .route("/api/api-keys/:session_id", delete(delete_all_api_keys))
+        .with_state(api_keys_api_state.clone())
+        // Collaboration API (Live Share)
+        .route("/api/collaboration/session", post(create_collaboration_session))
+        .route("/api/collaboration/session/join", post(join_collaboration_session))
+        .route("/api/collaboration/session/:session_id", get(get_collaboration_session))
+        .route("/api/collaboration/session/:session_id/leave", post(leave_collaboration_session))
+        .route("/api/collaboration/session/:session_id/role", post(change_collaboration_role))
+        .route("/api/collaboration/ws/:session_id", get(collaboration_ws_handler))
+        .with_state(collaboration_api_state.clone())
+        // Remote Development API
+        .route("/api/remote/connect", post(connect))
+        .route("/api/remote/:connection_id/disconnect", post(disconnect))
+        .route("/api/remote/connections", get(list_connections))
+        .route("/api/remote/file-tree", get(get_remote_file_tree))
+        .route("/api/remote/:connection_id/files/:file_path", get(read_remote_file))
+        .route("/api/remote/files", post(write_remote_file))
+        .route("/api/remote/execute", post(execute_remote_command))
+        .route("/api/remote/:connection_id/test", get(test_connection))
+        .route("/api/remote/:connection_id/terminal", get(remote_terminal_ws))
+        .route("/api/remote/port-forward", post(start_port_forward))
+        .with_state(remote_api_state.clone())
+        // Clipboard API
+        .route("/api/clipboard/current", get(get_clipboard))
+        .route("/api/clipboard/check", get(check_clipboard))
+        .route("/api/clipboard/save", post(save_to_clipboard))
+        .with_state(clipboard_api_state.clone())
+        // Settings API
+        .route("/api/settings/:session_id", get(load_settings))
+        .route("/api/settings/:session_id", post(save_settings))
+        .with_state(settings_api_state.clone())
+        // Editor Integration API
+        .merge(editor_api_router().with_state(editor_api_state));
+
+    // Add Voice API routes if enabled
+    #[cfg(feature = "voice")]
+    {
+        let voice_router = Router::new()
+            .route("/api/voice/transcribe", post(transcribe_audio))
+            .route("/api/voice/health", get(voice_health_check))
+            .with_state(voice_api_state);
+        app = app.merge(voice_router);
+    }
+
+    // Add Jupyter API routes if enabled
+    #[cfg(feature = "jupyter")]
+    {
+        use super::api::jupyter::jupyter_api::{jupyter_api_router, JupyterApiState};
+
+        let jupyter_api_state = JupyterApiState::new(session_store.clone());
+        app = app.merge(jupyter_api_router().with_state(jupyter_api_state));
+    }
+
+    let app = app
+        // Static files
+        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/berry-editor", ServeDir::new("gui-editor/dist"))
+        // Middleware layers (applied in reverse order)
+        .layer(middleware::from_fn(error_handler))
+        .layer(middleware::from_fn(request_logging))
+        .layer(middleware::from_fn(nocache_static_files))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            auth_middleware_state.clone(),
+            require_auth,
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        );
+
+    // Start server
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("BerryCode Web Server starting on http://localhost:{}", port);
+    println!("   Open your browser and navigate to the URL above");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+/// Run server without GitHub integration (fallback)
+async fn run_server_without_github(
+    port: u16,
+    handler_state: HandlerState,
+    ws_state: WsState,
+    file_api_state: FileApiState,
+    terminal_api_state: TerminalApiState,
+    persistent_terminal_api_state: PersistentTerminalApiState,
+    git_api_state: GitApiState,
+    search_api_state: SearchApiState,
+    editor_api_state: EditorApiState,
+    database_api_state: crate::berrycode::web::api::database::database_api::DatabaseState,
+    lsp_api_state: LspApiState,
+    ai_completion_state: Arc<AiCompletionState>,
+    test_runner_state: Arc<Mutex<TestRunnerState>>,
+    task_runner_state: TaskRunnerState,
+    project_api_state: ProjectApiState,
+    workflow_api_state: WorkflowApiState,
+    auth_state: AuthDbState,
+    auth_middleware_state: AuthState,
+    docker_api_state: DockerApiState,
+    slack_api_state: BerryChatApiState,
+    webrtc_api_state: WebRTCState,
+    virtual_office_state: VirtualOfficeState,
+    model_settings_api_state: ModelSettingsApiState,
+    api_keys_api_state: ApiKeysApiState,
+    extensions_api_state: ExtensionsApiState,
+    session_store: SessionDbStore,
+) -> anyhow::Result<()> {
+    // Build router without GitHub routes
+    let mut app = Router::new()
+        // Health checks (for K8s probes)
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+        // Main pages
+        .route("/", get(landing_page))
+        .route("/app", get(berry_editor_page))
+        .route("/landing", get(landing_page))
+        .route("/dashboard", get(dashboard_page))
+        .route("/lsp-test", get(lsp_test_page))
+        .route("/login", get(login_page))
+        .route("/register", get(register_page))
+        .route("/test", get(test_page))
+        .route("/workflows", get(workflows))
+        .route("/workflow/history", get(workflow_history))
+        .route("/workflow/editor", get(flow_editor))
+        .route("/chat/:session_id", get(chat_page))
+        .route("/devin/:session_id", get(devin_page))
+        .route("/share/:session_id", get(shared_session))
+        .route("/favicon.ico", get(favicon))
+        // Session API
+        .route("/api/session", post(create_session))
+        .route("/api/session/:session_id", get(get_session))
+        .route("/api/session/:session_id/share", post(enable_sharing))
+        .route("/api/current-dir", get(get_current_dir))
+        .route("/api/recent-projects", get(get_recent_projects))
+        .with_state(handler_state)
+        // WebSocket
+        .route("/ws/:session_id", get(ws_handler))
+        .with_state(ws_state)
+        // Workflow Progress WebSocket
+        .route("/ws/workflow/:session_id", get(workflow_progress_ws))
+        .with_state(workflow_api_state.clone())
+        // File API
+        .route("/api/files/tree", get(get_file_tree))
+        .route("/api/files/:file_path", get(read_file))
+        .route("/api/files/:file_path", post(write_file))
+        .route("/api/files/preview/markdown", get(render_markdown))
+        .route("/api/files/delete", post(delete_file))
+        .route("/api/files/apply-edits", post(apply_edits))
+        .with_state(file_api_state)
+        // Terminal API (old stateless version - kept for compatibility)
+        .route("/api/terminal/execute", post(execute_command))
+        .route("/api/terminal/history", get(get_command_history))
+        .with_state(terminal_api_state)
+        // Persistent Terminal API (new Devin-style version)
+        .route("/api/persistent-terminal/execute", post(execute_persistent_command))
+        .route("/api/persistent-terminal/history", get(get_persistent_command_history))
+        .route("/api/persistent-terminal/processes", get(list_background_processes))
+        .route("/api/persistent-terminal/kill", post(kill_background_process))
+        .route("/api/persistent-terminal/cd", post(change_directory))
+        .route("/api/persistent-terminal/cwd", get(get_current_directory))
+        .with_state(persistent_terminal_api_state)
+        // Git API
+        .route("/api/git/status", get(get_git_status))
+        .route("/api/git/stage-all", post(stage_all_files))
+        .route("/api/git/commit", post(create_commit))
+        .route("/api/git/diff", get(get_git_diff))
+        .route("/api/git/branches", get(get_branches))
+        .route("/api/git/switch-branch", post(switch_branch))
+        .route("/api/git/create-branch", post(create_branch))
+        .route("/api/git/history", get(get_commit_history))
+        .route("/api/git/stage-file", post(stage_file))
+        .route("/api/git/unstage-file", post(unstage_file))
+        .route("/api/git/push", post(git_push))
+        .route("/api/git/pull", post(git_pull))
+        .route("/api/git/fetch", post(git_fetch))
+        .route("/api/git/delete-branch", post(delete_branch))
+        .route("/api/git/merge-branch", post(merge_branch))
+        .route("/api/git/stash-push", post(stash_push))
+        .route("/api/git/stash-list", get(stash_list))
+        .route("/api/git/stash-apply", post(stash_apply))
+        .route("/api/git/stash-drop", post(stash_drop))
+        .route("/api/git/file-history", get(get_file_history))
+        .route("/api/git/tags", get(get_tags))
+        .route("/api/git/create-tag", post(create_tag))
+        .route("/api/git/delete-tag", post(delete_tag))
+        .route("/api/git/commit-graph", get(get_commit_graph))
+        .route("/api/git/rebase", post(git_rebase))
+        .route("/api/git/cherry-pick", post(git_cherry_pick))
+        .route("/api/git/detailed-diff", get(get_detailed_diff))
+        .route("/api/git/reset", post(git_reset))
+        .route("/api/git/blame", get(get_blame))
+        .route("/api/git/compare-branches", get(compare_branches))
+        .route("/api/git/reflog", get(get_reflog))
+        .route("/api/git/remotes", get(get_remotes))
+        .route("/api/git/add-remote", post(add_remote))
+        .route("/api/git/remove-remote", post(remove_remote))
+        .route("/api/git/submodules", get(get_submodules))
+        .route("/api/git/add-submodule", post(add_submodule))
+        .route("/api/git/search-commits", get(search_commits))
+        .route("/api/git/bisect-status", get(get_bisect_status))
+        .route("/api/git/bisect/start", post(bisect_start))
+        .route("/api/git/bisect/bad", post(bisect_bad))
+        .route("/api/git/bisect/good", post(bisect_good))
+        .route("/api/git/bisect/skip", post(bisect_skip))
+        .route("/api/git/bisect/reset", post(bisect_reset))
+        .route("/api/git/bisect/log", get(bisect_log))
+        .route("/api/git/create-patch", get(create_patch))
+        .route("/api/git/apply-patch", post(apply_patch))
+        .route("/api/git/worktrees", get(get_worktrees))
+        .route("/api/git/file-at-commit", get(get_file_at_commit))
+        .route("/api/git/gitflow-init", post(gitflow_init))
+        .route("/api/git/gitflow-feature-start", post(gitflow_feature_start))
+        .route("/api/git/gitflow-feature-finish", post(gitflow_feature_finish))
+        .route("/api/git/conflicts", get(get_conflicted_files))
+        .route("/api/git/resolve-conflict", post(resolve_conflict))
+        .route("/api/git/accept-version", post(accept_conflict_version))
+        .route("/api/git/three-way-merge", get(get_three_way_merge))
+        .with_state(git_api_state)
+        // Search API
+        .route("/api/search/files", get(search_files))
+        .route("/api/search/filenames", get(search_file_names))
+        .route("/api/search/definition", get(search_definition))
+        .with_state(search_api_state)
+        // Project Management API
+        .route("/api/projects", get(get_projects))
+        .route("/api/projects", axum::routing::delete(delete_project))
+        .route("/api/projects/add", post(add_project))
+        .route("/api/projects/create", post(create_project))
+        .route("/api/projects/clone", post(project_clone))
+        .with_state(project_api_state)
+        // Workflow API (BerryFlow - n8n-style Pipelines)
+        .route("/api/workflows/presets", get(get_presets))
+        .route("/api/workflows/metrics/dashboard", get(get_metrics_dashboard))
+        .route("/api/workflows/:session_id/start", post(start_workflow))
+        .route("/api/workflows/:execution_id/status", get(get_workflow_status))
+        .route("/api/workflows/:execution_id/pause", post(pause_workflow))
+        .route("/api/workflows/:execution_id/resume", post(resume_workflow))
+        .route("/api/workflows/:execution_id/cancel", post(cancel_workflow))
+        // Workflow Template Management
+        .route("/api/workflows/templates", get(list_workflow_templates))
+        .route("/api/workflows/templates", post(create_workflow_template))
+        .route("/api/workflows/templates/:template_id", get(get_workflow_template))
+        .route("/api/workflows/templates/:template_id", axum::routing::put(update_workflow_template))
+        .route("/api/workflows/templates/:template_id", axum::routing::delete(delete_workflow_template))
+        // Workflow Template Version Management
+        .route("/api/workflows/templates/:template_id/versions", get(list_template_versions))
+        .route("/api/workflows/templates/:template_id/versions/:version", get(get_template_version))
+        .route("/api/workflows/templates/:template_id/versions/:version/restore", post(restore_template_version))
+        // Visual Flow Editor
+        .route("/api/workflows/flow/validate", post(validate_flow))
+        .route("/api/workflows/flow/:template_id/visualize", get(get_flow_visualization))
+        // Workflow Execution Logs
+        .route("/api/workflows/executions/search", get(search_execution_logs))
+        .route("/api/workflows/executions/:execution_id", get(get_execution_log))
+        .route("/api/workflows/executions/:execution_id/performance", get(get_performance_analysis))
+        // Workflow Triggers
+        .route("/api/workflows/triggers", get(list_triggers))
+        .route("/api/workflows/triggers", post(create_trigger))
+        .route("/api/workflows/triggers/:trigger_id", axum::routing::delete(delete_trigger))
+        .route("/api/workflows/triggers/:trigger_id/execute", post(execute_trigger))
+        .route("/api/workflows/webhook", post(webhook_receiver))
+        .route("/api/workflows/github-webhook", post(github_webhook_receiver))
+        // Workflow Snapshots & Rollback
+        .route("/api/workflows/executions/:execution_id/snapshots", get(list_snapshots))
+        .route("/api/workflows/snapshots/:snapshot_id/rollback", post(rollback_to_snapshot))
+        // BerryFlow Visual Workflow API (New Design)
+        .route("/api/workflows/visual/execute", post(execute_visual_workflow))
+        .route("/api/workflows/visual/save", post(save_visual_workflow))
+        .route("/api/workflows/visual/:project_path/:workflow_id", get(load_visual_workflow))
+        .route("/api/workflows/visual/:project_path/list", get(list_visual_workflows))
+        .route("/api/workflows/visual/:project_path/icons", get(get_workflow_icons))
+        .route("/api/workflows/visual/node-types", get(get_node_types))
+        .with_state(workflow_api_state)
+        // Auth API (Database-backed)
+        .route("/api/auth/login", post(login_db))
+        .route("/api/auth/logout", post(logout_db))
+        .route("/api/auth/register", post(register))
+        .route("/api/auth/verify", get(verify_auth_db))
+        .with_state(auth_state)
+        // Database API (External DB Connections)
+        .route("/api/database/connect", post(crate::berrycode::web::api::database::database_api::connect_database))
+        .route("/api/database/disconnect", post(crate::berrycode::web::api::database::database_api::disconnect_database))
+        .route("/api/database/query", post(crate::berrycode::web::api::database::database_api::execute_query))
+        .route("/api/database/schema", post(crate::berrycode::web::api::database::database_api::get_schema))
+        .route("/api/database/table-info", post(crate::berrycode::web::api::database::database_api::get_table_info))
+        .with_state(database_api_state.clone())
+        // LSP API
+        .route("/api/lsp/goto-definition", post(lsp_goto_definition))
+        .route("/api/lsp/find-references", post(lsp_find_references))
+        .route("/api/lsp/rename", post(lsp_rename))
+        .route("/api/lsp/hover", post(lsp_hover))
+        .route("/api/lsp/diagnostics", post(lsp_diagnostics).get(lsp_diagnostics))
+        .route("/api/lsp/code-actions", post(lsp_code_actions))
+        .route("/api/lsp/completion", post(lsp_completion))
+        .route("/api/lsp/signature-help", post(lsp_signature_help))
+        .route("/api/lsp/document-symbols", post(lsp_document_symbols))
+        .with_state(lsp_api_state.clone())
+        // Debug API
+        .route("/api/debug/start", post(super::api::debug::debug_api::start_debug))
+        .route("/api/debug/stop", post(super::api::debug::debug_api::stop_debug))
+        .route("/api/debug/continue", post(super::api::debug::debug_api::continue_execution))
+        .route("/api/debug/step-over", post(super::api::debug::debug_api::step_over))
+        .route("/api/debug/step-into", post(super::api::debug::debug_api::step_into))
+        .route("/api/debug/step-out", post(super::api::debug::debug_api::step_out))
+        .route("/api/debug/breakpoint", post(super::api::debug::debug_api::set_breakpoint))
+        .route("/api/debug/breakpoints", get(super::api::debug::debug_api::get_breakpoints))
+        .route("/api/debug/breakpoints/set", post(super::api::debug::debug_api::set_breakpoints_batch))
+        .route("/api/debug/stack-trace", post(super::api::debug::debug_api::get_stack_trace))
+        .route("/api/debug/scopes", post(super::api::debug::debug_api::get_scopes))
+        .route("/api/debug/variables", post(super::api::debug::debug_api::get_variables))
+        // Advanced debugging features
+        .route("/api/debug/conditional-breakpoint", post(super::api::debug::debug_api::set_conditional_breakpoint))
+        .route("/api/debug/logpoint", post(super::api::debug::debug_api::set_logpoint))
+        .route("/api/debug/watch", post(super::api::debug::debug_api::add_watch_expression))
+        .route("/api/debug/watch/remove", post(super::api::debug::debug_api::remove_watch_expression))
+        .route("/api/debug/watches", post(super::api::debug::debug_api::get_watch_expressions))
+        .route("/api/debug/evaluate", post(super::api::debug::debug_api::evaluate_expression))
+        .route("/api/debug/evaluate-watches", post(super::api::debug::debug_api::evaluate_all_watches))
+        .with_state(super::api::debug::debug_api::DebugState::new())
+        // AI Completion API
+        .route("/api/ai/complete", post(ai_complete))
+        .with_state(ai_completion_state.clone())
+        // Test Runner API
+        .route("/api/test/run", post(run_tests))
+        .with_state(test_runner_state.clone())
+        // Task Runner API
+        .route("/api/tasks/run", post(run_task))
+        .route("/api/tasks/output", get(get_task_output))
+        .route("/api/tasks/list", get(list_tasks))
+        .with_state(task_runner_state.clone())
+        // Docker API
+        .route("/api/docker/containers", get(list_containers))
+        .route("/api/docker/containers/start", post(start_container))
+        .route("/api/docker/containers/stop", post(stop_container))
+        .route("/api/docker/containers/restart", post(restart_container))
+        .route("/api/docker/containers/remove", post(remove_container))
+        .route("/api/docker/containers/logs", get(get_container_logs))
+        .route("/api/docker/containers/stats", get(get_container_stats))
+        .route("/api/docker/images", get(list_images))
+        .route("/api/docker/images/remove", post(remove_image))
+        .route("/api/docker/images/pull", post(pull_image))
+        .route("/api/docker/networks", get(list_networks))
+        .route("/api/docker/volumes", get(list_volumes))
+        .route("/api/docker/info", get(get_docker_info))
+        .with_state(docker_api_state.clone())
+        // Slack API
+        .route("/api/berrychat/ws", get(berrychat_websocket_handler))
+        .route("/api/berrychat/channels", get(list_channels).post(create_channel))
+        .route("/api/berrychat/channels/:channel_id/messages", get(get_channel_messages))
+        // TODO: Implement these handlers in berrychat_api.rs:
+        // .route("/api/berrychat/channels/:channel_id/members", get(get_channel_members))
+        // .route("/api/berrychat/channels/:channel_id/members/:user_id", post(add_channel_member).delete(remove_channel_member))
+        .route("/api/berrychat/messages", post(send_message))
+        .route("/api/berrychat/messages/:message_id/reactions", post(add_reaction))
+        .route("/api/berrychat/messages/:message_id/thread", get(get_thread))
+        // .route("/api/berrychat/messages/:message_id/upload", post(upload_file))
+        .route("/api/berrychat/thread/reply", post(send_thread_reply))
+        .route("/api/berrychat/users", get(list_users))
+        .route("/api/berrychat/presence", post(update_presence))
+        // .route("/api/berrychat/dm", post(create_or_get_dm))
+        .route("/api/berrychat/search", post(search_messages))
+        .with_state(slack_api_state.clone())
+        // WebRTC API
+        .route("/api/webrtc/signaling", get(webrtc_signaling_handler))
+        .route("/api/webrtc/calls", post(start_call))
+        .route("/api/webrtc/calls/join", post(join_call))
+        .route("/api/webrtc/calls/:call_id", delete(end_call))
+        .route("/api/webrtc/calls/:call_id/leave", post(leave_call))
+        .route("/api/webrtc/channels/:channel_id/calls", get(get_active_calls))
+        .with_state(webrtc_api_state.clone())
+        // Virtual Office API
+        .route("/api/virtual-office/ws", get(virtual_office_handler))
+        .route("/api/virtual-office/spaces", get(list_spaces))
+        .route("/api/virtual-office/spaces/:space_id", get(get_space))
+        .route("/api/virtual-office/spaces/:space_id/objects", get(get_objects))
+        .route("/api/virtual-office/spaces/:space_id/users", get(get_active_users))
+        .with_state(virtual_office_state.clone())
+        // Model Settings API
+        .route("/api/model-settings/:session_id", get(get_model_settings))
+        .route("/api/model-settings/:session_id", post(save_model_settings))
+        .route("/api/models/list", get(list_available_models))
+        .with_state(model_settings_api_state.clone())
+        // API Keys API
+        .route("/api/api-keys/:session_id", get(get_api_keys))
+        .route("/api/api-keys/:session_id", post(save_api_keys))
+        .route("/api/api-keys/:session_id/:provider", delete(delete_api_key))
+        .route("/api/api-keys/:session_id", delete(delete_all_api_keys))
+        .with_state(api_keys_api_state.clone())
+        // Editor Integration API
+        .merge(editor_api_router().with_state(editor_api_state));
+
+    // Add Jupyter API routes if enabled
+    #[cfg(feature = "jupyter")]
+    {
+        use super::api::jupyter::jupyter_api::{jupyter_api_router, JupyterApiState};
+
+        let jupyter_api_state = JupyterApiState::new(session_store.clone());
+        app = app.merge(jupyter_api_router().with_state(jupyter_api_state));
+    }
+
+    let app = app
+        // Static files
+        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/berry-editor", ServeDir::new("gui-editor/dist"))
+        // Middleware layers (applied in reverse order)
+        .layer(middleware::from_fn(error_handler))
+        .layer(middleware::from_fn(request_logging))
+        .layer(middleware::from_fn(nocache_static_files))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            auth_middleware_state.clone(),
+            require_auth,
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        );
+
+    // Start server
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("BerryCode Web Server starting on http://localhost:{}", port);
+    println!("   Open your browser and navigate to the URL above");
+    println!("   ⚠️  GitHub integration is disabled");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}

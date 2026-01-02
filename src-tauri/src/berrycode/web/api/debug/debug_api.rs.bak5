@@ -1,0 +1,849 @@
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
+
+use crate::berrycode::debug::dap_client::{DapClient, StackFrame, Scope, Variable, WatchExpression, EvaluationResult};
+
+#[derive(Clone)]
+pub struct DebugState {
+    breakpoints: Arc<Mutex<HashMap<String, HashSet<u32>>>>,
+    dap_clients: Arc<Mutex<HashMap<String, DapClient>>>,
+}
+
+impl DebugState {
+    pub fn new() -> Self {
+        DebugState {
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            dap_clients: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+// ==================== Request/Response Types ====================
+
+#[derive(Debug, Deserialize)]
+pub struct SetBreakpointRequest {
+    pub session_id: String,
+    pub file_path: String,
+    pub line: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BreakpointResponse {
+    pub success: bool,
+    pub breakpoint_id: Option<String>,
+    pub breakpoints: Option<Vec<u32>>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StartDebugRequest {
+    pub session_id: String,
+    pub program_path: String,
+    pub project_root: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StartDebugResponse {
+    pub success: bool,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DebugControlRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DebugControlResponse {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetBreakpointsRequest {
+    pub session_id: String,
+    pub file_path: String,
+    pub lines: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetBreakpointsResponse {
+    pub success: bool,
+    pub verified_lines: Vec<i64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetStackTraceRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetStackTraceResponse {
+    pub success: bool,
+    pub stack_frames: Vec<StackFrame>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetScopesRequest {
+    pub session_id: String,
+    pub frame_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetScopesResponse {
+    pub success: bool,
+    pub scopes: Vec<Scope>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetVariablesRequest {
+    pub session_id: String,
+    pub variables_reference: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetVariablesResponse {
+    pub success: bool,
+    pub variables: Vec<Variable>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetConditionalBreakpointRequest {
+    pub session_id: String,
+    pub file_path: String,
+    pub line: i64,
+    pub condition: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetLogpointRequest {
+    pub session_id: String,
+    pub file_path: String,
+    pub line: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddWatchRequest {
+    pub session_id: String,
+    pub expression: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveWatchRequest {
+    pub session_id: String,
+    pub watch_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EvaluateRequest {
+    pub session_id: String,
+    pub expression: String,
+    pub frame_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WatchResponse {
+    pub success: bool,
+    pub watches: Vec<WatchExpression>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvaluateResponse {
+    pub success: bool,
+    pub result: Option<EvaluationResult>,
+    pub error: Option<String>,
+}
+
+// ==================== Handlers ====================
+
+/// Set/toggle a breakpoint (for editor UI)
+pub async fn set_breakpoint(
+    State(state): State<DebugState>,
+    Json(request): Json<SetBreakpointRequest>,
+) -> impl IntoResponse {
+    let mut breakpoints = state.breakpoints.lock().unwrap();
+
+    let file_breakpoints = breakpoints
+        .entry(request.file_path.clone())
+        .or_insert(HashSet::new());
+
+    if file_breakpoints.contains(&request.line) {
+        file_breakpoints.remove(&request.line);
+    } else {
+        file_breakpoints.insert(request.line);
+    }
+
+    let current_breakpoints: Vec<u32> = file_breakpoints.iter().cloned().collect();
+
+    (
+        StatusCode::OK,
+        Json(BreakpointResponse {
+            success: true,
+            breakpoint_id: Some(Uuid::new_v4().to_string()),
+            breakpoints: Some(current_breakpoints),
+            error: None,
+        }),
+    )
+}
+
+/// Get all breakpoints
+pub async fn get_breakpoints(State(state): State<DebugState>) -> impl IntoResponse {
+    let breakpoints = state.breakpoints.lock().unwrap();
+    (StatusCode::OK, Json(breakpoints.clone()))
+}
+
+/// Start a debug session
+pub async fn start_debug(
+    State(state): State<DebugState>,
+    Json(request): Json<StartDebugRequest>,
+) -> impl IntoResponse {
+    tracing::info!(
+        session_id = %request.session_id,
+        program = %request.program_path,
+        "Starting debug session"
+    );
+
+    let project_root = PathBuf::from(&request.project_root);
+    let program_path = PathBuf::from(&request.program_path);
+
+    let dap_client = DapClient::new(project_root);
+
+    match dap_client.start_rust_debug(&request.session_id, &program_path) {
+        Ok(_) => {
+            state
+                .dap_clients
+                .lock()
+                .unwrap()
+                .insert(request.session_id.clone(), dap_client);
+
+            tracing::info!(session_id = %request.session_id, "Debug session started successfully");
+
+            (
+                StatusCode::OK,
+                Json(StartDebugResponse {
+                    success: true,
+                    message: Some("Debug session started".to_string()),
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => {
+            tracing::error!(
+                session_id = %request.session_id,
+                error = %e,
+                "Failed to start debug session"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(StartDebugResponse {
+                    success: false,
+                    message: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
+    }
+}
+
+/// Stop debug session
+pub async fn stop_debug(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    tracing::info!(session_id = %request.session_id, "Stopping debug session");
+
+    let mut clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.stop_debug(&request.session_id) {
+            Ok(_) => {
+                clients.remove(&request.session_id);
+                (
+                    StatusCode::OK,
+                    Json(DebugControlResponse {
+                        success: true,
+                        error: None,
+                    }),
+                )
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Continue execution (F5)
+pub async fn continue_execution(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.continue_execution(&request.session_id) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Step over (F10)
+pub async fn step_over(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.step_over(&request.session_id) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Step into (F11)
+pub async fn step_into(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.step_into(&request.session_id) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Step out (Shift+F11)
+pub async fn step_out(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.step_out(&request.session_id) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Set multiple breakpoints at once
+pub async fn set_breakpoints_batch(
+    State(state): State<DebugState>,
+    Json(request): Json<SetBreakpointsRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        let file_path = PathBuf::from(&request.file_path);
+        match client.set_breakpoints(&request.session_id, &file_path, request.lines) {
+            Ok(verified_lines) => (
+                StatusCode::OK,
+                Json(SetBreakpointsResponse {
+                    success: true,
+                    verified_lines,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SetBreakpointsResponse {
+                    success: false,
+                    verified_lines: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(SetBreakpointsResponse {
+                success: false,
+                verified_lines: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Get stack trace
+pub async fn get_stack_trace(
+    State(state): State<DebugState>,
+    Json(request): Json<GetStackTraceRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.get_stack_trace(&request.session_id) {
+            Ok(stack_frames) => (
+                StatusCode::OK,
+                Json(GetStackTraceResponse {
+                    success: true,
+                    stack_frames,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GetStackTraceResponse {
+                    success: false,
+                    stack_frames: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(GetStackTraceResponse {
+                success: false,
+                stack_frames: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Get scopes for a stack frame
+pub async fn get_scopes(
+    State(state): State<DebugState>,
+    Json(request): Json<GetScopesRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.get_scopes(&request.session_id, request.frame_id) {
+            Ok(scopes) => (
+                StatusCode::OK,
+                Json(GetScopesResponse {
+                    success: true,
+                    scopes,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GetScopesResponse {
+                    success: false,
+                    scopes: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(GetScopesResponse {
+                success: false,
+                scopes: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Get variables for a scope
+pub async fn get_variables(
+    State(state): State<DebugState>,
+    Json(request): Json<GetVariablesRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.get_variables(&request.session_id, request.variables_reference) {
+            Ok(variables) => (
+                StatusCode::OK,
+                Json(GetVariablesResponse {
+                    success: true,
+                    variables,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GetVariablesResponse {
+                    success: false,
+                    variables: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(GetVariablesResponse {
+                success: false,
+                variables: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Set conditional breakpoint
+pub async fn set_conditional_breakpoint(
+    State(state): State<DebugState>,
+    Json(request): Json<SetConditionalBreakpointRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        let file_path = PathBuf::from(&request.file_path);
+        match client.set_conditional_breakpoint(
+            &request.session_id,
+            &file_path,
+            request.line,
+            request.condition,
+        ) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Set logpoint
+pub async fn set_logpoint(
+    State(state): State<DebugState>,
+    Json(request): Json<SetLogpointRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        let file_path = PathBuf::from(&request.file_path);
+        match client.set_logpoint(
+            &request.session_id,
+            &file_path,
+            request.line,
+            request.message,
+        ) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Add watch expression
+pub async fn add_watch_expression(
+    State(state): State<DebugState>,
+    Json(request): Json<AddWatchRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.add_watch_expression(&request.session_id, request.expression) {
+            Ok(watch) => (
+                StatusCode::OK,
+                Json(WatchResponse {
+                    success: true,
+                    watches: vec![watch],
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WatchResponse {
+                    success: false,
+                    watches: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(WatchResponse {
+                success: false,
+                watches: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Remove watch expression
+pub async fn remove_watch_expression(
+    State(state): State<DebugState>,
+    Json(request): Json<RemoveWatchRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.remove_watch_expression(&request.session_id, &request.watch_id) {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(DebugControlResponse {
+                    success: true,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DebugControlResponse {
+                    success: false,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(DebugControlResponse {
+                success: false,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Get all watch expressions
+pub async fn get_watch_expressions(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.get_watch_expressions(&request.session_id) {
+            Ok(watches) => (
+                StatusCode::OK,
+                Json(WatchResponse {
+                    success: true,
+                    watches,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WatchResponse {
+                    success: false,
+                    watches: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(WatchResponse {
+                success: false,
+                watches: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Evaluate expression
+pub async fn evaluate_expression(
+    State(state): State<DebugState>,
+    Json(request): Json<EvaluateRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.evaluate_expression(&request.session_id, &request.expression, request.frame_id) {
+            Ok(result) => (
+                StatusCode::OK,
+                Json(EvaluateResponse {
+                    success: true,
+                    result: Some(result),
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(EvaluateResponse {
+                    success: false,
+                    result: None,
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(EvaluateResponse {
+                success: false,
+                result: None,
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}
+
+/// Evaluate all watch expressions
+pub async fn evaluate_all_watches(
+    State(state): State<DebugState>,
+    Json(request): Json<DebugControlRequest>,
+) -> impl IntoResponse {
+    let clients = state.dap_clients.lock().unwrap();
+    if let Some(client) = clients.get(&request.session_id) {
+        match client.evaluate_all_watches(&request.session_id) {
+            Ok(watches) => (
+                StatusCode::OK,
+                Json(WatchResponse {
+                    success: true,
+                    watches,
+                    error: None,
+                }),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WatchResponse {
+                    success: false,
+                    watches: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(WatchResponse {
+                success: false,
+                watches: Vec::new(),
+                error: Some("Debug session not found".to_string()),
+            }),
+        )
+    }
+}

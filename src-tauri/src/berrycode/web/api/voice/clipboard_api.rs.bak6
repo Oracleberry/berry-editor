@@ -1,0 +1,166 @@
+//! Clipboard monitoring API endpoints
+
+use axum::{extract::State, http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::berrycode::berrycode::copypaste::{ClipboardContent, ClipboardWatcher};
+use crate::berrycode::berrycode::Result;
+
+/// Clipboard API state
+#[derive(Clone)]
+pub struct ClipboardApiState {
+    watcher: Arc<ClipboardWatcher>,
+}
+
+impl ClipboardApiState {
+    /// Create new clipboard API state
+    pub fn new() -> Result<Self> {
+        let watcher = ClipboardWatcher::new()?;
+        Ok(Self {
+            watcher: Arc::new(watcher),
+        })
+    }
+}
+
+/// Get current clipboard content
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipboardResponse {
+    pub content: Option<ClipboardContent>,
+    pub success: bool,
+}
+
+/// Save content to clipboard
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SaveClipboardRequest {
+    pub text: String,
+}
+
+/// Error response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub success: bool,
+}
+
+type ClipboardResult<T> = std::result::Result<T, (StatusCode, Json<ErrorResponse>)>;
+
+fn clipboard_error(status: StatusCode, message: String) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message,
+            success: false,
+        }),
+    )
+}
+
+/// Get current clipboard content
+///
+/// GET /api/clipboard/current
+pub async fn get_clipboard(
+    State(state): State<ClipboardApiState>,
+) -> ClipboardResult<Json<ClipboardResponse>> {
+    tracing::debug!("Getting current clipboard content");
+
+    let content = state
+        .watcher
+        .get_current()
+        .map_err(|e| {
+            tracing::error!("Failed to get clipboard: {}", e);
+            clipboard_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get clipboard: {}", e),
+            )
+        })?;
+
+    Ok(Json(ClipboardResponse {
+        content,
+        success: true,
+    }))
+}
+
+/// Check for new clipboard content (monitors for changes)
+///
+/// GET /api/clipboard/check
+pub async fn check_clipboard(
+    State(state): State<ClipboardApiState>,
+) -> ClipboardResult<Json<ClipboardResponse>> {
+    tracing::debug!("Checking for new clipboard content");
+
+    let content = state
+        .watcher
+        .check()
+        .map_err(|e| {
+            tracing::error!("Failed to check clipboard: {}", e);
+            clipboard_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to check clipboard: {}", e),
+            )
+        })?;
+
+    Ok(Json(ClipboardResponse {
+        content,
+        success: true,
+    }))
+}
+
+/// Save text to clipboard
+///
+/// POST /api/clipboard/save
+/// Body: { "text": "content to save" }
+pub async fn save_to_clipboard(
+    State(state): State<ClipboardApiState>,
+    Json(request): Json<SaveClipboardRequest>,
+) -> ClipboardResult<Json<serde_json::Value>> {
+    tracing::debug!("Saving {} bytes to clipboard", request.text.len());
+
+    state
+        .watcher
+        .set(&request.text)
+        .map_err(|e| {
+            tracing::error!("Failed to save to clipboard: {}", e);
+            clipboard_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to save to clipboard: {}", e),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Content saved to clipboard"
+    })))
+}
+
+/// Health check endpoint for clipboard API
+///
+/// GET /api/clipboard/health
+pub async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "clipboard-monitoring"
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_response_structure() {
+        let err = ErrorResponse {
+            error: "Test error".to_string(),
+            success: false,
+        };
+        assert_eq!(err.error, "Test error");
+        assert!(!err.success);
+    }
+
+    #[test]
+    fn test_save_request_structure() {
+        let req = SaveClipboardRequest {
+            text: "Hello world".to_string(),
+        };
+        assert_eq!(req.text, "Hello world");
+    }
+}

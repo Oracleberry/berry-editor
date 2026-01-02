@@ -1,0 +1,193 @@
+//! Voice transcription API endpoints
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    Json,
+};
+use axum_extra::extract::Multipart;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::berrycode::berrycode::voice::{AudioFormat, VoiceInput};
+use crate::berrycode::berrycode::Result;
+
+/// Voice API state
+#[derive(Clone)]
+pub struct VoiceApiState {
+    voice_input: Arc<VoiceInput>,
+}
+
+impl VoiceApiState {
+    /// Create new voice API state
+    pub fn new(api_key: String) -> Result<Self> {
+        let voice_input = VoiceInput::new(api_key)?;
+        Ok(Self {
+            voice_input: Arc::new(voice_input),
+        })
+    }
+}
+
+/// Transcription request (for file upload)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TranscribeRequest {
+    pub format: Option<String>,
+}
+
+/// Transcription response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TranscribeResponse {
+    pub text: String,
+    pub success: bool,
+}
+
+/// Error response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub success: bool,
+}
+
+type VoiceResult<T> = std::result::Result<T, (StatusCode, Json<ErrorResponse>)>;
+
+fn voice_error(status: StatusCode, message: String) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message,
+            success: false,
+        }),
+    )
+}
+
+/// Transcribe audio from multipart file upload
+///
+/// POST /api/voice/transcribe
+/// Content-Type: multipart/form-data
+///
+/// Form fields:
+/// - file: Audio file (required)
+/// - format: Audio format (optional, auto-detected from filename)
+pub async fn transcribe_audio(
+    State(state): State<VoiceApiState>,
+    mut multipart: Multipart,
+) -> VoiceResult<Json<TranscribeResponse>> {
+    tracing::debug!("Received transcription request");
+
+    let mut audio_data: Option<Vec<u8>> = None;
+    let mut detected_format: Option<AudioFormat> = None;
+
+    // Parse multipart form
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| voice_error(StatusCode::BAD_REQUEST, format!("Invalid multipart data: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "file" => {
+                // Get filename to detect format
+                if let Some(filename) = field.file_name() {
+                    if let Some(ext) = filename.split('.').last() {
+                        detected_format = AudioFormat::from_extension(ext);
+                        tracing::debug!("Detected format from filename '{}': {:?}", filename, detected_format);
+                    }
+                }
+
+                // Read file data
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| voice_error(StatusCode::BAD_REQUEST, format!("Failed to read file: {}", e)))?;
+
+                audio_data = Some(data.to_vec());
+                tracing::debug!("Received audio file: {} bytes", data.len());
+            }
+            "format" => {
+                // Optional explicit format specification
+                let format_str = field
+                    .text()
+                    .await
+                    .map_err(|e| voice_error(StatusCode::BAD_REQUEST, format!("Invalid format field: {}", e)))?;
+
+                detected_format = AudioFormat::from_extension(&format_str);
+                tracing::debug!("Format specified explicitly: {:?}", detected_format);
+            }
+            _ => {
+                tracing::debug!("Ignoring unknown field: {}", name);
+            }
+        }
+    }
+
+    // Validate we have audio data
+    let audio_data = audio_data.ok_or_else(|| {
+        voice_error(
+            StatusCode::BAD_REQUEST,
+            "No audio file provided".to_string(),
+        )
+    })?;
+
+    // Validate we detected a format
+    let format = detected_format.ok_or_else(|| {
+        voice_error(
+            StatusCode::BAD_REQUEST,
+            "Could not detect audio format. Supported: wav, mp3, ogg, webm, m4a".to_string(),
+        )
+    })?;
+
+    // Transcribe using Whisper API
+    let text = state
+        .voice_input
+        .transcribe(&audio_data, format)
+        .await
+        .map_err(|e| {
+            tracing::error!("Transcription failed: {}", e);
+            voice_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Transcription failed: {}", e),
+            )
+        })?;
+
+    tracing::info!("Transcription successful: {} characters", text.len());
+
+    Ok(Json(TranscribeResponse {
+        text,
+        success: true,
+    }))
+}
+
+/// Health check endpoint for voice API
+///
+/// GET /api/voice/health
+pub async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "voice-transcription"
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_response_structure() {
+        let err = ErrorResponse {
+            error: "Test error".to_string(),
+            success: false,
+        };
+        assert_eq!(err.error, "Test error");
+        assert!(!err.success);
+    }
+
+    #[test]
+    fn test_transcribe_response_structure() {
+        let resp = TranscribeResponse {
+            text: "Hello world".to_string(),
+            success: true,
+        };
+        assert_eq!(resp.text, "Hello world");
+        assert!(resp.success);
+    }
+}

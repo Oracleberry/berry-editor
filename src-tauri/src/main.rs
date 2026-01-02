@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod berrycode_commands; // ✅ BerryCode CLI integration
 mod database; // ✅ Database Tools: Connection management
 mod fs_commands;
 mod git;
@@ -14,6 +15,7 @@ mod syntax_highlighter; // ✅ Parallel syntax highlighting with rayon // ✅ St
 mod terminal; // ✅ Terminal: Tauri commands for terminal management
 mod workflow; // ✅ Workflow Automation: Pipeline execution
 
+use berrycode_commands::BerryCodeState;
 use database::DbManager;
 use git::GitManager;
 use indexer::SymbolIndex;
@@ -111,8 +113,27 @@ fn main() {
             terminal::commands::terminal_kill_process,
             terminal::commands::terminal_change_directory,
             terminal::commands::terminal_get_current_directory,
+            // ✅ BerryCode CLI commands
+            berrycode_commands::berrycode_init,
+            berrycode_commands::berrycode_chat,
+            berrycode_commands::berrycode_add_file,
+            berrycode_commands::berrycode_drop_file,
+            berrycode_commands::berrycode_list_files,
+            berrycode_commands::berrycode_get_history,
+            berrycode_commands::berrycode_clear_history,
+            berrycode_commands::berrycode_set_model,
+            berrycode_commands::berrycode_list_models,
+            berrycode_commands::berrycode_execute_command,
+            berrycode_commands::berrycode_get_config,
+            berrycode_commands::berrycode_commit,
+            berrycode_commands::berrycode_diff,
+            berrycode_commands::berrycode_undo,
         ])
         .setup(|app| {
+            // ✅ BerryCode CLI: Initialize BerryCodeState
+            let berrycode_state = BerryCodeState::default();
+            app.manage(berrycode_state);
+
             // ✅ Database Tools: Initialize DbManager
             let db_manager = DbManager::new(&app.handle());
             app.manage(db_manager);

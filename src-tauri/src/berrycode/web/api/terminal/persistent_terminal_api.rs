@@ -1,0 +1,266 @@
+//! Persistent Terminal API
+//!
+//! Devin-style terminal API with state persistence.
+//! Replaces the old stateless terminal API.
+
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use crate::berrycode::web::infrastructure::session_db::SessionDbStore;
+use crate::berrycode::persistent_terminal::{TerminalManager, ProcessStatus};
+
+/// Persistent Terminal API state
+#[derive(Clone)]
+pub struct PersistentTerminalApiState {
+    pub session_store: SessionDbStore,
+    /// Map of BerryCode session ID to terminal session ID
+    pub terminal_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Terminal manager
+    pub terminal_manager: Arc<TerminalManager>,
+}
+
+impl PersistentTerminalApiState {
+    pub fn new(session_store: SessionDbStore) -> Self {
+        Self {
+            session_store,
+            terminal_sessions: Arc::new(RwLock::new(HashMap::new())),
+            terminal_manager: Arc::new(TerminalManager::new()),
+        }
+    }
+}
+
+/// Session query parameter
+#[derive(Debug, Deserialize)]
+pub struct SessionQuery {
+    pub session_id: String,
+}
+
+/// Terminal command request
+#[derive(Debug, Deserialize)]
+pub struct TerminalCommandRequest {
+    pub command: String,
+    pub background: Option<bool>,
+}
+
+/// Terminal command response
+#[derive(Debug, Serialize)]
+pub struct TerminalCommandResponse {
+    pub output: String,
+    pub success: bool,
+    pub process_id: Option<String>, // For background processes
+}
+
+/// Background process info
+#[derive(Debug, Serialize)]
+pub struct BackgroundProcessInfo {
+    pub id: String,
+    pub command: String,
+    pub pid: u32,
+    pub status: String,
+    pub output_lines: Vec<String>,
+}
+
+/// Change directory request
+#[derive(Debug, Deserialize)]
+pub struct ChangeDirRequest {
+    pub path: String,
+}
+
+/// Kill process request
+#[derive(Debug, Deserialize)]
+pub struct KillProcessRequest {
+    pub process_id: String,
+}
+
+/// Execute command in persistent terminal
+pub async fn execute_persistent_command(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+    Json(payload): Json<TerminalCommandRequest>,
+) -> Result<Json<TerminalCommandResponse>, StatusCode> {
+    // Get or create terminal session
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to get terminal: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Execute command
+    let result = if payload.background.unwrap_or(false) {
+        // Execute in background
+        terminal
+            .execute_background(&payload.command)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to execute background command: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        // Execute normally
+        terminal.execute(&payload.command).await.map_err(|e| {
+            tracing::error!("Failed to execute command: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+
+    let process_id = if payload.background.unwrap_or(false) {
+        Some(result.clone())
+    } else {
+        None
+    };
+
+    Ok(Json(TerminalCommandResponse {
+        output: result,
+        success: true,
+        process_id,
+    }))
+}
+
+/// Get command history
+pub async fn get_persistent_command_history(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let history = terminal.get_history().await;
+
+    Ok(Json(history))
+}
+
+/// List background processes
+pub async fn list_background_processes(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+) -> Result<Json<Vec<BackgroundProcessInfo>>, StatusCode> {
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let processes = terminal.list_background_processes().await;
+
+    let process_info: Vec<BackgroundProcessInfo> = processes
+        .into_iter()
+        .map(|p| BackgroundProcessInfo {
+            id: p.id,
+            command: p.command,
+            pid: p.pid,
+            status: match p.status {
+                ProcessStatus::Running => "running".to_string(),
+                ProcessStatus::Completed(code) => format!("completed ({})", code),
+                ProcessStatus::Failed(msg) => format!("failed: {}", msg),
+            },
+            output_lines: p.output_buffer,
+        })
+        .collect();
+
+    Ok(Json(process_info))
+}
+
+/// Kill a background process
+pub async fn kill_background_process(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+    Json(payload): Json<KillProcessRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    terminal
+        .kill_process(&payload.process_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to kill process: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(StatusCode::OK)
+}
+
+/// Change working directory
+pub async fn change_directory(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+    Json(payload): Json<ChangeDirRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    terminal.cd(&payload.path).await.map_err(|e| {
+        tracing::error!("Failed to change directory: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(StatusCode::OK)
+}
+
+/// Get current working directory
+pub async fn get_current_directory(
+    Query(session_query): Query<SessionQuery>,
+    State(state): State<PersistentTerminalApiState>,
+) -> Result<Json<String>, StatusCode> {
+    let terminal = get_or_create_terminal(&state, &session_query.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cwd = terminal.get_cwd().await.map_err(|e| {
+        tracing::error!("Failed to get current directory: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(cwd.to_string_lossy().to_string()))
+}
+
+/// Helper: Get or create terminal session for a BerryCode session
+async fn get_or_create_terminal(
+    state: &PersistentTerminalApiState,
+    berrycode_session_id: &str,
+) -> anyhow::Result<Arc<crate::berrycode::persistent_terminal::PersistentTerminal>> {
+    // Check if terminal session exists
+    let terminal_sessions = state.terminal_sessions.read().await;
+    if let Some(terminal_session_id) = terminal_sessions.get(berrycode_session_id) {
+        if let Some(terminal) = state.terminal_manager.get_session(terminal_session_id).await {
+            return Ok(terminal);
+        }
+    }
+    drop(terminal_sessions);
+
+    // Get BerryCode session to get working directory
+    let session = state
+        .session_store
+        .get_session(berrycode_session_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+    // Create new terminal session
+    let terminal_session_id = state
+        .terminal_manager
+        .create_session(session.project_root.clone())
+        .await?;
+
+    // Store mapping
+    state
+        .terminal_sessions
+        .write()
+        .await
+        .insert(berrycode_session_id.to_string(), terminal_session_id.clone());
+
+    // Get and return terminal
+    state
+        .terminal_manager
+        .get_session(&terminal_session_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Failed to get terminal session"))
+}

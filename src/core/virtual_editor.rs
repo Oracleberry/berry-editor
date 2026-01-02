@@ -62,6 +62,12 @@ impl EditorTab {
         } else if file_path.ends_with(".py") {
             let _ = syntax_highlighter.set_language("python");
             Some("python".to_string())
+        } else if file_path.ends_with(".html") || file_path.ends_with(".htm") {
+            let _ = syntax_highlighter.set_language("html");
+            Some("html".to_string())
+        } else if file_path.ends_with(".css") {
+            let _ = syntax_highlighter.set_language("css");
+            Some("css".to_string())
         } else {
             None // サポートされていない拡張子
         };

@@ -1,0 +1,238 @@
+//! Authentication for web interface
+
+use crate::berrycode::berrycode::web::error::{
+    invalid_credentials, invalid_token, user_not_found, AuthError, ValidationError, WebError,
+    WebResult,
+};
+use axum::{
+    extract::State,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
+use axum_extra::extract::cookie::{Cookie, CookieJar};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+/// Authentication state
+#[derive(Clone)]
+pub struct AuthState {
+    users: Arc<RwLock<HashMap<String, User>>>,
+    sessions: Arc<RwLock<HashMap<String, String>>>, // token -> username
+}
+
+impl AuthState {
+    pub fn new() -> Self {
+        let mut users = HashMap::new();
+
+        // Default admin user (CHANGE IN PRODUCTION!)
+        users.insert(
+            "admin".to_string(),
+            User {
+                username: "admin".to_string(),
+                password_hash: Self::hash_password("admin"), // INSECURE - for demo only
+                role: "admin".to_string(),
+            },
+        );
+
+        Self {
+            users: Arc::new(RwLock::new(users)),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn hash_password(password: &str) -> String {
+        // In production, use bcrypt or argon2
+        // This is just for demonstration
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        password.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    }
+
+    pub fn verify_password(&self, username: &str, password: &str) -> bool {
+        let users = self.users.read().unwrap();
+        if let Some(user) = users.get(username) {
+            user.password_hash == Self::hash_password(password)
+        } else {
+            false
+        }
+    }
+
+    pub fn create_session(&self, username: String) -> String {
+        use uuid::Uuid;
+
+        let token = Uuid::new_v4().to_string();
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.insert(token.clone(), username);
+        token
+    }
+
+    pub fn verify_session(&self, token: &str) -> Option<String> {
+        let sessions = self.sessions.read().unwrap();
+        sessions.get(token).cloned()
+    }
+
+    pub fn destroy_session(&self, token: &str) {
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.remove(token);
+    }
+}
+
+impl Default for AuthState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// User
+#[derive(Debug, Clone)]
+pub struct User {
+    pub username: String,
+    pub password_hash: String,
+    pub role: String,
+}
+
+/// Login request
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Login response
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub username: String,
+}
+
+/// Login handler
+pub async fn login(
+    State(state): State<AuthState>,
+    jar: CookieJar,
+    Json(payload): Json<LoginRequest>,
+) -> WebResult<(CookieJar, Json<LoginResponse>)> {
+    // Validate input
+    validate_login_request(&payload)?;
+
+    tracing::info!(username = %payload.username, "Login attempt");
+
+    // Verify password
+    if !state.verify_password(&payload.username, &payload.password) {
+        tracing::warn!(username = %payload.username, "Invalid credentials");
+        return Err(invalid_credentials());
+    }
+
+    // Create session
+    let token = state.create_session(payload.username.clone());
+    tracing::info!(username = %payload.username, "Session created successfully");
+
+    // Cookie security settings
+    // - http_only: Prevent XSS attacks
+    // - secure: Require HTTPS (ensure your production environment uses HTTPS)
+    // - max_age: 7 days expiration
+    let cookie = Cookie::build(("session_token", token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true) // Requires HTTPS - disable for local HTTP testing
+        .max_age(time::Duration::days(7));
+
+    let jar = jar.add(cookie);
+
+    Ok((
+        jar,
+        Json(LoginResponse {
+            token,
+            username: payload.username,
+        }),
+    ))
+}
+
+/// Validate login request
+fn validate_login_request(req: &LoginRequest) -> WebResult<()> {
+    // Check username
+    if req.username.is_empty() {
+        return Err(WebError::Validation(ValidationError::MissingField(
+            "username".to_string(),
+        )));
+    }
+
+    if req.username.len() > 255 {
+        return Err(WebError::Validation(ValidationError::InvalidLength {
+            field: "username".to_string(),
+            min: 1,
+            max: 255,
+            actual: req.username.len(),
+        }));
+    }
+
+    // Check password
+    if req.password.is_empty() {
+        return Err(WebError::Validation(ValidationError::MissingField(
+            "password".to_string(),
+        )));
+    }
+
+    if req.password.len() < 8 {
+        return Err(WebError::Validation(ValidationError::InvalidLength {
+            field: "password".to_string(),
+            min: 8,
+            max: 1024,
+            actual: req.password.len(),
+        }));
+    }
+
+    if req.password.len() > 1024 {
+        return Err(WebError::Validation(ValidationError::InvalidLength {
+            field: "password".to_string(),
+            min: 8,
+            max: 1024,
+            actual: req.password.len(),
+        }));
+    }
+
+    Ok(())
+}
+
+/// Logout handler
+pub async fn logout(
+    State(state): State<AuthState>,
+    jar: CookieJar,
+) -> WebResult<(CookieJar, StatusCode)> {
+    if let Some(cookie) = jar.get("session_token") {
+        let token = cookie.value();
+        tracing::info!(token_prefix = %&token[..8.min(token.len())], "Logout attempt");
+        state.destroy_session(token);
+        tracing::info!("Session destroyed successfully");
+    } else {
+        tracing::debug!("Logout attempt without session token");
+    }
+
+    let jar = jar.remove(Cookie::from("session_token"));
+
+    Ok((jar, StatusCode::OK))
+}
+
+/// Verify authentication middleware
+pub async fn verify_auth(
+    State(state): State<AuthState>,
+    jar: CookieJar,
+) -> WebResult<Json<String>> {
+    let cookie = jar.get("session_token").ok_or_else(|| {
+        tracing::debug!("No session token cookie found");
+        invalid_token()
+    })?;
+
+    let token = cookie.value();
+    let username = state.verify_session(token).ok_or_else(|| {
+        tracing::warn!(token_prefix = %&token[..8.min(token.len())], "Invalid or expired session token");
+        invalid_token()
+    })?;
+
+    tracing::debug!(username = %username, "Session verified successfully");
+    Ok(Json(username))
+}

@@ -1,0 +1,443 @@
+//! GitHub OAuth and API integration for web interface
+
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::{Html, IntoResponse, Redirect},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+use crate::berrycode::web::infrastructure::session_db::SessionDbStore;
+use crate::berrycode::github_oauth::{GitHubOAuthClient, GitHubOAuthConfig, GitHubRepo};
+
+/// GitHub API state
+#[derive(Clone)]
+pub struct GitHubApiState {
+    pub oauth_config: GitHubOAuthConfig,
+    pub oauth_client: GitHubOAuthClient,
+    pub session_store: SessionDbStore,
+    /// Store OAuth states to prevent CSRF attacks
+    pub oauth_states: Arc<RwLock<HashMap<String, String>>>,
+    /// Store access tokens per session (in-memory for now)
+    pub access_tokens: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl GitHubApiState {
+    pub fn new(session_store: SessionDbStore) -> anyhow::Result<Self> {
+        let oauth_config = GitHubOAuthConfig::from_env()?;
+        let oauth_client = GitHubOAuthClient::new(oauth_config.clone());
+
+        Ok(Self {
+            oauth_config,
+            oauth_client,
+            session_store,
+            oauth_states: Arc::new(RwLock::new(HashMap::new())),
+            access_tokens: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+}
+
+/// OAuth callback parameters
+#[derive(Debug, Deserialize)]
+pub struct OAuthCallbackParams {
+    code: String,
+    state: String,
+}
+
+/// Clone repository request
+#[derive(Debug, Deserialize)]
+pub struct CloneRepoRequest {
+    pub clone_url: String,
+    pub target_dir: Option<String>,
+}
+
+/// Clone repository response
+#[derive(Debug, Serialize)]
+pub struct CloneRepoResponse {
+    pub success: bool,
+    pub path: String,
+    pub message: String,
+}
+
+/// Search repositories request
+#[derive(Debug, Deserialize)]
+pub struct SearchReposQuery {
+    pub query: String,
+}
+
+/// Initiate GitHub OAuth flow
+pub async fn github_auth_redirect(
+    State(state): State<GitHubApiState>,
+) -> Result<Redirect, StatusCode> {
+    // Generate random state for CSRF protection
+    let csrf_state = Uuid::new_v4().to_string();
+
+    // Store state
+    state.oauth_states.write().await.insert(csrf_state.clone(), csrf_state.clone());
+
+    // Generate authorization URL
+    let auth_url = state.oauth_config.authorization_url(&csrf_state);
+
+    tracing::info!("Redirecting to GitHub OAuth: {}", auth_url);
+
+    Ok(Redirect::temporary(&auth_url))
+}
+
+/// Handle GitHub OAuth callback
+pub async fn github_auth_callback(
+    Query(params): Query<OAuthCallbackParams>,
+    State(state): State<GitHubApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // Verify state to prevent CSRF
+    let states = state.oauth_states.read().await;
+    if !states.contains_key(&params.state) {
+        tracing::error!("Invalid OAuth state");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    drop(states);
+
+    // Remove used state
+    state.oauth_states.write().await.remove(&params.state);
+
+    // Exchange code for access token
+    let access_token = state
+        .oauth_client
+        .exchange_code(&params.code)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to exchange OAuth code: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Store access token (temporary in-memory storage)
+    // TODO: Store in database with proper encryption
+    let token_id = Uuid::new_v4().to_string();
+    state.access_tokens.write().await.insert(token_id.clone(), access_token);
+
+    tracing::info!("GitHub OAuth successful, token stored");
+
+    // Redirect back to index with success message and token_id in cookie/session
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>GitHub Connected</title>
+    <script>
+        // Store token_id in localStorage and redirect
+        localStorage.setItem('github_token_id', '{}');
+        window.location.href = '/?github_connected=true';
+    </script>
+</head>
+<body>
+    <p>Connecting to GitHub... Please wait.</p>
+</body>
+</html>"#,
+        token_id
+    );
+
+    Ok(Html(html))
+}
+
+/// Fetch user's GitHub repositories
+pub async fn fetch_github_repos(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<GitHubApiState>,
+) -> Result<Json<Vec<GitHubRepo>>, StatusCode> {
+    // Get token_id from query
+    let token_id = params.get("token_id").ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Fetch repositories
+    let repos = state
+        .oauth_client
+        .fetch_repositories(access_token)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to fetch repositories: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Fetched {} repositories from GitHub", repos.len());
+
+    Ok(Json(repos))
+}
+
+/// Search GitHub repositories
+pub async fn search_github_repos(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<GitHubApiState>,
+) -> Result<Json<Vec<GitHubRepo>>, StatusCode> {
+    // Get token_id and query from params
+    let token_id = params.get("token_id").ok_or(StatusCode::UNAUTHORIZED)?;
+    let query = params.get("query").ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Search repositories
+    let repos = state
+        .oauth_client
+        .search_repositories(access_token, query)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to search repositories: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Found {} repositories matching '{}'", repos.len(), query);
+
+    Ok(Json(repos))
+}
+
+/// Clone a Git repository
+pub async fn clone_repository(
+    State(state): State<GitHubApiState>,
+    Json(payload): Json<CloneRepoRequest>,
+) -> Result<Json<CloneRepoResponse>, StatusCode> {
+    use git2::Repository;
+
+    // Determine target directory
+    let target_dir = if let Some(dir) = payload.target_dir {
+        PathBuf::from(dir)
+    } else {
+        // Extract repo name from URL
+        let repo_name = extract_repo_name(&payload.clone_url);
+        let home_dir = dirs::home_dir().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        home_dir.join("berrycode-projects").join(repo_name)
+    };
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = target_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            tracing::error!("Failed to create parent directory: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    tracing::info!("Cloning {} to {:?}", payload.clone_url, target_dir);
+
+    // Clone the repository
+    match Repository::clone(&payload.clone_url, &target_dir) {
+        Ok(_) => {
+            tracing::info!("Successfully cloned repository to {:?}", target_dir);
+
+            Ok(Json(CloneRepoResponse {
+                success: true,
+                path: target_dir.to_string_lossy().to_string(),
+                message: format!("Successfully cloned to {}", target_dir.display()),
+            }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to clone repository: {}", e);
+
+            Ok(Json(CloneRepoResponse {
+                success: false,
+                path: String::new(),
+                message: format!("Failed to clone: {}", e),
+            }))
+        }
+    }
+}
+
+/// Extract repository name from clone URL
+fn extract_repo_name(url: &str) -> String {
+    url.trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .unwrap_or("cloned-repo")
+        .to_string()
+}
+
+/// Parse repository owner and name from full name
+fn parse_repo_full_name(full_name: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = full_name.split('/').collect();
+    if parts.len() == 2 {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+}
+
+/// Fetch issues from a repository
+pub async fn fetch_issues(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<GitHubApiState>,
+) -> Result<Json<Vec<crate::berrycode::github_oauth::GitHubIssue>>, StatusCode> {
+    // Get token_id and repo from query
+    let token_id = params.get("token_id").ok_or(StatusCode::UNAUTHORIZED)?;
+    let repo_full_name = params.get("repo").ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Parse owner/repo
+    let (owner, repo) = parse_repo_full_name(repo_full_name).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Fetch issues
+    let issues = state
+        .oauth_client
+        .fetch_issues(access_token, &owner, &repo)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to fetch issues: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Fetched {} issues from {}/{}", issues.len(), owner, repo);
+
+    Ok(Json(issues))
+}
+
+/// Create issue request
+#[derive(Debug, Deserialize)]
+pub struct CreateIssueApiRequest {
+    pub token_id: String,
+    pub repo: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub labels: Option<Vec<String>>,
+    pub assignees: Option<Vec<String>>,
+}
+
+/// Create a new issue
+pub async fn create_issue(
+    State(state): State<GitHubApiState>,
+    Json(payload): Json<CreateIssueApiRequest>,
+) -> Result<Json<crate::berrycode::github_oauth::GitHubIssue>, StatusCode> {
+    // Parse owner/repo
+    let (owner, repo) = parse_repo_full_name(&payload.repo).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(&payload.token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Create issue
+    let request = crate::berrycode::github_oauth::CreateIssueRequest {
+        title: payload.title,
+        body: payload.body,
+        labels: payload.labels,
+        assignees: payload.assignees,
+    };
+
+    let issue = state
+        .oauth_client
+        .create_issue(access_token, &owner, &repo, request)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create issue: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Created issue #{} in {}/{}", issue.number, owner, repo);
+
+    Ok(Json(issue))
+}
+
+/// Fetch pull requests from a repository
+pub async fn fetch_pull_requests(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<GitHubApiState>,
+) -> Result<Json<Vec<crate::berrycode::github_oauth::GitHubPullRequest>>, StatusCode> {
+    // Get token_id and repo from query
+    let token_id = params.get("token_id").ok_or(StatusCode::UNAUTHORIZED)?;
+    let repo_full_name = params.get("repo").ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Parse owner/repo
+    let (owner, repo) = parse_repo_full_name(repo_full_name).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Fetch pull requests
+    let prs = state
+        .oauth_client
+        .fetch_pull_requests(access_token, &owner, &repo)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to fetch pull requests: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Fetched {} pull requests from {}/{}", prs.len(), owner, repo);
+
+    Ok(Json(prs))
+}
+
+/// Create pull request request
+#[derive(Debug, Deserialize)]
+pub struct CreatePullRequestApiRequest {
+    pub token_id: String,
+    pub repo: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub head: String,
+    pub base: String,
+}
+
+/// Create a new pull request
+pub async fn create_pull_request(
+    State(state): State<GitHubApiState>,
+    Json(payload): Json<CreatePullRequestApiRequest>,
+) -> Result<Json<crate::berrycode::github_oauth::GitHubPullRequest>, StatusCode> {
+    // Parse owner/repo
+    let (owner, repo) = parse_repo_full_name(&payload.repo).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Get access token
+    let tokens = state.access_tokens.read().await;
+    let access_token = tokens.get(&payload.token_id).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Create pull request
+    let request = crate::berrycode::github_oauth::CreatePullRequestRequest {
+        title: payload.title,
+        body: payload.body,
+        head: payload.head,
+        base: payload.base,
+    };
+
+    let pr = state
+        .oauth_client
+        .create_pull_request(access_token, &owner, &repo, request)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create pull request: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Created pull request #{} in {}/{}", pr.number, owner, repo);
+
+    Ok(Json(pr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_repo_name() {
+        assert_eq!(
+            extract_repo_name("https://github.com/user/repo.git"),
+            "repo"
+        );
+        assert_eq!(
+            extract_repo_name("https://github.com/user/repo"),
+            "repo"
+        );
+        assert_eq!(
+            extract_repo_name("git@github.com:user/repo.git"),
+            "repo"
+        );
+    }
+}

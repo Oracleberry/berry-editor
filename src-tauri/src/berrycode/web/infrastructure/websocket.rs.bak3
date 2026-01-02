@@ -1,0 +1,586 @@
+//! WebSocket handler for real-time communication
+
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
+    response::Response,
+};
+use serde::{Deserialize, Serialize};
+
+use super::session_db::SessionDbStore;
+use crate::berrycode::llm::{LLMClient, Message as LLMMessage};
+use crate::berrycode::models::Model;
+use crate::berrycode::conversation_engine::{ConversationEngine, ToolCallback};
+use crate::berrycode::pipeline::WorkflowProgressMessage;
+
+/// WebSocket state
+#[derive(Clone)]
+pub struct WsState {
+    pub session_store: SessionDbStore,
+}
+
+/// WebSocket message types
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum WsMessageType {
+    /// User message to AI
+    #[serde(rename = "user_message")]
+    UserMessage {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        task_type: Option<String>,
+    },
+
+    /// AI response
+    #[serde(rename = "ai_response")]
+    AiResponse { content: String },
+
+    /// Tool execution
+    #[serde(rename = "tool_execution")]
+    ToolExecution { tool_name: String, status: String },
+
+    /// File diff
+    #[serde(rename = "file_diff")]
+    FileDiff { file: String, diff: String },
+
+    /// Implementation plan
+    #[serde(rename = "plan")]
+    Plan {
+        title: String,
+        description: String,
+        steps: Vec<String>,
+        risks: Vec<String>,
+        files_to_modify: Vec<String>,
+    },
+
+    /// Plan approval response
+    #[serde(rename = "plan_response")]
+    PlanResponse { approved: bool, feedback: Option<String> },
+
+    /// System message
+    #[serde(rename = "system")]
+    System { message: String },
+
+    /// Error message
+    #[serde(rename = "error")]
+    Error { message: String },
+
+    /// Workflow progress update
+    #[serde(rename = "workflow_progress")]
+    WorkflowProgress {
+        node_id: String,
+        node_name: String,
+        status: String, // "running", "success", "failure"
+        message: String,
+        loop_count: usize,
+    },
+
+    /// Workflow completed
+    #[serde(rename = "workflow_complete")]
+    WorkflowComplete {
+        success: bool,
+        total_nodes: usize,
+        execution_time: String,
+    },
+
+    /// Terminal command
+    #[serde(rename = "terminal_command")]
+    TerminalCommand {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        command: String,
+        cwd: Option<String>,
+    },
+
+    /// Terminal output
+    #[serde(rename = "terminal_output")]
+    TerminalOutput {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        output: String,
+        is_error: bool,
+    },
+}
+
+/// Callback implementation for WebSocket
+struct WebSocketCallback<'a> {
+    socket: &'a mut WebSocket,
+}
+
+impl<'a> WebSocketCallback<'a> {
+    fn new(socket: &'a mut WebSocket) -> Self {
+        Self { socket }
+    }
+
+    async fn send_message(&mut self, msg: WsMessageType) {
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = self.socket.send(Message::Text(json)).await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<'a> ToolCallback for WebSocketCallback<'a> {
+    async fn on_tool_start(&mut self, tool_name: &str, args: &str) {
+        // Parse args to create a more informative display
+        let display_name = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args) {
+            match tool_name {
+                "read_file" => {
+                    if let Some(path) = parsed.get("file_path").and_then(|v| v.as_str()) {
+                        format!("{}: {}", tool_name, path)
+                    } else {
+                        tool_name.to_string()
+                    }
+                }
+                "write_file" | "edit_file" => {
+                    if let Some(path) = parsed.get("file_path").and_then(|v| v.as_str()) {
+                        format!("{}: {}", tool_name, path)
+                    } else {
+                        tool_name.to_string()
+                    }
+                }
+                "bash" => {
+                    if let Some(cmd) = parsed.get("command").and_then(|v| v.as_str()) {
+                        let display_cmd = if cmd.len() > 40 {
+                            format!("{}...", &cmd[..40])
+                        } else {
+                            cmd.to_string()
+                        };
+                        format!("bash: {}", display_cmd)
+                    } else {
+                        tool_name.to_string()
+                    }
+                }
+                "grep" => {
+                    if let Some(pattern) = parsed.get("pattern").and_then(|v| v.as_str()) {
+                        format!("grep: \"{}\"", pattern)
+                    } else {
+                        tool_name.to_string()
+                    }
+                }
+                _ => tool_name.to_string()
+            }
+        } else {
+            tool_name.to_string()
+        };
+
+        self.send_message(WsMessageType::ToolExecution {
+            tool_name: display_name,
+            status: "executing".to_string(),
+        }).await;
+    }
+
+    async fn on_tool_complete(&mut self, tool_name: &str, _result: &str) {
+        self.send_message(WsMessageType::ToolExecution {
+            tool_name: tool_name.to_string(),
+            status: "completed".to_string(),
+        }).await;
+    }
+
+    async fn on_response(&mut self, _text: &str) {
+        // Response is sent separately after conversation engine returns
+    }
+
+    async fn on_response_chunk(&mut self, chunk: &str) {
+        // Send streaming chunk to WebSocket
+        self.send_message(WsMessageType::AiResponse {
+            content: chunk.to_string(),
+        }).await;
+    }
+}
+
+/// WebSocket upgrade handler
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Path(session_id): Path<String>,
+    State(state): State<WsState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(socket, session_id, state))
+}
+
+/// Handle WebSocket connection
+async fn handle_socket(mut socket: WebSocket, session_id: String, state: WsState) {
+    tracing::info!("WebSocket connected for session: {}", session_id);
+
+    // Send welcome message
+    let welcome = WsMessageType::System {
+        message: "BerryCodeに接続しました。メッセージを入力して開始してください！".to_string(),
+    };
+
+    if let Ok(json) = serde_json::to_string(&welcome) {
+        let _ = socket.send(Message::Text(json)).await;
+    }
+
+    // Handle incoming messages
+    while let Some(msg) = socket.recv().await {
+        if let Ok(msg) = msg {
+            match msg {
+                Message::Text(text) => {
+                    tracing::info!("Received text message: {}", text);
+                    // Use ConversationEngine-based implementation (unified with CLI)
+                    if let Err(e) = handle_text_message(
+                        text,
+                        &session_id,
+                        &state,
+                        &mut socket,
+                    )
+                    .await
+                    {
+                        tracing::error!("Error handling message: {}", e);
+                        let error = WsMessageType::Error {
+                            message: format!("Error: {}", e),
+                        };
+                        if let Ok(json) = serde_json::to_string(&error) {
+                            let _ = socket.send(Message::Text(json)).await;
+                        }
+                    }
+                }
+                Message::Close(_) => {
+                    tracing::info!("WebSocket closed for session: {}", session_id);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Handle ls command with proper ANSI colors
+async fn handle_ls_command(
+    terminal_session_id: String,
+    command: String,
+    working_dir: String,
+    socket: &mut WebSocket,
+) -> anyhow::Result<()> {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    // Check for -a flag (show hidden files)
+    let show_hidden = command.contains(" -a") || command.contains(" -la") || command.contains(" -al");
+
+    let path = Path::new(&working_dir);
+    let mut entries = Vec::new();
+
+    // Read directory entries
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip hidden files unless -a flag is present
+        if !show_hidden && file_name.starts_with('.') {
+            continue;
+        }
+
+        let metadata = entry.metadata()?;
+
+        // Determine file type and apply ANSI color
+        let colored_name = if metadata.is_dir() {
+            // Blue for directories (ANSI code 34)
+            format!("\x1b[34m{}\x1b[0m", file_name)
+        } else if metadata.is_symlink() {
+            // Magenta for symlinks (ANSI code 35)
+            format!("\x1b[35m{}\x1b[0m", file_name)
+        } else if metadata.permissions().mode() & 0o111 != 0 {
+            // Green for executable files (ANSI code 32)
+            format!("\x1b[32m{}\x1b[0m", file_name)
+        } else {
+            // Default color for regular files
+            file_name
+        };
+
+        entries.push(colored_name);
+    }
+
+    // Sort entries
+    entries.sort();
+
+    // Format output (simple columnar layout)
+    let output = entries.join("\n") + "\n";
+
+    // Debug: Log the output with ANSI codes
+    tracing::info!("Sending ls output with ANSI codes:");
+    tracing::info!("Output length: {} bytes", output.len());
+    tracing::info!("First 200 chars: {:?}", &output.chars().take(200).collect::<String>());
+
+    // Send output
+    let output_msg = WsMessageType::TerminalOutput {
+        session_id: terminal_session_id,
+        output,
+        is_error: false,
+    };
+    if let Ok(json) = serde_json::to_string(&output_msg) {
+        socket.send(Message::Text(json)).await?;
+    }
+
+    Ok(())
+}
+
+/// Handle terminal command execution
+async fn handle_terminal_command(
+    terminal_session_id: String,
+    command: String,
+    cwd: Option<String>,
+    _state: &WsState,
+    socket: &mut WebSocket,
+) -> anyhow::Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    use tokio::process::Command;
+
+    // Execute command in the specified directory
+    let working_dir = cwd.unwrap_or_else(|| ".".to_string());
+
+    // Handle ls command specially to ensure colors work on macOS
+    if command.trim().starts_with("ls") && !command.contains("|") && !command.contains(">") {
+        return handle_ls_command(terminal_session_id, command, working_dir, socket).await;
+    }
+
+    // Add color support for ls command
+    // macOS uses -G for color, Linux uses --color=always
+    let enhanced_command = if command.trim().starts_with("ls") {
+        // Check if color flag is already specified
+        if !command.contains("--color") && !command.contains("-G") {
+            // Try to detect OS - macOS uses -G, Linux uses --color=always
+            let color_flag = if cfg!(target_os = "macos") {
+                "-G"
+            } else {
+                "--color=always"
+            };
+
+            // Parse the command to add color flag after ls
+            let parts: Vec<&str> = command.trim().splitn(2, ' ').collect();
+            if parts.len() == 1 {
+                format!("{} {}", command, color_flag)
+            } else {
+                format!("{} {} {}", parts[0], color_flag, parts[1])
+            }
+        } else {
+            command.clone()
+        }
+    } else {
+        command.clone()
+    };
+
+    tracing::info!("Executing terminal command in {}: {}", working_dir, enhanced_command);
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(&enhanced_command)
+        .current_dir(&working_dir)
+        .env("CLICOLOR_FORCE", "1")  // Force color output
+        .env("TERM", "xterm-256color")  // Set terminal type
+        .env("LSCOLORS", "ExGxFxdxCxDxDxhbadExEx")  // macOS ls colors
+        .env("LS_COLORS", "di=34:ln=35:so=32:pi=33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=30;43")  // Linux ls colors
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Read stdout
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+
+    let mut stdout_data = Vec::new();
+    let mut stderr_data = Vec::new();
+
+    // Read outputs
+    let stdout_read = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).await.ok();
+        buf
+    });
+
+    let stderr_read = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.ok();
+        buf
+    });
+
+    // Wait for reads to complete
+    stdout_data = stdout_read.await?;
+    stderr_data = stderr_read.await?;
+
+    // Wait for command to complete
+    let status = child.wait().await?;
+
+    // Send stdout
+    if !stdout_data.is_empty() {
+        let output_str = String::from_utf8_lossy(&stdout_data).to_string();
+        let output_msg = WsMessageType::TerminalOutput {
+            session_id: terminal_session_id.clone(),
+            output: output_str,
+            is_error: false,
+        };
+        if let Ok(json) = serde_json::to_string(&output_msg) {
+            socket.send(Message::Text(json)).await?;
+        }
+    }
+
+    // Send stderr
+    if !stderr_data.is_empty() {
+        let error_str = String::from_utf8_lossy(&stderr_data).to_string();
+        let error_msg = WsMessageType::TerminalOutput {
+            session_id: terminal_session_id.clone(),
+            output: error_str,
+            is_error: true,
+        };
+        if let Ok(json) = serde_json::to_string(&error_msg) {
+            socket.send(Message::Text(json)).await?;
+        }
+    }
+
+    // Send exit status if non-zero
+    if !status.success() {
+        let exit_msg = WsMessageType::TerminalOutput {
+            session_id: terminal_session_id,
+            output: format!("Command exited with status: {}\n", status.code().unwrap_or(-1)),
+            is_error: true,
+        };
+        if let Ok(json) = serde_json::to_string(&exit_msg) {
+            socket.send(Message::Text(json)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle text message from client using ConversationEngine
+async fn handle_text_message(
+    text: String,
+    session_id: &str,
+    state: &WsState,
+    socket: &mut WebSocket,
+) -> anyhow::Result<()> {
+    // Parse message
+    let user_msg: WsMessageType = serde_json::from_str(&text)?;
+
+    // Handle terminal command separately
+    if let WsMessageType::TerminalCommand { session_id: term_session_id, command, cwd } = user_msg {
+        return handle_terminal_command(term_session_id, command, cwd, state, socket).await;
+    }
+
+    if let WsMessageType::UserMessage { content, task_type } = user_msg {
+        // Get session
+        let session = state
+            .session_store
+            .get_session(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+        // Add to history
+        let _ = state
+            .session_store
+            .add_message(session_id, "user", &content)
+            .await;
+
+        // Get API key from environment
+        let openai_key = std::env::var("OPENAI_API_KEY").ok();
+        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+
+        let has_openai = openai_key.is_some();
+        let api_key = openai_key.or(anthropic_key);
+
+        if let Some(api_key) = api_key {
+            // Get model based on task type
+            let model_name = state
+                .session_store
+                .get_model_for_task(session_id, task_type.as_deref())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to get model for task: {}. Using fallback", e);
+                    std::env::var("BERRYCODE_MODEL")
+                        .or_else(|_| std::env::var("MODEL"))
+                        .unwrap_or_else(|_| {
+                            if has_openai {
+                                "gpt-4o-mini".to_string()
+                            } else {
+                                "claude-3-5-sonnet-20241022".to_string()
+                            }
+                        })
+                });
+
+            tracing::info!("Using model: {} for task_type: {:?}", model_name, task_type);
+
+            // Create model
+            let model = Model::new(model_name, None, None, None, false)?;
+
+            // Create LLM client
+            let llm_client = LLMClient::new(&model, api_key)?;
+
+            // Send "thinking" message
+            let thinking = WsMessageType::System {
+                message: "考え中...".to_string(),
+            };
+            if let Ok(json) = serde_json::to_string(&thinking) {
+                socket.send(Message::Text(json)).await?;
+            }
+
+            // Build messages from chat history
+            use crate::berrycode::prompts::PromptGenerator;
+            let prompt_gen = PromptGenerator::new("diff".to_string());
+            let system_prompt = prompt_gen.generate_system_prompt(&[]);
+
+            let mut messages = vec![LLMMessage::system(system_prompt)];
+
+            // Add chat history
+            for msg in &session.chat_history {
+                messages.push(LLMMessage {
+                    role: msg.role.clone(),
+                    content: Some(msg.content.clone()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+
+            // Add current user message
+            messages.push(LLMMessage {
+                role: "user".to_string(),
+                content: Some(content.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+
+            // Create ConversationEngine with project root
+            let engine = ConversationEngine::with_project_root(&session.project_root);
+
+            // Create WebSocketCallback
+            let mut callback = WebSocketCallback::new(socket);
+
+            // Execute conversation with ConversationEngine
+            // This now includes:
+            // - Proactive tool execution (Router)
+            // - Parallel tool execution (SHOTGUN MODE)
+            // - Context window management
+            // - Prompt optimization
+            let final_response = engine
+                .execute(&llm_client, messages, &session.project_root, &mut callback)
+                .await?;
+
+            tracing::info!("ConversationEngine completed with response length: {}", final_response.len());
+
+            // Add final response to history
+            let _ = state.session_store.add_message(session_id, "assistant", &final_response).await;
+
+            // Send final response
+            let ai_response = WsMessageType::AiResponse {
+                content: final_response,
+            };
+            if let Ok(json) = serde_json::to_string(&ai_response) {
+                socket.send(Message::Text(json)).await?;
+            }
+
+            tracing::info!("Conversation completed (ConversationEngine mode)");
+        } else {
+            let error = WsMessageType::Error {
+                message: "APIキーが設定されていません。OPENAI_API_KEY または ANTHROPIC_API_KEY 環境変数を設定してください。".to_string(),
+            };
+            if let Ok(json) = serde_json::to_string(&error) {
+                socket.send(Message::Text(json)).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
