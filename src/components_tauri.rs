@@ -8,6 +8,7 @@ use crate::database_panel::DatabasePanel;
 use crate::workflow_panel::WorkflowPanel;
 use crate::terminal_panel::TerminalPanel;
 use crate::berrycode_panel::BerryCodePanel;
+use crate::settings::EditorSettings;
 use crate::tauri_bindings;
 use leptos::prelude::*;
 
@@ -292,6 +293,14 @@ pub fn EditorAppTauri() -> impl IntoView {
                             }.into_any()
                         },
                         ActivePanel::Settings => {
+                            let settings = RwSignal::new(EditorSettings::load());
+
+                            let save_settings = move || {
+                                let s = settings.get();
+                                let _ = s.save();
+                                leptos::logging::log!("Settings saved");
+                            };
+
                             view! {
                                 <div class="berry-editor-sidebar" style="background: #252526; height: 100%; display: flex; flex-direction: column;">
                                     <div class="berry-editor-sidebar-header" style="
@@ -311,21 +320,93 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 "Editor"
                                             </div>
                                             <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                // Font Size
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Font Size"</span>
-                                                    <span style="color: #858585;">"13px"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="8"
+                                                        max="32"
+                                                        prop:value=move || settings.get().font_size
+                                                        on:input=move |ev| {
+                                                            if let Ok(val) = event_target_value(&ev).parse() {
+                                                                settings.update(|s| s.font_size = val);
+                                                                save_settings();
+                                                            }
+                                                        }
+                                                        style="width: 60px; background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    />
                                                 </div>
+
+                                                // Font Family
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Font Family"</span>
-                                                    <span style="color: #858585;">"JetBrains Mono"</span>
+                                                    <select
+                                                        prop:value=move || settings.get().font_family.clone()
+                                                        on:change=move |ev| {
+                                                            let val = event_target_value(&ev);
+                                                            settings.update(|s| s.font_family = val);
+                                                            save_settings();
+                                                        }
+                                                        style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    >
+                                                        {EditorSettings::available_fonts().into_iter().map(|font| {
+                                                            view! {
+                                                                <option value=font>{font}</option>
+                                                            }
+                                                        }).collect_view()}
+                                                    </select>
                                                 </div>
+
+                                                // Line Height
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Line Height"</span>
-                                                    <span style="color: #858585;">"20px"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="14"
+                                                        max="40"
+                                                        prop:value=move || settings.get().line_height
+                                                        on:input=move |ev| {
+                                                            if let Ok(val) = event_target_value(&ev).parse() {
+                                                                settings.update(|s| s.line_height = val);
+                                                                save_settings();
+                                                            }
+                                                        }
+                                                        style="width: 60px; background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    />
                                                 </div>
+
+                                                // Tab Size
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Tab Size"</span>
-                                                    <span style="color: #858585;">"4"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="2"
+                                                        max="8"
+                                                        prop:value=move || settings.get().tab_size
+                                                        on:input=move |ev| {
+                                                            if let Ok(val) = event_target_value(&ev).parse() {
+                                                                settings.update(|s| s.tab_size = val);
+                                                                save_settings();
+                                                            }
+                                                        }
+                                                        style="width: 60px; background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    />
+                                                </div>
+
+                                                // Word Wrap
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Word Wrap"</span>
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || settings.get().word_wrap
+                                                        on:change=move |ev| {
+                                                            let checked = event_target_checked(&ev);
+                                                            settings.update(|s| s.word_wrap = checked);
+                                                            save_settings();
+                                                        }
+                                                        style="cursor: pointer;"
+                                                    />
                                                 </div>
                                             </div>
                                         </div>
@@ -336,13 +417,24 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 "Theme"
                                             </div>
                                             <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                // Color Theme
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Color Theme"</span>
-                                                    <span style="color: #858585;">"RustRover Darcula"</span>
-                                                </div>
-                                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                                    <span style="color: #BCBEC4;">"Icon Theme"</span>
-                                                    <span style="color: #858585;">"Codicons"</span>
+                                                    <select
+                                                        prop:value=move || settings.get().color_theme.clone()
+                                                        on:change=move |ev| {
+                                                            let val = event_target_value(&ev);
+                                                            settings.update(|s| s.color_theme = val);
+                                                            save_settings();
+                                                        }
+                                                        style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    >
+                                                        {EditorSettings::available_themes().into_iter().map(|theme| {
+                                                            view! {
+                                                                <option value=theme>{theme}</option>
+                                                            }
+                                                        }).collect_view()}
+                                                    </select>
                                                 </div>
                                             </div>
                                         </div>
@@ -353,13 +445,59 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 "BerryCode AI"
                                             </div>
                                             <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                // Model
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Model"</span>
-                                                    <span style="color: #858585;">"gpt-4o"</span>
+                                                    <select
+                                                        prop:value=move || settings.get().ai_model.clone()
+                                                        on:change=move |ev| {
+                                                            let val = event_target_value(&ev);
+                                                            settings.update(|s| s.ai_model = val);
+                                                            save_settings();
+                                                        }
+                                                        style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    >
+                                                        {EditorSettings::available_models().into_iter().map(|model| {
+                                                            view! {
+                                                                <option value=model>{model}</option>
+                                                            }
+                                                        }).collect_view()}
+                                                    </select>
                                                 </div>
+
+                                                // Mode
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Mode"</span>
-                                                    <span style="color: #858585;">"Code"</span>
+                                                    <select
+                                                        prop:value=move || settings.get().ai_mode.clone()
+                                                        on:change=move |ev| {
+                                                            let val = event_target_value(&ev);
+                                                            settings.update(|s| s.ai_mode = val);
+                                                            save_settings();
+                                                        }
+                                                        style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
+                                                    >
+                                                        {EditorSettings::available_modes().into_iter().map(|mode| {
+                                                            view! {
+                                                                <option value=mode>{mode}</option>
+                                                            }
+                                                        }).collect_view()}
+                                                    </select>
+                                                </div>
+
+                                                // AI Enabled
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Enable AI"</span>
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || settings.get().ai_enabled
+                                                        on:change=move |ev| {
+                                                            let checked = event_target_checked(&ev);
+                                                            settings.update(|s| s.ai_enabled = checked);
+                                                            save_settings();
+                                                        }
+                                                        style="cursor: pointer;"
+                                                    />
                                                 </div>
                                             </div>
                                         </div>

@@ -55,6 +55,9 @@ pub mod terminal_panel;
 // BerryCode AI Assistant
 pub mod berrycode_panel;
 
+// Settings management
+pub mod settings;
+
 // Common types
 pub mod types;
 
