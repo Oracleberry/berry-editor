@@ -21,6 +21,7 @@ enum ActivePanel {
     Workflow,
     Terminal,
     VirtualOffice,
+    Settings,
 }
 
 /// Status Bar component with branding
@@ -178,6 +179,21 @@ pub fn EditorAppTauri() -> impl IntoView {
                     >
                         <i class="codicon codicon-organization" style="font-size: 25px !important;"></i>
                     </div>
+
+                    // Spacer to push settings to bottom
+                    <div style="flex: 1;"></div>
+
+                    // Settings icon (bottom)
+                    <div
+                        on:click=move |_| active_panel.set(ActivePanel::Settings)
+                        style=move || format!(
+                            "cursor: pointer; font-size: 25px !important; color: {}; transition: color 0.2s; line-height: 25px;",
+                            if active_panel.get() == ActivePanel::Settings { "#FFFFFF" } else { "#858585" }
+                        )
+                        title="Settings"
+                    >
+                        <i class="codicon codicon-settings-gear" style="font-size: 25px !important;"></i>
+                    </div>
                 </div>
 
                 // Sidebar - switches between all panels
@@ -270,6 +286,100 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 <li>"Code review sessions"</li>
                                                 <li>"Pair programming"</li>
                                             </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            }.into_any()
+                        },
+                        ActivePanel::Settings => {
+                            view! {
+                                <div class="berry-editor-sidebar" style="background: #252526; height: 100%; display: flex; flex-direction: column;">
+                                    <div class="berry-editor-sidebar-header" style="
+                                        padding: 8px 12px;
+                                        background: #2D2D30;
+                                        border-bottom: 1px solid #1e1e1e;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: #cccccc;
+                                    ">
+                                        "SETTINGS"
+                                    </div>
+                                    <div style="padding: 16px; color: #BCBEC4; font-size: 12px; overflow-y: auto; flex: 1;">
+                                        // Editor Settings
+                                        <div style="margin-bottom: 24px;">
+                                            <div style="font-weight: 600; margin-bottom: 12px; color: #FFFFFF;">
+                                                "Editor"
+                                            </div>
+                                            <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Font Size"</span>
+                                                    <span style="color: #858585;">"13px"</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Font Family"</span>
+                                                    <span style="color: #858585;">"JetBrains Mono"</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Line Height"</span>
+                                                    <span style="color: #858585;">"20px"</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Tab Size"</span>
+                                                    <span style="color: #858585;">"4"</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        // Theme Settings
+                                        <div style="margin-bottom: 24px;">
+                                            <div style="font-weight: 600; margin-bottom: 12px; color: #FFFFFF;">
+                                                "Theme"
+                                            </div>
+                                            <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Color Theme"</span>
+                                                    <span style="color: #858585;">"RustRover Darcula"</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Icon Theme"</span>
+                                                    <span style="color: #858585;">"Codicons"</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        // BerryCode AI Settings
+                                        <div style="margin-bottom: 24px;">
+                                            <div style="font-weight: 600; margin-bottom: 12px; color: #FFFFFF;">
+                                                "BerryCode AI"
+                                            </div>
+                                            <div style="display: flex; flex-direction: column; gap: 12px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Model"</span>
+                                                    <span style="color: #858585;">"gpt-4o"</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span style="color: #BCBEC4;">"Mode"</span>
+                                                    <span style="color: #858585;">"Code"</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        // About
+                                        <div style="margin-bottom: 24px;">
+                                            <div style="font-weight: 600; margin-bottom: 12px; color: #FFFFFF;">
+                                                "About"
+                                            </div>
+                                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                                <div style="color: #BCBEC4;">
+                                                    "BerryEditor v0.1.0"
+                                                </div>
+                                                <div style="color: #858585; font-size: 11px;">
+                                                    "100% Rust Code Editor"
+                                                </div>
+                                                <div style="color: #858585; font-size: 11px;">
+                                                    "Built with Leptos + Tauri + WASM"
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
