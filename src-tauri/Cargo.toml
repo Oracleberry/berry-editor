@@ -7,6 +7,10 @@ edition = "2021"
 name = "berry_editor_tauri"
 path = "src/lib.rs"
 
+[[bin]]
+name = "berrycode"
+path = "src/berrycode/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 

@@ -29,6 +29,7 @@ pub mod tauri_bindings_search;
 pub mod tauri_bindings_database;
 pub mod tauri_bindings_workflow;
 pub mod tauri_bindings_terminal;
+pub mod tauri_bindings_berrycode;
 
 // ✅ Web Workers for background processing
 pub mod syntax_worker; // ✅ Strategy 1: Non-blocking syntax analysis
@@ -50,6 +51,9 @@ pub mod workflow_panel;
 
 // Terminal
 pub mod terminal_panel;
+
+// BerryCode AI Assistant
+pub mod berrycode_panel;
 
 // Common types
 pub mod types;

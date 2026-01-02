@@ -7,6 +7,7 @@ use crate::search_panel::SearchPanel;
 use crate::database_panel::DatabasePanel;
 use crate::workflow_panel::WorkflowPanel;
 use crate::terminal_panel::TerminalPanel;
+use crate::berrycode_panel::BerryCodePanel;
 use crate::tauri_bindings;
 use leptos::prelude::*;
 
@@ -118,14 +119,14 @@ pub fn EditorAppTauri() -> impl IntoView {
                         <i class="codicon codicon-search" style="font-size: 25px !important;"></i>
                     </div>
 
-                    // Chat (BerryChat) icon
+                    // Chat (BerryCode AI) icon
                     <div
                         on:click=move |_| active_panel.set(ActivePanel::Chat)
                         style=move || format!(
                             "cursor: pointer; font-size: 25px !important; color: {}; transition: color 0.2s; line-height: 25px;",
                             if active_panel.get() == ActivePanel::Chat { "#FFFFFF" } else { "#858585" }
                         )
-                        title="BerryChat"
+                        title="BerryCode AI"
                     >
                         <i class="codicon codicon-comment-discussion" style="font-size: 25px !important;"></i>
                     </div>
@@ -223,34 +224,7 @@ pub fn EditorAppTauri() -> impl IntoView {
                         },
                         ActivePanel::Chat => {
                             view! {
-                                <div class="berry-editor-sidebar" style="background: #252526;">
-                                    <div class="berry-editor-sidebar-header" style="
-                                        padding: 8px 12px;
-                                        background: #2D2D30;
-                                        border-bottom: 1px solid #1e1e1e;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        color: #cccccc;
-                                    ">
-                                        "BERRYCHAT"
-                                    </div>
-                                    <div style="padding: 20px; color: #858585; font-size: 12px;">
-                                        <div style="margin-bottom: 10px;">
-                                            <i class="codicon codicon-info" style="margin-right: 8px;"></i>
-                                            "Team chat integration coming soon"
-                                        </div>
-                                        <div style="margin-top: 20px; font-size: 11px; line-height: 1.6;">
-                                            "Features:"
-                                            <ul style="margin-top: 8px; padding-left: 20px;">
-                                                <li>"Channel management"</li>
-                                                <li>"Direct messaging"</li>
-                                                <li>"Real-time notifications"</li>
-                                                <li>"File sharing"</li>
-                                                <li>"Code snippets"</li>
-                                            </ul>
-                                        </div>
-                                    </div>
-                                </div>
+                                <BerryCodePanel project_path=Signal::derive(move || root_path.get()) />
                             }.into_any()
                         },
                         ActivePanel::Database => {
