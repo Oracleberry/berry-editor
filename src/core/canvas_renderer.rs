@@ -242,13 +242,30 @@ impl CanvasRenderer {
     }
 
     /// シンタックスハイライト付きでテキスト行を描画
-    pub fn draw_line_highlighted(&self, y_offset: f64, text: &str, theme: &EditorTheme) {
+    /// language: Some("rust") の場合はRustトークナイザーを使用、Noneの場合は単色
+    pub fn draw_line_highlighted(&self, y_offset: f64, text: &str, theme: &EditorTheme, language: Option<&str>) {
         // ピクセルグリッドに合わせて整数に丸める（シャープなレンダリング）
         let x_base = (self.gutter_width + 15.0).round();
         let y = (y_offset + 15.0).round();
 
-        // トークンに分解してハイライト
-        let tokens = self.tokenize_rust(text);
+        // 言語が指定されていない場合は単色で描画
+        if language.is_none() {
+            self.context.set_fill_style(&COLOR_FOREGROUND.into());
+            let _ = self.context.fill_text(text, x_base, y);
+            return;
+        }
+
+        // 言語に応じてトークナイズ
+        let tokens = match language {
+            Some("rust") => self.tokenize_rust(text),
+            _ => {
+                // サポートされていない言語は単色で描画
+                self.context.set_fill_style(&COLOR_FOREGROUND.into());
+                let _ = self.context.fill_text(text, x_base, y);
+                return;
+            }
+        };
+
         let mut x_offset = 0.0;
 
         for token in tokens {

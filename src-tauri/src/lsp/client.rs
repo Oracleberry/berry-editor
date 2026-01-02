@@ -51,15 +51,9 @@ impl LspClient {
             .spawn()
             .map_err(|e| format!("Failed to start LSP server: {}", e))?;
 
-        let stdin = process
-            .stdin
-            .take()
-            .ok_or("Failed to get stdin")?;
+        let stdin = process.stdin.take().ok_or("Failed to get stdin")?;
 
-        let stdout = process
-            .stdout
-            .take()
-            .ok_or("Failed to get stdout")?;
+        let stdout = process.stdout.take().ok_or("Failed to get stdout")?;
 
         self.process = Some(process);
         self.stdin = Some(stdin);
@@ -76,7 +70,10 @@ impl LspClient {
                 "typescript-language-server".to_string(),
                 vec!["--stdio".to_string()],
             )),
-            "python" => Ok(("pyright-langserver".to_string(), vec!["--stdio".to_string()])),
+            "python" => Ok((
+                "pyright-langserver".to_string(),
+                vec!["--stdio".to_string()],
+            )),
             _ => Err(format!("Unsupported language: {}", language)),
         }
     }
@@ -108,8 +105,7 @@ impl LspClient {
         // Parse server capabilities
         if let Some(result) = response.result {
             if let Some(caps) = result.get("capabilities") {
-                self.capabilities = serde_json::from_value(caps.clone())
-                    .unwrap_or_default();
+                self.capabilities = serde_json::from_value(caps.clone()).unwrap_or_default();
             }
         }
 
@@ -196,8 +192,7 @@ impl LspClient {
             std::io::Read::read_exact(stdout, &mut buffer)
                 .map_err(|e| format!("Failed to read content: {}", e))?;
 
-            let content = String::from_utf8(buffer)
-                .map_err(|e| format!("Invalid UTF-8: {}", e))?;
+            let content = String::from_utf8(buffer).map_err(|e| format!("Invalid UTF-8: {}", e))?;
 
             // Parse message
             let message: LspMessage = serde_json::from_str(&content)

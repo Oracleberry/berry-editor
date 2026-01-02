@@ -77,8 +77,9 @@ pub struct FileChunk {
 extern "C" {
     /// Call Tauri commands via the berry_invoke bridge defined in index.html
     /// This is more reliable than accessing __TAURI__ directly
-    #[wasm_bindgen(js_name = berry_invoke)]
-    async fn tauri_invoke(cmd: &str, args: JsValue) -> JsValue;
+    /// The `catch` attribute makes this return Result<JsValue, JsValue> to handle JavaScript exceptions
+    #[wasm_bindgen(js_name = berry_invoke, catch)]
+    async fn tauri_invoke(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
 }
 
 // ========================================
@@ -126,7 +127,9 @@ pub async fn get_current_dir() -> Result<String, String> {
     let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
         .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("get_current_dir", args).await;
+    let result = tauri_invoke("get_current_dir", args)
+        .await
+        .map_err(|e| format!("Failed to get current directory: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -153,7 +156,9 @@ pub async fn read_file(path: &str) -> Result<String, String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("read_file", args).await;
+    let result = tauri_invoke("read_file", args)
+        .await
+        .map_err(|e| format!("Failed to read file: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -181,7 +186,9 @@ pub async fn read_file_partial(
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("read_file_partial", args).await;
+    let result = tauri_invoke("read_file_partial", args)
+        .await
+        .map_err(|e| format!("Failed to read file partial: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -209,7 +216,9 @@ pub async fn read_file_chunk(path: &str, offset: u64, length: usize) -> Result<S
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("read_file_chunk", args).await;
+    let result = tauri_invoke("read_file_chunk", args)
+        .await
+        .map_err(|e| format!("Failed to read file chunk: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -234,7 +243,9 @@ pub async fn write_file(path: &str, contents: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("write_file", args).await;
+    tauri_invoke("write_file", args)
+        .await
+        .map_err(|e| format!("Failed to write file: {:?}", e))?;
     Ok(())
 }
 
@@ -257,7 +268,9 @@ pub async fn read_dir(path: &str, max_depth: Option<usize>) -> Result<Vec<FileNo
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("read_dir", args).await;
+    let result = tauri_invoke("read_dir", args)
+        .await
+        .map_err(|e| format!("Failed to read directory: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -282,7 +295,9 @@ pub async fn create_file(path: &str, contents: Option<String>) -> Result<(), Str
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("create_file", args).await;
+    tauri_invoke("create_file", args)
+        .await
+        .map_err(|e| format!("Failed to create file: {:?}", e))?;
     Ok(())
 }
 
@@ -304,7 +319,9 @@ pub async fn delete_file(path: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("delete_file", args).await;
+    tauri_invoke("delete_file", args)
+        .await
+        .map_err(|e| format!("Failed to delete file: {:?}", e))?;
     Ok(())
 }
 
@@ -327,7 +344,9 @@ pub async fn rename_file(old_path: &str, new_path: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("rename_file", args).await;
+    tauri_invoke("rename_file", args)
+        .await
+        .map_err(|e| format!("Failed to rename file: {:?}", e))?;
     Ok(())
 }
 
@@ -353,7 +372,9 @@ pub async fn get_file_metadata(path: &str) -> Result<FileMetadata, String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("get_file_metadata", args).await;
+    let result = tauri_invoke("get_file_metadata", args)
+        .await
+        .map_err(|e| format!("Failed to get file metadata: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -380,7 +401,9 @@ pub async fn index_workspace(path: &str) -> Result<usize, String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("index_workspace", args).await;
+    let result = tauri_invoke("index_workspace", args)
+        .await
+        .map_err(|e| format!("Failed to index workspace: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -403,7 +426,9 @@ pub async fn search_symbols(query: &str) -> Result<Vec<Symbol>, String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("search_symbols", args).await;
+    let result = tauri_invoke("search_symbols", args)
+        .await
+        .map_err(|e| format!("Failed to search symbols: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -427,7 +452,9 @@ pub async fn index_file(path: &str, content: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("index_file", args).await;
+    tauri_invoke("index_file", args)
+        .await
+        .map_err(|e| format!("Failed to index file: {:?}", e))?;
     Ok(())
 }
 
@@ -446,7 +473,9 @@ pub async fn get_symbol_count() -> Result<usize, String> {
     let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
         .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("get_symbol_count", args).await;
+    let result = tauri_invoke("get_symbol_count", args)
+        .await
+        .map_err(|e| format!("Failed to get symbol count: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -477,7 +506,9 @@ pub async fn highlight_file_parallel(
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("highlight_file_parallel", args).await;
+    let result = tauri_invoke("highlight_file_parallel", args)
+        .await
+        .map_err(|e| format!("Failed to highlight file: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -503,7 +534,9 @@ pub async fn invalidate_syntax_cache(file_path: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("invalidate_syntax_cache", args).await;
+    tauri_invoke("invalidate_syntax_cache", args)
+        .await
+        .map_err(|e| format!("Failed to invalidate syntax cache: {:?}", e))?;
     Ok(())
 }
 
@@ -522,7 +555,9 @@ pub async fn get_syntax_cache_stats() -> Result<(usize, usize), String> {
     let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
         .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("get_syntax_cache_stats", args).await;
+    let result = tauri_invoke("get_syntax_cache_stats", args)
+        .await
+        .map_err(|e| format!("Failed to get cache stats: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))
@@ -549,7 +584,9 @@ pub async fn stream_large_file(file_path: &str) -> Result<(), String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    tauri_invoke("stream_large_file", args).await;
+    tauri_invoke("stream_large_file", args)
+        .await
+        .map_err(|e| format!("Failed to stream file: {:?}", e))?;
     Ok(())
 }
 
@@ -570,7 +607,9 @@ pub async fn read_file_auto(file_path: &str) -> Result<String, String> {
     }))
     .map_err(|e| format!("Failed to serialize args: {}", e))?;
 
-    let result = tauri_invoke("read_file_auto", args).await;
+    let result = tauri_invoke("read_file_auto", args)
+        .await
+        .map_err(|e| format!("Failed to read file auto: {:?}", e))?;
 
     serde_wasm_bindgen::from_value(result)
         .map_err(|e| format!("Failed to deserialize result: {}", e))

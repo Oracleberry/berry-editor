@@ -37,10 +37,7 @@ impl Default for GitManager {
 
 /// Set the Git repository path
 #[tauri::command]
-pub async fn git_set_repo_path(
-    path: String,
-    manager: State<'_, GitManager>,
-) -> Result<(), String> {
+pub async fn git_set_repo_path(path: String, manager: State<'_, GitManager>) -> Result<(), String> {
     manager.set_repo_path(PathBuf::from(path));
     Ok(())
 }
@@ -54,9 +51,7 @@ pub async fn git_status(manager: State<'_, GitManager>) -> Result<Vec<FileStatus
 
 /// List branches
 #[tauri::command]
-pub async fn git_list_branches(
-    manager: State<'_, GitManager>,
-) -> Result<Vec<BranchInfo>, String> {
+pub async fn git_list_branches(manager: State<'_, GitManager>) -> Result<Vec<BranchInfo>, String> {
     let repo_path = manager.get_repo_path()?;
     operations::list_branches(&repo_path).map_err(|e| e.to_string())
 }
@@ -70,20 +65,14 @@ pub async fn git_current_branch(manager: State<'_, GitManager>) -> Result<String
 
 /// Stage a file
 #[tauri::command]
-pub async fn git_stage_file(
-    path: String,
-    manager: State<'_, GitManager>,
-) -> Result<(), String> {
+pub async fn git_stage_file(path: String, manager: State<'_, GitManager>) -> Result<(), String> {
     let repo_path = manager.get_repo_path()?;
     operations::stage_file(&repo_path, &path).map_err(|e| e.to_string())
 }
 
 /// Unstage a file
 #[tauri::command]
-pub async fn git_unstage_file(
-    path: String,
-    manager: State<'_, GitManager>,
-) -> Result<(), String> {
+pub async fn git_unstage_file(path: String, manager: State<'_, GitManager>) -> Result<(), String> {
     let repo_path = manager.get_repo_path()?;
     operations::unstage_file(&repo_path, &path).map_err(|e| e.to_string())
 }
@@ -178,6 +167,9 @@ mod tests {
         let manager = GitManager::new();
         manager.set_repo_path(PathBuf::from("/test/path"));
         assert!(manager.get_repo_path().is_ok());
-        assert_eq!(manager.get_repo_path().unwrap(), PathBuf::from("/test/path"));
+        assert_eq!(
+            manager.get_repo_path().unwrap(),
+            PathBuf::from("/test/path")
+        );
     }
 }

@@ -113,7 +113,9 @@ fn search_with_ripgrep(
     cmd.arg(query).arg(root);
 
     // Execute
-    let output = cmd.output().map_err(|e| format!("Failed to execute ripgrep: {}", e))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute ripgrep: {}", e))?;
 
     if !output.status.success() {
         // Exit code 1 means no matches, which is OK
@@ -139,8 +141,8 @@ fn parse_ripgrep_json(output: &str) -> Result<Vec<SearchResult>, String> {
         }
 
         // Parse each line as JSON
-        let json: serde_json::Value = serde_json::from_str(line)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        let json: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
         // Look for "match" type entries
         if json["type"].as_str() == Some("match") {
@@ -152,7 +154,11 @@ fn parse_ripgrep_json(output: &str) -> Result<Vec<SearchResult>, String> {
                     for submatch in submatches {
                         let start = submatch["start"].as_u64().unwrap_or(0) as usize;
                         let end = submatch["end"].as_u64().unwrap_or(0) as usize;
-                        let line_text = data["lines"]["text"].as_str().unwrap_or("").trim_end().to_string();
+                        let line_text = data["lines"]["text"]
+                            .as_str()
+                            .unwrap_or("")
+                            .trim_end()
+                            .to_string();
 
                         results.push(SearchResult {
                             path: path.clone(),
@@ -200,8 +206,7 @@ fn search_with_simple_grep(
             return Ok(());
         }
 
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("Failed to read directory: {}", e))?;
+        let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))?;
 
         for entry in entries.flatten() {
             if results.len() >= max_results {
@@ -243,8 +248,7 @@ fn search_with_simple_grep(
         results: &mut Vec<SearchResult>,
         max_results: usize,
     ) -> Result<(), String> {
-        let file = fs::File::open(path)
-            .map_err(|e| format!("Failed to open file: {}", e))?;
+        let file = fs::File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
 
         let reader = BufReader::new(file);
         let path_str = path.to_string_lossy().to_string();
@@ -303,12 +307,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_in_files_nonexistent_path() {
-        let result = search_in_files(
-            "test".to_string(),
-            "/nonexistent/path".to_string(),
-            None,
-        )
-        .await;
+        let result =
+            search_in_files("test".to_string(), "/nonexistent/path".to_string(), None).await;
 
         assert!(result.is_err());
     }
@@ -320,12 +320,8 @@ mod tests {
         fs::write(&file_path, "Hello World\nTest Line\nAnother Test").unwrap();
 
         let opts = SearchOptions::default();
-        let results = search_with_simple_grep(
-            "test",
-            &temp_dir.path().to_path_buf(),
-            &opts,
-        )
-        .unwrap();
+        let results =
+            search_with_simple_grep("test", &temp_dir.path().to_path_buf(), &opts).unwrap();
 
         assert!(results.len() >= 2); // Should find "Test" in lines 2 and 3
     }
@@ -339,12 +335,8 @@ mod tests {
         let mut opts = SearchOptions::default();
         opts.case_sensitive = true;
 
-        let results = search_with_simple_grep(
-            "Test",
-            &temp_dir.path().to_path_buf(),
-            &opts,
-        )
-        .unwrap();
+        let results =
+            search_with_simple_grep("Test", &temp_dir.path().to_path_buf(), &opts).unwrap();
 
         assert_eq!(results.len(), 1); // Should only find "Test" (capital T)
     }

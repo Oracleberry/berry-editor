@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "identifier": "com.berry.editor",
   "build": {
-    "beforeDevCommand": "trunk serve --port 8081",
+    "beforeDevCommand": "trunk serve --port 8080",
     "beforeBuildCommand": "trunk build --release",
-    "devUrl": "http://localhost:8081/",
+    "devUrl": "http://localhost:8080/",
     "frontendDist": "../dist"
   },
   "bundle": {

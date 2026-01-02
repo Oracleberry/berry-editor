@@ -1,7 +1,7 @@
 //! Tauri Commands for LSP
 //! Exposes LSP functionality to the WASM frontend
 
-use super::{LspManager, protocol::*};
+use super::{protocol::*, LspManager};
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
@@ -12,6 +12,8 @@ pub fn register_lsp_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> t
         lsp_get_completions,
         lsp_get_hover,
         lsp_goto_definition,
+        lsp_get_diagnostics,
+        lsp_find_references,
         lsp_shutdown,
     ])
 }
@@ -85,14 +87,46 @@ pub async fn lsp_get_hover(
 /// Go to definition
 #[tauri::command]
 pub async fn lsp_goto_definition(
-    language: String,
-    file_path: String,
+    _language: String,
+    _file_path: String,
     line: u32,
     character: u32,
     _manager: State<'_, Arc<Mutex<LspManager>>>,
+) -> Result<Location, String> {
+    // Simplified implementation for now
+    // Return current position as placeholder
+    Ok(Location {
+        uri: String::new(),
+        range: Range {
+            start: Position { line, character },
+            end: Position { line, character },
+        },
+    })
+}
+
+/// Get diagnostics for a file
+#[tauri::command]
+pub async fn lsp_get_diagnostics(
+    _language: String,
+    _file_path: String,
+    _manager: State<'_, Arc<Mutex<LspManager>>>,
+) -> Result<Vec<Diagnostic>, String> {
+    // Simplified implementation for now
+    // Diagnostics are typically pushed from server, not pulled
+    Ok(Vec::new())
+}
+
+/// Find all references
+#[tauri::command]
+pub async fn lsp_find_references(
+    _language: String,
+    _file_path: String,
+    _line: u32,
+    _character: u32,
+    _manager: State<'_, Arc<Mutex<LspManager>>>,
 ) -> Result<Vec<Location>, String> {
     // Simplified implementation for now
-    // In real implementation, call client.get_definition()
+    // Returning empty vector as placeholder
     Ok(Vec::new())
 }
 

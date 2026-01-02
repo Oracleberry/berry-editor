@@ -5,13 +5,13 @@
 //! - Rayon parallel search (all CPU cores)
 //! - OS-limited speed (faster than any editor)
 
-use rayon::prelude::*;
 use memmap2::Mmap;
+use rayon::prelude::*;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
 
 /// Search result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +60,11 @@ impl HyperSearch {
     }
 
     /// Search with regex pattern (parallelized across all cores)
-    pub fn search(&self, pattern: &str, case_sensitive: bool) -> Result<(Vec<SearchResult>, SearchStats), String> {
+    pub fn search(
+        &self,
+        pattern: &str,
+        case_sensitive: bool,
+    ) -> Result<(Vec<SearchResult>, SearchStats), String> {
         let start = std::time::Instant::now();
 
         // Build regex
@@ -70,8 +74,7 @@ impl HyperSearch {
             format!("(?i){}", pattern)
         };
 
-        let re = Regex::new(&regex_pattern)
-            .map_err(|e| format!("Invalid regex: {}", e))?;
+        let re = Regex::new(&regex_pattern).map_err(|e| format!("Invalid regex: {}", e))?;
 
         // Collect all files
         let files: Vec<PathBuf> = WalkDir::new(&self.root)
@@ -93,11 +96,9 @@ impl HyperSearch {
         // ✅ Parallel search across all files using rayon
         let results: Vec<SearchResult> = files
             .par_iter()
-            .flat_map(|file_path| {
-                match self.search_file(file_path, &re) {
-                    Ok(matches) => matches,
-                    Err(_) => Vec::new(),
-                }
+            .flat_map(|file_path| match self.search_file(file_path, &re) {
+                Ok(matches) => matches,
+                Err(_) => Vec::new(),
             })
             .collect();
 
@@ -115,17 +116,12 @@ impl HyperSearch {
 
     /// Search single file using memory-mapped I/O
     fn search_file(&self, path: &Path, re: &Regex) -> Result<Vec<SearchResult>, String> {
-        let file = File::open(path)
-            .map_err(|e| format!("Failed to open file: {}", e))?;
+        let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
 
         // ✅ Memory-map the file (zero heap allocation!)
-        let mmap = unsafe {
-            Mmap::map(&file)
-                .map_err(|e| format!("Failed to mmap file: {}", e))?
-        };
+        let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Failed to mmap file: {}", e))? };
 
-        let content = std::str::from_utf8(&mmap)
-            .map_err(|_| "Invalid UTF-8".to_string())?;
+        let content = std::str::from_utf8(&mmap).map_err(|_| "Invalid UTF-8".to_string())?;
 
         let mut results = Vec::new();
         let file_path = path.to_string_lossy().to_string();
@@ -159,8 +155,7 @@ impl HyperSearch {
             format!("(?i){}", pattern)
         };
 
-        let re = Regex::new(&regex_pattern)
-            .map_err(|e| format!("Invalid regex: {}", e))?;
+        let re = Regex::new(&regex_pattern).map_err(|e| format!("Invalid regex: {}", e))?;
 
         // Collect all files
         let files: Vec<PathBuf> = WalkDir::new(&self.root)
@@ -180,26 +175,21 @@ impl HyperSearch {
         // ✅ Parallel replace across all files
         let total_replacements: usize = files
             .par_iter()
-            .map(|file_path| {
-                match self.replace_in_file(file_path, &re, replacement) {
+            .map(
+                |file_path| match self.replace_in_file(file_path, &re, replacement) {
                     Ok(count) => count,
                     Err(_) => 0,
-                }
-            })
+                },
+            )
             .sum();
 
         Ok(total_replacements)
     }
 
     /// Replace in single file
-    fn replace_in_file(
-        &self,
-        path: &Path,
-        re: &Regex,
-        replacement: &str,
-    ) -> Result<usize, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+    fn replace_in_file(&self, path: &Path, re: &Regex, replacement: &str) -> Result<usize, String> {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
 
         let count = re.find_iter(&content).count();
 
@@ -256,8 +246,8 @@ pub async fn hyper_replace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs::write;
+    use tempfile::tempdir;
 
     #[test]
     fn test_hyper_search() {

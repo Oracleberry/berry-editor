@@ -4,11 +4,11 @@
 //! Prevents UI freezing when opening multi-MB files
 
 use futures::stream::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::pin::Pin;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use serde::{Deserialize, Serialize};
-use std::pin::Pin;
 
 /// File chunk with line information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,10 +93,7 @@ pub fn stream_file_lines(
 ///
 /// Note: Tauri commands don't support returning streams directly,
 /// so this function collects chunks and sends them via events
-pub async fn read_file_streaming(
-    path: String,
-    window: tauri::Window,
-) -> Result<(), String> {
+pub async fn read_file_streaming(path: String, window: tauri::Window) -> Result<(), String> {
     let mut stream = stream_file_lines(&path);
 
     while let Some(chunk_result) = stream.next().await {
@@ -127,20 +124,14 @@ pub async fn read_file_streaming(
 
 /// Tauri command: Stream large file
 #[tauri::command]
-pub async fn stream_large_file(
-    path: String,
-    window: tauri::Window,
-) -> Result<(), String> {
+pub async fn stream_large_file(path: String, window: tauri::Window) -> Result<(), String> {
     read_file_streaming(path, window).await
 }
 
 /// Tauri command: Read file with automatic streaming detection
 /// Uses streaming for files > 1MB
 #[tauri::command]
-pub async fn read_file_auto(
-    path: String,
-    window: tauri::Window,
-) -> Result<String, String> {
+pub async fn read_file_auto(path: String, window: tauri::Window) -> Result<String, String> {
     // Check file size
     let metadata = tokio::fs::metadata(&path)
         .await
@@ -163,15 +154,18 @@ pub async fn read_file_auto(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
     use tempfile::NamedTempFile;
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn test_stream_small_file() {
         // Create temp file with 100 lines
         let mut temp_file = NamedTempFile::new().unwrap();
         for i in 0..100 {
-            temp_file.write_all(format!("Line {}\n", i).as_bytes()).await.unwrap();
+            temp_file
+                .write_all(format!("Line {}\n", i).as_bytes())
+                .await
+                .unwrap();
         }
         temp_file.flush().await.unwrap();
 
@@ -196,7 +190,10 @@ mod tests {
         // Create temp file with 5000 lines (5 chunks)
         let mut temp_file = NamedTempFile::new().unwrap();
         for i in 0..5000 {
-            temp_file.write_all(format!("Line {}\n", i).as_bytes()).await.unwrap();
+            temp_file
+                .write_all(format!("Line {}\n", i).as_bytes())
+                .await
+                .unwrap();
         }
         temp_file.flush().await.unwrap();
 

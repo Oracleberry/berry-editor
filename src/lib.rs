@@ -26,6 +26,9 @@ pub mod common;
 // Tauri bindings for native file access
 pub mod tauri_bindings;
 pub mod tauri_bindings_search;
+pub mod tauri_bindings_database;
+pub mod tauri_bindings_workflow;
+pub mod tauri_bindings_terminal;
 
 // ✅ Web Workers for background processing
 pub mod syntax_worker; // ✅ Strategy 1: Non-blocking syntax analysis
@@ -38,6 +41,15 @@ pub mod core;
 
 // Phase 2: Search functionality
 pub mod search_panel;
+
+// Database Tools
+pub mod database_panel;
+
+// Workflow Automation
+pub mod workflow_panel;
+
+// Terminal
+pub mod terminal_panel;
 
 // Common types
 pub mod types;

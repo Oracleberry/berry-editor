@@ -50,6 +50,10 @@ pub struct HoverInfo {
 pub struct LspIntegration {
     /// Current file path
     file_path: RwSignal<String>,
+    /// Current language
+    language: RwSignal<String>,
+    /// LSP initialized flag
+    initialized: RwSignal<bool>,
     /// Completion items cache
     completion_cache: RwSignal<Vec<CompletionItem>>,
     /// Diagnostics cache
@@ -63,27 +67,76 @@ impl LspIntegration {
     pub fn new() -> Self {
         Self {
             file_path: RwSignal::new(String::new()),
+            language: RwSignal::new(String::from("rust")),
+            initialized: RwSignal::new(false),
             completion_cache: RwSignal::new(Vec::new()),
             diagnostics: RwSignal::new(Vec::new()),
             hover_info: RwSignal::new(None),
         }
     }
 
+    /// Detect language from file extension
+    fn detect_language(file_path: &str) -> String {
+        if file_path.ends_with(".rs") {
+            "rust".to_string()
+        } else if file_path.ends_with(".ts") || file_path.ends_with(".tsx") {
+            "typescript".to_string()
+        } else if file_path.ends_with(".js") || file_path.ends_with(".jsx") {
+            "javascript".to_string()
+        } else if file_path.ends_with(".py") {
+            "python".to_string()
+        } else {
+            "rust".to_string() // Default to Rust
+        }
+    }
+
+    /// Initialize LSP server for the current file
+    pub async fn initialize(&self, file_path: String, root_uri: String) -> anyhow::Result<()> {
+        let language = Self::detect_language(&file_path);
+
+        #[derive(Serialize)]
+        struct InitRequest {
+            language: String,
+            root_uri: String,
+        }
+
+        let request = InitRequest {
+            language: language.clone(),
+            root_uri,
+        };
+
+        let _result: bool = TauriBridge::invoke("lsp_initialize", request).await?;
+
+        self.language.set(language);
+        self.file_path.set(file_path);
+        self.initialized.set(true);
+
+        Ok(())
+    }
+
     /// Set the current file path
     pub fn set_file_path(&self, path: String) {
-        self.file_path.set(path);
+        self.file_path.set(path.clone());
+        let language = Self::detect_language(&path);
+        self.language.set(language);
     }
 
     /// Request completions at a specific position
     pub async fn request_completions(&self, position: Position) -> anyhow::Result<Vec<CompletionItem>> {
+        if !self.initialized.get_untracked() {
+            return Ok(Vec::new()); // Not initialized, return empty
+        }
+
         #[derive(Serialize)]
         struct CompletionRequest {
+            language: String,
             file_path: String,
             line: u32,
             character: u32,
         }
 
         let request = CompletionRequest {
+            language: self.language.get_untracked(),
             file_path: self.file_path.get_untracked(),
             line: position.line as u32,
             character: position.column as u32,
@@ -99,14 +152,20 @@ impl LspIntegration {
 
     /// Request hover information at a specific position
     pub async fn request_hover(&self, position: Position) -> anyhow::Result<Option<HoverInfo>> {
+        if !self.initialized.get_untracked() {
+            return Ok(None); // Not initialized, return empty
+        }
+
         #[derive(Serialize)]
         struct HoverRequest {
+            language: String,
             file_path: String,
             line: u32,
             character: u32,
         }
 
         let request = HoverRequest {
+            language: self.language.get_untracked(),
             file_path: self.file_path.get_untracked(),
             line: position.line as u32,
             character: position.column as u32,
@@ -122,12 +181,18 @@ impl LspIntegration {
 
     /// Request diagnostics for the current file
     pub async fn request_diagnostics(&self) -> anyhow::Result<Vec<Diagnostic>> {
+        if !self.initialized.get_untracked() {
+            return Ok(Vec::new()); // Not initialized, return empty
+        }
+
         #[derive(Serialize)]
         struct DiagnosticsRequest {
+            language: String,
             file_path: String,
         }
 
         let request = DiagnosticsRequest {
+            language: self.language.get_untracked(),
             file_path: self.file_path.get_untracked(),
         };
 
@@ -141,8 +206,13 @@ impl LspIntegration {
 
     /// Go to definition at a specific position
     pub async fn goto_definition(&self, position: Position) -> anyhow::Result<Position> {
+        if !self.initialized.get_untracked() {
+            return Err(anyhow::anyhow!("LSP not initialized"));
+        }
+
         #[derive(Serialize)]
         struct DefinitionRequest {
+            language: String,
             file_path: String,
             line: u32,
             character: u32,
@@ -155,6 +225,7 @@ impl LspIntegration {
         }
 
         let request = DefinitionRequest {
+            language: self.language.get_untracked(),
             file_path: self.file_path.get_untracked(),
             line: position.line as u32,
             character: position.column as u32,
@@ -167,8 +238,13 @@ impl LspIntegration {
 
     /// Find all references at a specific position
     pub async fn find_references(&self, position: Position) -> anyhow::Result<Vec<Position>> {
+        if !self.initialized.get_untracked() {
+            return Ok(Vec::new()); // Not initialized, return empty
+        }
+
         #[derive(Serialize)]
         struct ReferencesRequest {
+            language: String,
             file_path: String,
             line: u32,
             character: u32,
@@ -181,6 +257,7 @@ impl LspIntegration {
         }
 
         let request = ReferencesRequest {
+            language: self.language.get_untracked(),
             file_path: self.file_path.get_untracked(),
             line: position.line as u32,
             character: position.column as u32,

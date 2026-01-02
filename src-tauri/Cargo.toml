@@ -3,6 +3,10 @@ name = "berry-editor-tauri"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "berry_editor_tauri"
+path = "src/lib.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
@@ -24,6 +28,13 @@ once_cell = "1.19"  # ✅ Global singleton for syntax highlighter
 async-stream = "0.3"  # ✅ Async streaming for large file handling
 futures = "0.3"  # ✅ Futures utilities for streaming
 memmap2 = "0.9"  # ✅ Memory-mapped I/O for zero-copy search
+uuid = { version = "1.0", features = ["v4", "serde"] }  # ✅ Database Tools: Connection IDs
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }  # ✅ Database Tools: PostgreSQL
+mysql_async = "0.34"  # ✅ Database Tools: MySQL
+rusqlite = { version = "0.31", features = ["bundled"] }  # ✅ Database Tools: SQLite
+mongodb = "2.8"  # ✅ Database Tools: MongoDB
+portable-pty = "0.8"  # ✅ Terminal: PTY for persistent terminal sessions
+tracing = "0.1"  # ✅ Terminal: Logging for debugging
 
 [dev-dependencies]
 tempfile = "3.10"

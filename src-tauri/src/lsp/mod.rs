@@ -2,12 +2,12 @@
 //! Manages Language Server processes and communication
 
 pub mod client;
-pub mod protocol;
 pub mod commands;
+pub mod protocol;
 
 pub use client::LspClient;
-pub use protocol::{LspMessage, LspRequest, LspResponse, LspNotification};
 pub use commands::register_lsp_commands;
+pub use protocol::{LspMessage, LspNotification, LspRequest, LspResponse};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

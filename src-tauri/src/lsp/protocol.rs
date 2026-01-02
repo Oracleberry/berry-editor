@@ -157,7 +157,10 @@ pub struct ServerCapabilities {
     pub definition_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "referencesProvider")]
     pub references_provider: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "documentFormattingProvider")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "documentFormattingProvider"
+    )]
     pub document_formatting_provider: Option<bool>,
 }
 
@@ -245,7 +248,10 @@ mod tests {
 
     #[test]
     fn test_position() {
-        let pos = Position { line: 10, character: 5 };
+        let pos = Position {
+            line: 10,
+            character: 5,
+        };
         assert_eq!(pos.line, 10);
         assert_eq!(pos.character, 5);
     }
@@ -253,8 +259,14 @@ mod tests {
     #[test]
     fn test_range() {
         let range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 0, character: 10 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 10,
+            },
         };
         assert_eq!(range.start.line, 0);
         assert_eq!(range.end.character, 10);

@@ -131,6 +131,11 @@ if [ -f "tests/syntax_highlighting_colors_test.rs" ]; then
     run_test "Syntax Highlighting Colors" "syntax_highlighting_colors_test"
 fi
 
+# Terminal E2E
+if [ -f "tests/terminal_e2e_test.rs" ]; then
+    run_test "Terminal Panel E2E" "terminal_e2e_test"
+fi
+
 # Summary
 TOTAL_TESTS=$((TESTS_PASSED + TESTS_FAILED))
 

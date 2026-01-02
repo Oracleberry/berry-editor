@@ -2,7 +2,7 @@
 //!
 //! Tests LSP features in Canvas-based VirtualEditorPanel:
 //! - Code completion (Ctrl+Space)
-//! - Goto definition (F12)
+//! - Goto definition (Cmd+B)
 //! - Hover hints (mouse hover)
 //! - Diagnostics display
 //!
@@ -79,9 +79,9 @@ async fn test_ctrl_space_triggers_completion() {
     leptos::logging::log!("✅ Ctrl+Space completion test passed");
 }
 
-/// Test: F12 jumps to definition
+/// Test: Cmd+B jumps to definition
 #[wasm_bindgen_test]
-async fn test_f12_goto_definition() {
+async fn test_cmd_b_goto_definition() {
     let selected_file = RwSignal::new(None::<(String, String)>);
 
     let _dispose = leptos::mount::mount_to_body(move || {
@@ -108,9 +108,10 @@ async fn test_f12_goto_definition() {
     let _ = input_el.focus();
     wait_for_render().await;
 
-    // Simulate F12 key press
+    // Simulate Cmd+B key press
     let mut event_init = KeyboardEventInit::new();
-    event_init.set_key("F12");
+    event_init.set_key("b");
+    event_init.set_meta_key(true); // Cmd key on macOS
     event_init.set_bubbles(true);
     event_init.set_cancelable(true);
 
@@ -122,9 +123,9 @@ async fn test_f12_goto_definition() {
 
     // ✅ Verify cursor moved (LSP should respond, even if in-memory)
     // In real LSP, cursor would jump to line 0 (definition of hello())
-    // For now, we verify the F12 handler was triggered without error
+    // For now, we verify the Cmd+B handler was triggered without error
 
-    leptos::logging::log!("✅ F12 goto definition test passed");
+    leptos::logging::log!("✅ Cmd+B goto definition test passed");
 }
 
 /// Test: Mouse hover handler exists (E2E test in Tauri for actual hover)

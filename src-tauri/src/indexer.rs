@@ -1,10 +1,10 @@
 //! ✅ IntelliJ Pro: Background Indexing for symbol search
 //! Scans files in background and builds symbol index for instant search
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use regex::Regex;
 
 /// ✅ IntelliJ Pro: Symbol type (function, struct, class, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,7 +26,7 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub file_path: String,
     pub line_number: usize,
-    pub signature: Option<String>,  // Full signature (e.g., "fn foo(x: i32) -> i32")
+    pub signature: Option<String>, // Full signature (e.g., "fn foo(x: i32) -> i32")
 }
 
 /// ✅ IntelliJ Pro: Symbol index (in-memory BTreeMap for fast lookup)
@@ -60,7 +60,8 @@ impl SymbolIndex {
             let line_number = content[..cap.get(0).unwrap().start()]
                 .chars()
                 .filter(|&c| c == '\n')
-                .count() + 1;
+                .count()
+                + 1;
 
             self.add_symbol(Symbol {
                 name,
@@ -77,7 +78,8 @@ impl SymbolIndex {
             let line_number = content[..cap.get(0).unwrap().start()]
                 .chars()
                 .filter(|&c| c == '\n')
-                .count() + 1;
+                .count()
+                + 1;
 
             self.add_symbol(Symbol {
                 name,
@@ -94,7 +96,8 @@ impl SymbolIndex {
             let line_number = content[..cap.get(0).unwrap().start()]
                 .chars()
                 .filter(|&c| c == '\n')
-                .count() + 1;
+                .count()
+                + 1;
 
             self.add_symbol(Symbol {
                 name,
@@ -111,7 +114,8 @@ impl SymbolIndex {
             let line_number = content[..cap.get(0).unwrap().start()]
                 .chars()
                 .filter(|&c| c == '\n')
-                .count() + 1;
+                .count()
+                + 1;
 
             self.add_symbol(Symbol {
                 name,
@@ -128,7 +132,8 @@ impl SymbolIndex {
             let line_number = content[..cap.get(0).unwrap().start()]
                 .chars()
                 .filter(|&c| c == '\n')
-                .count() + 1;
+                .count()
+                + 1;
 
             self.add_symbol(Symbol {
                 name,
@@ -165,7 +170,7 @@ impl SymbolIndex {
         results.sort_by(|a, b| {
             let a_exact = a.name.to_lowercase() == query_lower;
             let b_exact = b.name.to_lowercase() == query_lower;
-            
+
             match (a_exact, b_exact) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -178,10 +183,7 @@ impl SymbolIndex {
 
     /// Get all symbols
     pub fn all_symbols(&self) -> Vec<Symbol> {
-        self.symbols
-            .values()
-            .flat_map(|v| v.clone())
-            .collect()
+        self.symbols.values().flat_map(|v| v.clone()).collect()
     }
 
     /// Clear the index
@@ -204,9 +206,9 @@ impl Default for SymbolIndex {
 /// ✅ IntelliJ Pro: Tauri command module for background indexing
 pub mod commands {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     /// ✅ IntelliJ Pro: Index all Rust files in a workspace
     /// Runs in background, scans recursively for .rs files
@@ -310,7 +312,7 @@ mod tests {
     #[test]
     fn test_index_rust_functions() {
         let mut index = SymbolIndex::new();
-        
+
         let content = r#"
             pub fn hello_world() {
                 println!("Hello");
@@ -332,7 +334,7 @@ mod tests {
     #[test]
     fn test_index_structs() {
         let mut index = SymbolIndex::new();
-        
+
         let content = r#"
             pub struct MyStruct {
                 field: i32,
@@ -350,7 +352,7 @@ mod tests {
     #[test]
     fn test_fuzzy_search() {
         let mut index = SymbolIndex::new();
-        
+
         let content = r#"
             fn create_user() {}
             fn delete_user() {}

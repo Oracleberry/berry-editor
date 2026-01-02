@@ -21,12 +21,13 @@ pub struct FileMetadata {
 /// Get current working directory (returns project root, not src-tauri)
 #[tauri::command]
 pub async fn get_current_dir() -> Result<String, String> {
-    let current = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current directory: {}", e))?;
+    let current =
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
 
     // If we're in src-tauri, return parent directory (project root)
     let path = if current.ends_with("src-tauri") {
-        current.parent()
+        current
+            .parent()
             .ok_or_else(|| "Cannot get parent directory".to_string())?
             .to_path_buf()
     } else {
@@ -45,8 +46,7 @@ pub async fn read_file(path: String) -> Result<String, String> {
     // ✅ Safety check: Prevent reading files larger than 10MB at once
     const MAX_SAFE_SIZE: u64 = 10_000_000; // 10MB
 
-    let metadata = fs::metadata(&path)
-        .map_err(|e| format!("Failed to get file size: {}", e))?;
+    let metadata = fs::metadata(&path).map_err(|e| format!("Failed to get file size: {}", e))?;
 
     if metadata.len() > MAX_SAFE_SIZE {
         return Err(format!(
@@ -55,7 +55,14 @@ pub async fn read_file(path: String) -> Result<String, String> {
         ));
     }
 
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
+    fs::read_to_string(&path).map_err(|e| {
+        let error_msg = e.to_string();
+        if error_msg.contains("stream did not contain valid UTF-8") {
+            format!("Cannot read binary file as text: {}", path)
+        } else {
+            format!("Failed to read file: {}", e)
+        }
+    })
 }
 
 /// ✅ IntelliJ Pro: Read file with partial loading (first N bytes only)
@@ -73,7 +80,15 @@ pub async fn read_file_partial(
 
     if total_size <= max_bytes as u64 {
         // File is small, read entirely
-        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+        let content =
+            fs::read_to_string(&path).map_err(|e| {
+        let error_msg = e.to_string();
+        if error_msg.contains("stream did not contain valid UTF-8") {
+            format!("Cannot read binary file as text: {}", path)
+        } else {
+            format!("Failed to read file: {}", e)
+        }
+    })?;
         Ok((content, false, total_size))
     } else {
         // File is large, read only first N bytes
@@ -92,11 +107,7 @@ pub async fn read_file_partial(
 /// ✅ IntelliJ Pro: Read file chunk (for streaming large files)
 /// offset: byte offset, length: bytes to read
 #[tauri::command]
-pub async fn read_file_chunk(
-    path: String,
-    offset: u64,
-    length: usize,
-) -> Result<String, String> {
+pub async fn read_file_chunk(path: String, offset: u64, length: usize) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = fs::File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -168,12 +179,10 @@ pub async fn read_dir(path: String, max_depth: Option<usize>) -> Result<Vec<File
     }
 
     // Sort: directories first, then files, alphabetically
-    nodes.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    nodes.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(nodes)
@@ -222,12 +231,10 @@ fn read_dir_recursive(path: &std::path::Path, max_depth: usize) -> Result<Vec<Fi
         });
     }
 
-    nodes.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    nodes.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(nodes)

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Terminal Input Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px solid #3e3e42;
+            border-radius: 5px;
+        }
+        .test-input {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 1px solid #3e3e42;
+            padding: 6px 10px;
+            border-radius: 3px;
+            outline: none;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 13px;
+            width: 100%;
+        }
+        .test-input:focus {
+            border-color: #4ec9b0;
+        }
+        .log {
+            background: #252526;
+            padding: 10px;
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        button:hover {
+            background: #1177bb;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Terminal Input Diagnostic Test</h1>
+
+    <div class="test-section">
+        <h2>Test 1: Basic Input</h2>
+        <p>Click in the box below and try typing:</p>
+        <input type="text" class="test-input" id="test1" placeholder="Type here..." />
+        <div class="log" id="log1"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: Input with NodeRef simulation</h2>
+        <p>This simulates how Leptos NodeRef focuses an element:</p>
+        <button onclick="focusTest2()">Focus Input</button>
+        <button onclick="clearTest2()">Clear</button>
+        <input type="text" class="test-input" id="test2" placeholder="Enter command..." />
+        <div class="log" id="log2"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 3: Same styling as TerminalPanel</h2>
+        <p>This uses the exact same CSS as the terminal input:</p>
+        <div style="padding: 8px 12px; background: #2d2d30; border: 1px solid #3e3e42; display: flex; align-items: center;">
+            <span style="color: #4ec9b0; margin-right: 8px;">$</span>
+            <input
+                type="text"
+                id="test3"
+                placeholder="Enter command (Shift+Enter for background)"
+                autofocus
+                style="flex: 1; background: #1e1e1e; color: #d4d4d4; border: 1px solid #3e3e42; padding: 6px 10px; border-radius: 3px; outline: none; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px;"
+            />
+        </div>
+        <div class="log" id="log3"></div>
+    </div>
+
+    <script>
+        function addLog(logId, message) {
+            const log = document.getElementById(logId);
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Test 1
+        const test1 = document.getElementById('test1');
+        test1.addEventListener('input', (e) => {
+            addLog('log1', `Input: "${e.target.value}"`);
+        });
+        test1.addEventListener('focus', () => {
+            addLog('log1', 'FOCUSED');
+        });
+        test1.addEventListener('blur', () => {
+            addLog('log1', 'BLURRED');
+        });
+        test1.addEventListener('keydown', (e) => {
+            addLog('log1', `Keydown: ${e.key}`);
+        });
+
+        // Test 2
+        const test2 = document.getElementById('test2');
+        test2.addEventListener('input', (e) => {
+            addLog('log2', `Input: "${e.target.value}"`);
+        });
+        test2.addEventListener('focus', () => {
+            addLog('log2', 'FOCUSED');
+        });
+        test2.addEventListener('blur', () => {
+            addLog('log2', 'BLURRED');
+        });
+
+        function focusTest2() {
+            addLog('log2', 'Calling focus()...');
+            test2.focus();
+            addLog('log2', 'focus() called');
+            setTimeout(() => {
+                const isFocused = document.activeElement === test2;
+                addLog('log2', `Is focused: ${isFocused}`);
+            }, 100);
+        }
+
+        function clearTest2() {
+            test2.value = '';
+            document.getElementById('log2').innerHTML = '';
+        }
+
+        // Test 3
+        const test3 = document.getElementById('test3');
+        test3.addEventListener('input', (e) => {
+            addLog('log3', `Input: "${e.target.value}"`);
+        });
+        test3.addEventListener('focus', () => {
+            addLog('log3', 'FOCUSED');
+        });
+        test3.addEventListener('blur', () => {
+            addLog('log3', 'BLURRED');
+        });
+        test3.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                addLog('log3', `ENTER pressed: "${e.target.value}"`);
+                e.target.value = '';
+            } else {
+                addLog('log3', `Keydown: ${e.key}`);
+            }
+        });
+
+        // Auto-focus test on load
+        window.addEventListener('load', () => {
+            console.log('Page loaded, attempting to focus test3...');
+            test3.focus();
+            setTimeout(() => {
+                const isFocused = document.activeElement === test3;
+                console.log('Test3 is focused:', isFocused);
+                if (isFocused) {
+                    addLog('log3', 'AUTO-FOCUSED on page load');
+                } else {
+                    addLog('log3', 'AUTO-FOCUS FAILED');
+                }
+            }, 100);
+        });
+    </script>
+</body>
+</html>

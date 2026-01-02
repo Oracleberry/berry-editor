@@ -214,17 +214,19 @@ pub fn get_log(repo_path: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
         let commit = repo.find_commit(oid)?;
 
         let hash = commit.id().to_string();
-        let short_hash = commit.as_object().short_id()?.as_str().unwrap_or("").to_string();
+        let short_hash = commit
+            .as_object()
+            .short_id()?
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let message = commit.message().unwrap_or("").to_string();
         let author = commit.author();
         let author_name = author.name().unwrap_or("").to_string();
         let email = author.email().unwrap_or("").to_string();
         let timestamp = commit.time().seconds();
 
-        let parents = commit
-            .parent_ids()
-            .map(|id| id.to_string())
-            .collect();
+        let parents = commit.parent_ids().map(|id| id.to_string()).collect();
 
         result.push(CommitInfo {
             hash,

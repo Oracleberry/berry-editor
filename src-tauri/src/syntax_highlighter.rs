@@ -43,27 +43,35 @@ impl SyntaxHighlighter {
 
     fn rust_keywords() -> Vec<String> {
         vec![
-            "fn", "let", "mut", "const", "static", "impl", "trait", "struct",
-            "enum", "mod", "pub", "use", "crate", "super", "async",
-            "await", "move", "if", "else", "match", "loop", "while", "for",
-            "in", "return", "break", "continue", "as", "ref", "where", "unsafe",
+            "fn", "let", "mut", "const", "static", "impl", "trait", "struct", "enum", "mod", "pub",
+            "use", "crate", "super", "async", "await", "move", "if", "else", "match", "loop",
+            "while", "for", "in", "return", "break", "continue", "as", "ref", "where", "unsafe",
             "extern", "type", "dyn",
-        ].iter().map(|s| s.to_string()).collect()
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     fn rust_types() -> Vec<String> {
         vec![
-            "String", "str", "usize", "isize", "i8", "i16", "i32", "i64", "i128",
-            "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool", "char",
-            "Vec", "Option", "Result", "Some", "None", "Ok", "Err",
-            "Box", "Rc", "Arc", "RefCell", "Cell", "Mutex", "RwLock",
+            "String", "str", "usize", "isize", "i8", "i16", "i32", "i64", "i128", "u8", "u16",
+            "u32", "u64", "u128", "f32", "f64", "bool", "char", "Vec", "Option", "Result", "Some",
+            "None", "Ok", "Err", "Box", "Rc", "Arc", "RefCell", "Cell", "Mutex", "RwLock",
             "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Self",
-        ].iter().map(|s| s.to_string()).collect()
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     /// ✅ Parallel syntax highlighting for multiple lines
     /// Uses rayon to process lines in parallel across CPU cores
-    pub fn highlight_lines(&self, file_path: &str, lines: Vec<(usize, String)>) -> Vec<HighlightResult> {
+    pub fn highlight_lines(
+        &self,
+        file_path: &str,
+        lines: Vec<(usize, String)>,
+    ) -> Vec<HighlightResult> {
         lines
             .par_iter()
             .map(|(line_num, text)| {
@@ -269,11 +277,9 @@ pub async fn highlight_file_parallel(
     lines: Vec<(usize, String)>,
 ) -> Result<Vec<HighlightResult>, String> {
     // ✅ Run in tokio blocking thread to avoid blocking async runtime
-    tokio::task::spawn_blocking(move || {
-        Ok(HIGHLIGHTER.highlight_lines(&file_path, lines))
-    })
-    .await
-    .map_err(|e| format!("Failed to spawn highlighting task: {}", e))?
+    tokio::task::spawn_blocking(move || Ok(HIGHLIGHTER.highlight_lines(&file_path, lines)))
+        .await
+        .map_err(|e| format!("Failed to spawn highlighting task: {}", e))?
 }
 
 /// Tauri command: Clear cache for a file
@@ -309,7 +315,9 @@ mod tests {
 
         // Check that keywords are highlighted
         let first_line_tokens = &results[0].tokens;
-        assert!(first_line_tokens.iter().any(|t| t.text == "fn" && t.color == "#CC7832"));
+        assert!(first_line_tokens
+            .iter()
+            .any(|t| t.text == "fn" && t.color == "#CC7832"));
     }
 
     #[test]

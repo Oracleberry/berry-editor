@@ -51,7 +51,7 @@ async fn test_complete_coding_workflow() {
 
 /// E2E Test: File navigation with LSP
 /// 1. Open file with multiple symbols
-/// 2. Use F12 to jump to definition
+/// 2. Use Cmd+B to jump to definition
 /// 3. Verify cursor moved
 #[wasm_bindgen_test]
 async fn test_navigation_workflow() {
@@ -81,9 +81,10 @@ async fn test_navigation_workflow() {
     let _ = input_el.focus();
     wait_for_render().await;
 
-    // Simulate F12 (goto definition)
+    // Simulate Cmd+B (goto definition)
     let mut event_init = KeyboardEventInit::new();
-    event_init.set_key("F12");
+    event_init.set_key("b");
+    event_init.set_meta_key(true);
     event_init.set_bubbles(true);
 
     let event = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &event_init).unwrap();
