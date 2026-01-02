@@ -342,19 +342,23 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Font Family"</span>
                                                     <select
-                                                        prop:value=move || settings.get().font_family.clone()
                                                         on:change=move |ev| {
+                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
                                                             settings.update(|s| s.font_family = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {EditorSettings::available_fonts().into_iter().map(|font| {
-                                                            view! {
-                                                                <option value=font>{font}</option>
-                                                            }
-                                                        }).collect_view()}
+                                                        {move || {
+                                                            let current = settings.get().font_family;
+                                                            EditorSettings::available_fonts().into_iter().map(|font| {
+                                                                let is_selected = font == current.as_str();
+                                                                view! {
+                                                                    <option value=font selected=is_selected>{font}</option>
+                                                                }
+                                                            }).collect_view()
+                                                        }}
                                                     </select>
                                                 </div>
 
@@ -421,19 +425,23 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Color Theme"</span>
                                                     <select
-                                                        prop:value=move || settings.get().color_theme.clone()
                                                         on:change=move |ev| {
+                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
                                                             settings.update(|s| s.color_theme = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {EditorSettings::available_themes().into_iter().map(|theme| {
-                                                            view! {
-                                                                <option value=theme>{theme}</option>
-                                                            }
-                                                        }).collect_view()}
+                                                        {move || {
+                                                            let current = settings.get().color_theme;
+                                                            EditorSettings::available_themes().into_iter().map(|theme| {
+                                                                let is_selected = theme == current.as_str();
+                                                                view! {
+                                                                    <option value=theme selected=is_selected>{theme}</option>
+                                                                }
+                                                            }).collect_view()
+                                                        }}
                                                     </select>
                                                 </div>
                                             </div>
@@ -449,19 +457,23 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Model"</span>
                                                     <select
-                                                        prop:value=move || settings.get().ai_model.clone()
                                                         on:change=move |ev| {
+                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
                                                             settings.update(|s| s.ai_model = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {EditorSettings::available_models().into_iter().map(|model| {
-                                                            view! {
-                                                                <option value=model>{model}</option>
-                                                            }
-                                                        }).collect_view()}
+                                                        {move || {
+                                                            let current = settings.get().ai_model;
+                                                            EditorSettings::available_models().into_iter().map(|model| {
+                                                                let is_selected = model == current.as_str();
+                                                                view! {
+                                                                    <option value=model selected=is_selected>{model}</option>
+                                                                }
+                                                            }).collect_view()
+                                                        }}
                                                     </select>
                                                 </div>
 
@@ -469,19 +481,23 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                                     <span style="color: #BCBEC4;">"Mode"</span>
                                                     <select
-                                                        prop:value=move || settings.get().ai_mode.clone()
                                                         on:change=move |ev| {
+                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
                                                             settings.update(|s| s.ai_mode = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {EditorSettings::available_modes().into_iter().map(|mode| {
-                                                            view! {
-                                                                <option value=mode>{mode}</option>
-                                                            }
-                                                        }).collect_view()}
+                                                        {move || {
+                                                            let current = settings.get().ai_mode;
+                                                            EditorSettings::available_modes().into_iter().map(|mode| {
+                                                                let is_selected = mode == current.as_str();
+                                                                view! {
+                                                                    <option value=mode selected=is_selected>{mode}</option>
+                                                                }
+                                                            }).collect_view()
+                                                        }}
                                                     </select>
                                                 </div>
 
