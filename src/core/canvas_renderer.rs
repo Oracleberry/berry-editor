@@ -40,6 +40,10 @@ enum TokenKind {
     Macro,          // println!, vec! (blue)
     Constant,       // CONSTANTS (purple)
     Punctuation,    // symbols, operators (white)
+    HtmlTag,        // HTML tags <div> (orange)
+    HtmlAttribute,  // HTML attributes class="..." (cyan)
+    CssSelector,    // CSS selectors .class, #id (yellow)
+    CssProperty,    // CSS properties color, margin (orange)
 }
 
 /// シンタックストークン
@@ -258,6 +262,8 @@ impl CanvasRenderer {
         // 言語に応じてトークナイズ
         let tokens = match language {
             Some("rust") => self.tokenize_rust(text),
+            Some("html" | "htm") => self.tokenize_html(text),
+            Some("css") => self.tokenize_css(text),
             _ => {
                 // サポートされていない言語は単色で描画
                 self.context.set_fill_style(&COLOR_FOREGROUND.into());
@@ -285,6 +291,10 @@ impl CanvasRenderer {
                 TokenKind::Macro => theme.syntax_macro,
                 TokenKind::Constant => theme.syntax_constant,
                 TokenKind::Punctuation => theme.syntax_identifier,
+                TokenKind::HtmlTag => theme.syntax_keyword,        // Orange for HTML tags
+                TokenKind::HtmlAttribute => theme.syntax_number,   // Cyan for attributes
+                TokenKind::CssSelector => theme.syntax_function_def, // Yellow for CSS selectors
+                TokenKind::CssProperty => theme.syntax_keyword,    // Orange for CSS properties
             };
 
             self.context.set_fill_style(&color.into());
@@ -614,6 +624,253 @@ impl CanvasRenderer {
     /// 現在のフォント設定を取得
     pub fn get_font(&self) -> String {
         self.context.font()
+    }
+
+    /// HTMLをトークンに分解
+    fn tokenize_html(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+        let mut current_pos = 0;
+        let chars: Vec<char> = line.chars().collect();
+
+        // HTML comments
+        if line.trim_start().starts_with("<!--") {
+            tokens.push(SyntaxToken {
+                text: line.to_string(),
+                kind: TokenKind::Comment,
+            });
+            return tokens;
+        }
+
+        while current_pos < chars.len() {
+            // Skip whitespace
+            if chars[current_pos].is_whitespace() {
+                let start = current_pos;
+                while current_pos < chars.len() && chars[current_pos].is_whitespace() {
+                    current_pos += 1;
+                }
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::Identifier,
+                });
+                continue;
+            }
+
+            // HTML tags
+            if chars[current_pos] == '<' {
+                let start = current_pos;
+                current_pos += 1;
+
+                // Find tag end
+                while current_pos < chars.len() && chars[current_pos] != '>' {
+                    current_pos += 1;
+                }
+
+                if current_pos < chars.len() {
+                    current_pos += 1; // Include '>'
+                    tokens.push(SyntaxToken {
+                        text: chars[start..current_pos].iter().collect(),
+                        kind: TokenKind::HtmlTag,
+                    });
+                }
+                continue;
+            }
+
+            // String literals
+            if chars[current_pos] == '"' || chars[current_pos] == '\'' {
+                let quote = chars[current_pos];
+                let start = current_pos;
+                current_pos += 1;
+
+                while current_pos < chars.len() && chars[current_pos] != quote {
+                    if chars[current_pos] == '\\' && current_pos + 1 < chars.len() {
+                        current_pos += 2;
+                    } else {
+                        current_pos += 1;
+                    }
+                }
+
+                if current_pos < chars.len() {
+                    current_pos += 1; // Include closing quote
+                }
+
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::String,
+                });
+                continue;
+            }
+
+            // Default: identifier
+            let start = current_pos;
+            while current_pos < chars.len()
+                && !chars[current_pos].is_whitespace()
+                && chars[current_pos] != '<'
+                && chars[current_pos] != '>'
+                && chars[current_pos] != '"'
+                && chars[current_pos] != '\'' {
+                current_pos += 1;
+            }
+
+            if current_pos > start {
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::Identifier,
+                });
+            } else {
+                current_pos += 1;
+            }
+        }
+
+        if tokens.is_empty() {
+            tokens.push(SyntaxToken {
+                text: line.to_string(),
+                kind: TokenKind::Identifier,
+            });
+        }
+
+        tokens
+    }
+
+    /// CSSをトークンに分解
+    fn tokenize_css(&self, line: &str) -> Vec<SyntaxToken> {
+        let mut tokens = Vec::new();
+        let mut current_pos = 0;
+        let chars: Vec<char> = line.chars().collect();
+
+        // CSS comments
+        if line.trim_start().starts_with("/*") {
+            tokens.push(SyntaxToken {
+                text: line.to_string(),
+                kind: TokenKind::Comment,
+            });
+            return tokens;
+        }
+
+        // CSS keywords
+        let css_keywords = [
+            "color", "background", "margin", "padding", "border", "width", "height",
+            "display", "position", "top", "left", "right", "bottom", "flex", "grid",
+            "font", "text", "line", "opacity", "transform", "transition", "animation",
+        ];
+
+        while current_pos < chars.len() {
+            // Skip whitespace
+            if chars[current_pos].is_whitespace() {
+                let start = current_pos;
+                while current_pos < chars.len() && chars[current_pos].is_whitespace() {
+                    current_pos += 1;
+                }
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::Identifier,
+                });
+                continue;
+            }
+
+            // CSS selectors (., #, :)
+            if chars[current_pos] == '.' || chars[current_pos] == '#' || chars[current_pos] == ':' {
+                let start = current_pos;
+                current_pos += 1;
+
+                while current_pos < chars.len()
+                    && (chars[current_pos].is_alphanumeric() || chars[current_pos] == '-' || chars[current_pos] == '_') {
+                    current_pos += 1;
+                }
+
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::CssSelector,
+                });
+                continue;
+            }
+
+            // String literals
+            if chars[current_pos] == '"' || chars[current_pos] == '\'' {
+                let quote = chars[current_pos];
+                let start = current_pos;
+                current_pos += 1;
+
+                while current_pos < chars.len() && chars[current_pos] != quote {
+                    if chars[current_pos] == '\\' && current_pos + 1 < chars.len() {
+                        current_pos += 2;
+                    } else {
+                        current_pos += 1;
+                    }
+                }
+
+                if current_pos < chars.len() {
+                    current_pos += 1;
+                }
+
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::String,
+                });
+                continue;
+            }
+
+            // Numbers (including hex colors)
+            if chars[current_pos].is_ascii_digit() || (chars[current_pos] == '#' && current_pos + 1 < chars.len() && chars[current_pos + 1].is_ascii_hexdigit()) {
+                let start = current_pos;
+
+                if chars[current_pos] == '#' {
+                    current_pos += 1;
+                    while current_pos < chars.len() && chars[current_pos].is_ascii_hexdigit() {
+                        current_pos += 1;
+                    }
+                } else {
+                    while current_pos < chars.len() && (chars[current_pos].is_ascii_digit() || chars[current_pos] == '.') {
+                        current_pos += 1;
+                    }
+                    // CSS units
+                    while current_pos < chars.len() && chars[current_pos].is_alphabetic() {
+                        current_pos += 1;
+                    }
+                }
+
+                tokens.push(SyntaxToken {
+                    text: chars[start..current_pos].iter().collect(),
+                    kind: TokenKind::Number,
+                });
+                continue;
+            }
+
+            // Identifiers and keywords
+            if chars[current_pos].is_alphabetic() || chars[current_pos] == '-' {
+                let start = current_pos;
+
+                while current_pos < chars.len()
+                    && (chars[current_pos].is_alphanumeric() || chars[current_pos] == '-') {
+                    current_pos += 1;
+                }
+
+                let word: String = chars[start..current_pos].iter().collect();
+                let is_keyword = css_keywords.iter().any(|&kw| word.starts_with(kw));
+
+                tokens.push(SyntaxToken {
+                    text: word,
+                    kind: if is_keyword { TokenKind::CssProperty } else { TokenKind::Identifier },
+                });
+                continue;
+            }
+
+            // Punctuation
+            let start = current_pos;
+            current_pos += 1;
+            tokens.push(SyntaxToken {
+                text: chars[start..current_pos].iter().collect(),
+                kind: TokenKind::Punctuation,
+            });
+        }
+
+        if tokens.is_empty() {
+            tokens.push(SyntaxToken {
+                text: line.to_string(),
+                kind: TokenKind::Identifier,
+            });
+        }
+
+        tokens
     }
 }
 
