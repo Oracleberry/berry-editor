@@ -293,10 +293,16 @@ pub fn EditorAppTauri() -> impl IntoView {
                             }.into_any()
                         },
                         ActivePanel::Settings => {
-                            let settings = RwSignal::new(EditorSettings::load());
+                            let settings_store = StoredValue::new(EditorSettings::load());
+
+                            let (font_size, set_font_size) = signal(settings_store.get_value().font_size);
+                            let (line_height, set_line_height) = signal(settings_store.get_value().line_height);
+                            let (tab_size, set_tab_size) = signal(settings_store.get_value().tab_size);
+                            let (word_wrap, set_word_wrap) = signal(settings_store.get_value().word_wrap);
+                            let (ai_enabled, set_ai_enabled) = signal(settings_store.get_value().ai_enabled);
 
                             let save_settings = move || {
-                                let s = settings.get();
+                                let s = settings_store.get_value();
                                 let _ = s.save();
                                 leptos::logging::log!("Settings saved");
                             };
@@ -327,10 +333,11 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                         type="number"
                                                         min="8"
                                                         max="32"
-                                                        prop:value=move || settings.get().font_size
+                                                        prop:value=move || font_size.get()
                                                         on:input=move |ev| {
                                                             if let Ok(val) = event_target_value(&ev).parse() {
-                                                                settings.update(|s| s.font_size = val);
+                                                                set_font_size.set(val);
+                                                                settings_store.update_value(|s| s.font_size = val);
                                                                 save_settings();
                                                             }
                                                         }
@@ -343,22 +350,21 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Font Family"</span>
                                                     <select
                                                         on:change=move |ev| {
-                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
-                                                            settings.update(|s| s.font_family = val);
+                                                            settings_store.update_value(|s| s.font_family = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {move || {
-                                                            let current = settings.get().font_family;
+                                                        {
+                                                            let current = settings_store.get_value().font_family;
                                                             EditorSettings::available_fonts().into_iter().map(|font| {
                                                                 let is_selected = font == current.as_str();
                                                                 view! {
                                                                     <option value=font selected=is_selected>{font}</option>
                                                                 }
                                                             }).collect_view()
-                                                        }}
+                                                        }
                                                     </select>
                                                 </div>
 
@@ -369,10 +375,11 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                         type="number"
                                                         min="14"
                                                         max="40"
-                                                        prop:value=move || settings.get().line_height
+                                                        prop:value=move || line_height.get()
                                                         on:input=move |ev| {
                                                             if let Ok(val) = event_target_value(&ev).parse() {
-                                                                settings.update(|s| s.line_height = val);
+                                                                set_line_height.set(val);
+                                                                settings_store.update_value(|s| s.line_height = val);
                                                                 save_settings();
                                                             }
                                                         }
@@ -387,10 +394,11 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                         type="number"
                                                         min="2"
                                                         max="8"
-                                                        prop:value=move || settings.get().tab_size
+                                                        prop:value=move || tab_size.get()
                                                         on:input=move |ev| {
                                                             if let Ok(val) = event_target_value(&ev).parse() {
-                                                                settings.update(|s| s.tab_size = val);
+                                                                set_tab_size.set(val);
+                                                                settings_store.update_value(|s| s.tab_size = val);
                                                                 save_settings();
                                                             }
                                                         }
@@ -403,10 +411,11 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Word Wrap"</span>
                                                     <input
                                                         type="checkbox"
-                                                        prop:checked=move || settings.get().word_wrap
+                                                        prop:checked=move || word_wrap.get()
                                                         on:change=move |ev| {
                                                             let checked = event_target_checked(&ev);
-                                                            settings.update(|s| s.word_wrap = checked);
+                                                            set_word_wrap.set(checked);
+                                                            settings_store.update_value(|s| s.word_wrap = checked);
                                                             save_settings();
                                                         }
                                                         style="cursor: pointer;"
@@ -426,22 +435,21 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Color Theme"</span>
                                                     <select
                                                         on:change=move |ev| {
-                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
-                                                            settings.update(|s| s.color_theme = val);
+                                                            settings_store.update_value(|s| s.color_theme = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {move || {
-                                                            let current = settings.get().color_theme;
+                                                        {
+                                                            let current = settings_store.get_value().color_theme;
                                                             EditorSettings::available_themes().into_iter().map(|theme| {
                                                                 let is_selected = theme == current.as_str();
                                                                 view! {
                                                                     <option value=theme selected=is_selected>{theme}</option>
                                                                 }
                                                             }).collect_view()
-                                                        }}
+                                                        }
                                                     </select>
                                                 </div>
                                             </div>
@@ -458,22 +466,21 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Model"</span>
                                                     <select
                                                         on:change=move |ev| {
-                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
-                                                            settings.update(|s| s.ai_model = val);
+                                                            settings_store.update_value(|s| s.ai_model = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {move || {
-                                                            let current = settings.get().ai_model;
+                                                        {
+                                                            let current = settings_store.get_value().ai_model;
                                                             EditorSettings::available_models().into_iter().map(|model| {
                                                                 let is_selected = model == current.as_str();
                                                                 view! {
                                                                     <option value=model selected=is_selected>{model}</option>
                                                                 }
                                                             }).collect_view()
-                                                        }}
+                                                        }
                                                     </select>
                                                 </div>
 
@@ -482,22 +489,21 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Mode"</span>
                                                     <select
                                                         on:change=move |ev| {
-                                                            ev.stop_propagation();
                                                             let val = event_target_value(&ev);
-                                                            settings.update(|s| s.ai_mode = val);
+                                                            settings_store.update_value(|s| s.ai_mode = val);
                                                             save_settings();
                                                         }
                                                         style="background: #3C3F41; border: 1px solid #555; color: #BCBEC4; padding: 4px; border-radius: 3px; font-size: 11px;"
                                                     >
-                                                        {move || {
-                                                            let current = settings.get().ai_mode;
+                                                        {
+                                                            let current = settings_store.get_value().ai_mode;
                                                             EditorSettings::available_modes().into_iter().map(|mode| {
                                                                 let is_selected = mode == current.as_str();
                                                                 view! {
                                                                     <option value=mode selected=is_selected>{mode}</option>
                                                                 }
                                                             }).collect_view()
-                                                        }}
+                                                        }
                                                     </select>
                                                 </div>
 
@@ -506,10 +512,11 @@ pub fn EditorAppTauri() -> impl IntoView {
                                                     <span style="color: #BCBEC4;">"Enable AI"</span>
                                                     <input
                                                         type="checkbox"
-                                                        prop:checked=move || settings.get().ai_enabled
+                                                        prop:checked=move || ai_enabled.get()
                                                         on:change=move |ev| {
                                                             let checked = event_target_checked(&ev);
-                                                            settings.update(|s| s.ai_enabled = checked);
+                                                            set_ai_enabled.set(checked);
+                                                            settings_store.update_value(|s| s.ai_enabled = checked);
                                                             save_settings();
                                                         }
                                                         style="cursor: pointer;"
