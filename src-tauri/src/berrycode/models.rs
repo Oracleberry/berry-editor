@@ -153,6 +153,17 @@ impl Model {
                 supports_vision: true,
             },
 
+            // Llama 4 Scout (Ollama)
+            "Llama 4 Scout" | "llama-4-scout" => ModelInfo {
+                name: name.to_string(),
+                max_context_tokens: Some(32768),
+                max_output_tokens: Some(4096),
+                input_cost_per_token: Some(0.0), // Local model, no cost
+                output_cost_per_token: Some(0.0), // Local model, no cost
+                supports_functions: true,
+                supports_vision: false,
+            },
+
             // Default for unknown models
             _ => ModelInfo {
                 name: name.to_string(),

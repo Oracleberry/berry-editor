@@ -147,10 +147,10 @@ Output format:
         Self {
             mode: Mode::Architect,
             system_prompt: system_prompt.to_string(),
-            preferred_model: Some("deepseek-reasoner".to_string()), // DeepSeek-R1 for thinking
+            preferred_model: Some("Llama 4 Scout".to_string()), // Llama 4 Scout for architecture design
             allowed_tools,
             read_only: true,
-            streaming: false, // R1 outputs in one go
+            streaming: false,
         }
     }
 
@@ -182,7 +182,7 @@ Available tools: All file operations, bash, linting, git operations"#;
         Self {
             mode: Mode::Code,
             system_prompt: system_prompt.to_string(),
-            preferred_model: Some("deepseek-chat".to_string()), // DeepSeek-V3 for fast coding
+            preferred_model: Some("Llama 4 Scout".to_string()), // Llama 4 Scout for coding
             allowed_tools: None, // All tools available
             read_only: false,
             streaming: true,

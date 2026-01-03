@@ -227,7 +227,7 @@ impl LLMClient {
             LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
             LLMProvider::Anthropic => "https://api.anthropic.com/v1".to_string(),
             LLMProvider::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
-            LLMProvider::Custom => "http://localhost:11434/v1".to_string(), // Ollama default
+            LLMProvider::Custom => "http://KyosukenoMac-Studio.local:11434/api/generate".to_string(), // Ollama on KyosukenoMac-Studio.local
         }
     }
 
