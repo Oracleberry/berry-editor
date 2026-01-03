@@ -62,6 +62,10 @@ pub fn EditorAppTauri() -> impl IntoView {
     // Search panel state
     let search_is_open = RwSignal::new(true); // Always open when Search is active
 
+    // Sidebar resize state
+    let sidebar_width = RwSignal::new(300.0); // Default width in pixels
+    let is_resizing = RwSignal::new(false);
+
     // Get current directory dynamically from Tauri
     // ✅ Start with empty path - will be populated by Effect
     // In test environment, get_current_dir() will return "." due to is_tauri_context() check
@@ -83,9 +87,50 @@ pub fn EditorAppTauri() -> impl IntoView {
         });
     });
 
+    // Resize handlers
+    let is_hovering_resize = RwSignal::new(false);
+
+    let on_resize_mousedown = move |_ev: leptos::ev::MouseEvent| {
+        is_resizing.set(true);
+    };
+
+    let on_mousemove = move |ev: leptos::ev::MouseEvent| {
+        if is_resizing.get() {
+            // Calculate new width (subtract activity bar width: 54px)
+            let new_width = (ev.client_x() as f64 - 54.0)
+                .max(150.0)  // Minimum width: 150px
+                .min(800.0); // Maximum width: 800px
+            sidebar_width.set(new_width);
+        }
+    };
+
+    let on_mouseup = move |_ev: leptos::ev::MouseEvent| {
+        is_resizing.set(false);
+    };
+
+    let on_resize_mouseenter = move |_ev: leptos::ev::MouseEvent| {
+        is_hovering_resize.set(true);
+    };
+
+    let on_resize_mouseleave = move |_ev: leptos::ev::MouseEvent| {
+        is_hovering_resize.set(false);
+    };
+
     view! {
-        <div class="berry-editor-container">
-            <div class="berry-editor-main-area" style="display: flex; flex: 1; overflow: hidden;">
+        <div
+            class="berry-editor-container"
+            on:mousemove=on_mousemove
+            on:mouseup=on_mouseup
+            style=move || {
+                let base = "display: flex; flex-direction: column; height: 100vh; width: 100vw; overflow: hidden;";
+                if is_resizing.get() {
+                    format!("{} cursor: col-resize; user-select: none;", base)
+                } else {
+                    base.to_string()
+                }
+            }
+        >
+            <div class="berry-editor-main-area" style="display: flex; flex: 1; overflow: hidden; position: relative; min-height: 0;">
                 // Activity Bar (leftmost vertical icon bar)
                 <div class="activity-bar" style="
                     width: 54px;
@@ -96,6 +141,7 @@ pub fn EditorAppTauri() -> impl IntoView {
                     padding: 10px 0;
                     gap: 20px;
                     border-right: 1px solid #1e1e1e;
+                    flex-shrink: 0;
                 ">
                     // Files/Explorer icon
                     <div
@@ -197,10 +243,12 @@ pub fn EditorAppTauri() -> impl IntoView {
                     </div>
                 </div>
 
-                // Sidebar - switches between all panels
-                {move || {
-                    let path = root_path.get();
-                    match active_panel.get() {
+                // Sidebar container with resize capability
+                <div style=move || format!("width: {}px; flex-shrink: 0; overflow: hidden;", sidebar_width.get())>
+                    // Sidebar - switches between all panels
+                    {move || {
+                        let path = root_path.get();
+                        match active_panel.get() {
                         ActivePanel::Explorer => {
                             if !path.is_empty() {
                                 view! {
@@ -547,23 +595,54 @@ pub fn EditorAppTauri() -> impl IntoView {
                             }.into_any()
                         }
                     }
-                }}
+                    }}
+                </div>
 
-                // Main Editor Area with Virtual Scrolling
-                {move || {
-                    let path = root_path.get();
-                    if active_panel.get() == ActivePanel::Terminal && !path.is_empty() {
-                        view! {
-                            <div style="flex: 1; display: flex; flex-direction: column; height: 100%;">
-                                <TerminalPanel project_path=Signal::derive(move || root_path.get()) />
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <VirtualEditorPanel selected_file=selected_file />
-                        }.into_any()
-                    }
-                }}
+                // Resize handle (IntelliJ/VS Code style)
+                <div
+                    on:mousedown=on_resize_mousedown
+                    on:mouseenter=on_resize_mouseenter
+                    on:mouseleave=on_resize_mouseleave
+                    style=move || format!("
+                        width: 5px;
+                        cursor: col-resize;
+                        background: {};
+                        user-select: none;
+                        flex-shrink: 0;
+                        transition: background 0.15s ease;
+                        position: relative;
+                        z-index: 10;
+                    ",
+                        if is_resizing.get() {
+                            "#007ACC"
+                        } else if is_hovering_resize.get() {
+                            "#4C4C4C"
+                        } else {
+                            "#1E1E1E"
+                        }
+                    )
+                ></div>
+
+                // Main Editor Area with Virtual Scrolling (flex to fill remaining space)
+                <div style="display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden;">
+                    {move || {
+                        let path = root_path.get();
+                        if active_panel.get() == ActivePanel::Terminal && !path.is_empty() {
+                            view! {
+                                <div style="display: flex; flex-direction: column; height: 100%;">
+                                    <TerminalPanel project_path=Signal::derive(move || root_path.get()) />
+                                </div>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <VirtualEditorPanel
+                                    selected_file=selected_file
+                                    is_active=Signal::derive(move || active_panel.get() != ActivePanel::Terminal)
+                                />
+                            }.into_any()
+                        }
+                    }}
+                </div>
             </div>
 
             // Status Bar at bottom

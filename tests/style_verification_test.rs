@@ -18,7 +18,7 @@ async fn test_background_colors_applied() -> Result<(), Box<dyn std::error::Erro
     let client = setup_client().await?;
 
     // Tauriアプリに接続
-    client.goto("http://localhost:8081").await?;
+    client.goto("http://localhost:8080").await?;
 
     // ページが完全に読み込まれるまで待機
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -104,7 +104,7 @@ async fn test_background_colors_applied() -> Result<(), Box<dyn std::error::Erro
 async fn test_font_settings_applied() -> Result<(), Box<dyn std::error::Error>> {
     let client = setup_client().await?;
 
-    client.goto("http://localhost:8081").await?;
+    client.goto("http://localhost:8080").await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // ✅ Trigger a render by clicking on a file in the file tree
@@ -226,7 +226,7 @@ async fn test_font_settings_applied() -> Result<(), Box<dyn std::error::Error>> 
 async fn test_inline_styles_verification() -> Result<(), Box<dyn std::error::Error>> {
     let client = setup_client().await?;
 
-    client.goto("http://localhost:8081").await?;
+    client.goto("http://localhost:8080").await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // インラインスタイルが正しく適用されているか確認

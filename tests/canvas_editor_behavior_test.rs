@@ -14,7 +14,7 @@ mod canvas_editor_tests {
     use fantoccini::{ClientBuilder, Locator};
     use tokio;
 
-    const APP_URL: &str = "http://localhost:8081";
+    const APP_URL: &str = "http://localhost:8080";
 
     /// Test 1: Canvas Click Positions Cursor
     ///

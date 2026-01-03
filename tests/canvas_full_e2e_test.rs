@@ -8,7 +8,7 @@ mod canvas_full_e2e_tests {
     use fantoccini::{ClientBuilder, Locator};
     use tokio;
 
-    const APP_URL: &str = "http://localhost:8081";
+    const APP_URL: &str = "http://localhost:8080";
 
     /// Test 1: Application Startup and Canvas Rendering
     #[tokio::test]

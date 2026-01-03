@@ -364,6 +364,9 @@ fn lsp_position_to_canvas_pixel(
 #[component]
 pub fn VirtualEditorPanel(
     #[prop(into)] selected_file: Signal<Option<(String, String)>>,
+    /// Whether this editor panel is currently active (visible). Defaults to true for backwards compatibility.
+    #[prop(into, default = Signal::derive(|| true))]
+    is_active: Signal<bool>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let container_ref = NodeRef::<leptos::html::Div>::new();
@@ -1636,7 +1639,7 @@ pub fn VirtualEditorPanel(
             style="display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;"
         >
             // タブバー
-            <div class="berry-editor-tabs" style="display: flex; background: #313335; border-bottom: 1px solid #1E1F22; min-height: 35px;">
+            <div class="berry-editor-tabs" style="display: flex; background: #313335; border-bottom: 1px solid #1E1F22; min-height: 35px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: #4C4C4C #2B2B2B;">
                 {move || {
                     let tabs_vec = current_tab.tabs.get();
                     let active_index = current_tab.active_index.get();
@@ -1685,6 +1688,8 @@ pub fn VirtualEditorPanel(
                                         font-family: 'JetBrains Mono', monospace;
                                         gap: 8px;
                                         cursor: pointer;
+                                        flex-shrink: 0;
+                                        white-space: nowrap;
                                     ", bg_color)
                                 >
                                     <span>{file_name}</span>
@@ -1766,21 +1771,24 @@ pub fn VirtualEditorPanel(
                         leptos::logging::log!("✅ IME input FOCUSED");
                     }
                     on:blur=move |ev: leptos::ev::FocusEvent| {
-                        leptos::logging::log!("❌ IME input BLURRED, re-focusing...");
-                        // 即座に再フォーカス（ただしIME composing中またはドラッグ中は除く）
-                        if !is_composing.get() && !is_dragging.get() {
+                        leptos::logging::log!("❌ IME input BLURRED");
+                        // 即座に再フォーカス（ただしIME composing中、ドラッグ中、またはエディタが非アクティブの場合は除く）
+                        if !is_composing.get() && !is_dragging.get() && is_active.get() {
+                            leptos::logging::log!("🔄 Editor is active, re-focusing...");
                             if let Some(input) = ime_input_ref.get() {
                                 // Use requestAnimationFrame to avoid immediate blur loop
                                 use wasm_bindgen::JsCast;
                                 let input_clone = input.clone();
                                 let callback = wasm_bindgen::closure::Closure::once(move || {
                                     let _ = input_clone.focus();
-                                    leptos::logging::log!("🔄 Re-focused IME input after blur");
+                                    leptos::logging::log!("✅ Re-focused IME input after blur");
                                 });
                                 let window = web_sys::window().unwrap();
                                 let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
                                 callback.forget();
                             }
+                        } else {
+                            leptos::logging::log!("⏸️  Not re-focusing (editor inactive or composing/dragging)");
                         }
                     }
                     style=move || format!(

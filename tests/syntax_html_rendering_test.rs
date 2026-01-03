@@ -22,7 +22,7 @@ async fn setup_client() -> Result<Client, Box<dyn std::error::Error>> {
         .connect("http://localhost:4444")
         .await?;
 
-    client.goto("http://localhost:8081").await?;
+    client.goto("http://localhost:8080").await?;
     tokio::time::sleep(Duration::from_millis(3000)).await;
 
     Ok(client)

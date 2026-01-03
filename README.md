@@ -1,5 +1,8 @@
 # BerryEditor - 100% Rust Code Editor
 
+[![Tests](https://github.com/Oracleberry/berry-editor/workflows/Tests/badge.svg)](https://github.com/Oracleberry/berry-editor/actions)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A fully-featured code editor built entirely in Rust using Leptos and WebAssembly.
 
 ## Features
@@ -39,8 +42,25 @@ Then open http://127.0.0.1:8080/berry-editor/
 ### Run Tests
 
 ```bash
-wasm-pack test --headless --chrome
+# Unit tests
+cargo test --lib
+
+# WASM integration tests
+wasm-pack test --headless --firefox
+
+# E2E tests (requires geckodriver)
+./run_e2e_tests.sh
+
+# All tests (CI simulation)
+cargo test --lib && \
+wasm-pack test --headless --firefox && \
+./run_e2e_tests.sh
 ```
+
+**Test Coverage**:
+- 80 unit tests
+- 230+ WASM integration tests
+- 5 E2E tests (Syntax, Rendering, Codicon, Database, Terminal)
 
 ## Architecture
 

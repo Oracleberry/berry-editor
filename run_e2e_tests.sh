@@ -63,8 +63,8 @@ fi
 echo -e "${GREEN}✅ geckodriver running (PID: $GECKODRIVER_PID)${NC}"
 
 # Step 3: Check if Tauri dev server is already running
-if curl -s http://localhost:8081 > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ Tauri dev server already running on port 8081${NC}"
+if curl -s http://localhost:8080 > /dev/null 2>&1; then
+    echo -e "${GREEN}✅ Tauri dev server already running on port 8080${NC}"
 else
     echo -e "${YELLOW}Starting Tauri dev server...${NC}"
     cargo tauri dev > /tmp/tauri_dev.log 2>&1 &
@@ -73,7 +73,7 @@ else
     # Wait for Tauri to be ready (max 60 seconds for cold start)
     echo -e "${YELLOW}Waiting for Tauri app to start...${NC}"
     for i in {1..60}; do
-        if curl -s http://localhost:8081 > /dev/null 2>&1; then
+        if curl -s http://localhost:8080 > /dev/null 2>&1; then
             echo -e "${GREEN}✅ Tauri dev server ready${NC}"
             break
         fi
@@ -83,7 +83,7 @@ else
         fi
     done
 
-    if ! curl -s http://localhost:8081 > /dev/null 2>&1; then
+    if ! curl -s http://localhost:8080 > /dev/null 2>&1; then
         echo -e "${RED}❌ Tauri dev server failed to start${NC}"
         echo "Check /tmp/tauri_dev.log for details"
         exit 1
@@ -131,10 +131,19 @@ if [ -f "tests/syntax_highlighting_colors_test.rs" ]; then
     run_test "Syntax Highlighting Colors" "syntax_highlighting_colors_test"
 fi
 
+# Codicon Font Loading (Regression Prevention)
+run_test "Codicon Font Loading (CDN)" "codicon_font_loading_test"
+
+# Database Panel E2E
+run_test "Database Panel E2E" "database_panel_e2e_test"
+
 # Terminal E2E
 if [ -f "tests/terminal_e2e_test.rs" ]; then
     run_test "Terminal Panel E2E" "terminal_e2e_test"
 fi
+
+# Panel Resize Layout (TDD regression test)
+run_test "Panel Resize Layout" "panel_resize_layout_test"
 
 # Summary
 TOTAL_TESTS=$((TESTS_PASSED + TESTS_FAILED))
