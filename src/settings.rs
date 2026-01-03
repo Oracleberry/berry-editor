@@ -42,7 +42,7 @@ impl Default for EditorSettings {
             icon_theme: "Codicons".to_string(),
 
             // AI defaults
-            ai_model: "gpt-4o".to_string(),
+            ai_model: "Llama 4 Scout".to_string(),
             ai_mode: "code".to_string(),
             ai_enabled: true,
         }
@@ -105,6 +105,7 @@ impl EditorSettings {
     /// Get available AI models
     pub fn available_models() -> Vec<&'static str> {
         vec![
+            "Llama 4 Scout",
             "gpt-4o",
             "gpt-4-turbo",
             "gpt-3.5-turbo",
