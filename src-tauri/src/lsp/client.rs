@@ -65,17 +65,71 @@ impl LspClient {
     /// Get server command for language
     fn get_server_command(language: &str) -> Result<(String, Vec<String>), String> {
         match language {
-            "rust" => Ok(("rust-analyzer".to_string(), vec![])),
-            "typescript" | "javascript" => Ok((
-                "typescript-language-server".to_string(),
-                vec!["--stdio".to_string()],
-            )),
-            "python" => Ok((
-                "pyright-langserver".to_string(),
-                vec!["--stdio".to_string()],
-            )),
+            "rust" => {
+                // Try to find rust-analyzer in common locations
+                let rust_analyzer = Self::find_executable("rust-analyzer")
+                    .ok_or_else(|| "rust-analyzer not found. Install with: rustup component add rust-analyzer".to_string())?;
+                Ok((rust_analyzer, vec![]))
+            }
+            "typescript" | "javascript" => {
+                let ts_server = Self::find_executable("typescript-language-server")
+                    .unwrap_or_else(|| "typescript-language-server".to_string());
+                Ok((ts_server, vec!["--stdio".to_string()]))
+            }
+            "python" => {
+                let pyright = Self::find_executable("pyright-langserver")
+                    .unwrap_or_else(|| "pyright-langserver".to_string());
+                Ok((pyright, vec!["--stdio".to_string()]))
+            }
             _ => Err(format!("Unsupported language: {}", language)),
         }
+    }
+
+    /// Find executable in PATH or common locations
+    fn find_executable(name: &str) -> Option<String> {
+        eprintln!("[LSP] Finding executable: {}", name);
+
+        // For rust-analyzer, check common locations FIRST (more reliable than which)
+        if name == "rust-analyzer" {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/default".to_string());
+            let cargo_path = format!("{}/.cargo/bin/rust-analyzer", home);
+
+            let common_paths = vec![
+                "/opt/homebrew/bin/rust-analyzer",  // Homebrew on Apple Silicon (MOST COMMON)
+                cargo_path.as_str(),                 // Cargo install
+                "/usr/local/bin/rust-analyzer",      // Homebrew on Intel Mac
+                "/usr/bin/rust-analyzer",            // System install
+            ];
+
+            for path in &common_paths {
+                eprintln!("[LSP] Checking path: {}", path);
+                if std::path::Path::new(path).exists() {
+                    eprintln!("[LSP] ✅ Found rust-analyzer at: {}", path);
+                    return Some(path.to_string());
+                }
+            }
+            eprintln!("[LSP] ❌ rust-analyzer not found in any common location");
+            eprintln!("[LSP] Searched: {:?}", common_paths);
+        }
+
+        // Try using `which` command as fallback
+        if let Ok(output) = std::process::Command::new("which")
+            .arg(name)
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(path) = String::from_utf8(output.stdout) {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        eprintln!("[LSP] Found via which: {}", path);
+                        return Some(path.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback to just the name (will search PATH)
+        Some(name.to_string())
     }
 
     /// Initialize LSP server
@@ -296,6 +350,66 @@ impl LspClient {
         Ok(None)
     }
 
+    /// Go to definition at position
+    pub fn goto_definition(
+        &mut self,
+        file_uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<Location>, String> {
+        println!("[LSP Client] goto_definition: uri={}, line={}, char={}", file_uri, line, character);
+
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": file_uri
+            },
+            "position": {
+                "line": line,
+                "character": character
+            }
+        });
+
+        let id = self.next_request_id();
+        let request = LspRequest::new(id, "textDocument/definition", Some(params));
+
+        println!("[LSP Client] Sending request to language server...");
+        let response = self.send_request(request)?;
+        println!("[LSP Client] Received response from language server");
+
+        if let Some(result) = response.result {
+            if result.is_null() {
+                println!("[LSP Client] Response is null - no definition found");
+                return Ok(None);
+            }
+
+            println!("[LSP Client] Response result: {:?}", result);
+
+            // Result can be Location, Vec<Location>, or LocationLink[]
+            // Try to parse as single Location first
+            if let Ok(location) = serde_json::from_value::<Location>(result.clone()) {
+                println!("[LSP Client] Parsed as single Location: uri={}, line={}",
+                    location.uri, location.range.start.line);
+                return Ok(Some(location));
+            }
+
+            // Try to parse as Vec<Location>
+            if let Ok(locations) = serde_json::from_value::<Vec<Location>>(result.clone()) {
+                println!("[LSP Client] Parsed as Vec<Location> with {} items", locations.len());
+                if let Some(first) = locations.into_iter().next() {
+                    println!("[LSP Client] Using first location: uri={}, line={}",
+                        first.uri, first.range.start.line);
+                    return Ok(Some(first));
+                }
+            }
+
+            println!("[LSP Client] ERROR: Failed to parse definition response");
+            return Err(format!("Failed to parse definition response: {:?}", result));
+        }
+
+        println!("[LSP Client] No result in response");
+        Ok(None)
+    }
+
     /// Shutdown LSP server
     pub fn shutdown(&mut self) -> Result<(), String> {
         // Send shutdown request
@@ -334,9 +448,31 @@ mod tests {
 
     #[test]
     fn test_get_server_command_rust() {
-        let (cmd, args) = LspClient::get_server_command("rust").unwrap();
-        assert_eq!(cmd, "rust-analyzer");
-        assert_eq!(args.len(), 0);
+        let result = LspClient::get_server_command("rust");
+        // Should either find rust-analyzer or return an error with install instructions
+        match result {
+            Ok((cmd, args)) => {
+                assert!(cmd.contains("rust-analyzer"), "Command should contain rust-analyzer, got: {}", cmd);
+                assert_eq!(args.len(), 0);
+            }
+            Err(e) => {
+                assert!(e.contains("rustup component add"), "Error should mention installation: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_executable_rust_analyzer() {
+        let result = LspClient::find_executable("rust-analyzer");
+        // Should find rust-analyzer if installed
+        if let Some(path) = result {
+            assert!(path.contains("rust-analyzer"), "Path should contain rust-analyzer: {}", path);
+            assert!(
+                std::path::Path::new(&path).exists() || path == "rust-analyzer",
+                "Path should exist or be a bare command name: {}",
+                path
+            );
+        }
     }
 
     #[test]

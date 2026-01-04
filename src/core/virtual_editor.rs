@@ -31,15 +31,15 @@ struct EditorSnapshot {
 // エディタタブ（簡略版）
 // Note: Ropeのcloneは O(1) なので、Rcは不要
 #[derive(Clone)]
-struct EditorTab {
-    file_path: String,
-    buffer: TextBuffer,
-    cursor_line: usize,
-    cursor_col: usize,
-    scroll_top: f64,
+pub struct EditorTab {
+    pub file_path: String,
+    pub buffer: TextBuffer,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub scroll_top: f64,
     // テキスト選択範囲
-    selection_start: Option<(usize, usize)>, // (line, col)
-    selection_end: Option<(usize, usize)>,   // (line, col)
+    pub selection_start: Option<(usize, usize)>, // (line, col)
+    pub selection_end: Option<(usize, usize)>,   // (line, col)
     // Undo/Redo履歴
     undo_stack: Vec<EditorSnapshot>,
     redo_stack: Vec<EditorSnapshot>,
@@ -50,7 +50,7 @@ struct EditorTab {
 }
 
 impl EditorTab {
-    fn new(file_path: String, content: String) -> Self {
+    pub fn new(file_path: String, content: String) -> Self {
         // ファイル拡張子から言語を推測
         let mut syntax_highlighter = SyntaxHighlighter::new();
         let language = if file_path.ends_with(".rs") {
@@ -208,7 +208,7 @@ impl EditorTab {
     }
 
     // カーソルが見える範囲にスクロールを調整
-    fn scroll_into_view(&mut self, canvas_height: f64) {
+    pub fn scroll_into_view(&mut self, canvas_height: f64) {
         let line_height = 20.0; // LINE_HEIGHT
         let cursor_y = self.cursor_line as f64 * line_height;
         let visible_lines = (canvas_height / line_height).floor();
@@ -417,7 +417,11 @@ pub fn VirtualEditorPanel(
     Effect::new(move |_| {
         let current_file = selected_file.get();
 
+        leptos::logging::log!("🔍 DEBUG: Effect triggered, current_file={:?}",
+            current_file.as_ref().map(|(p, _)| p));
+
         if let Some((path, content)) = current_file {
+            leptos::logging::log!("🔍 DEBUG: Opening file: {}", path);
             tabs.update(|tabs_vec| {
                 // 既存のタブを探す
                 if let Some(existing_index) = tabs_vec.iter().position(|t| &t.file_path == &path) {
@@ -431,41 +435,40 @@ pub fn VirtualEditorPanel(
             });
 
             // ✅ LSP: Initialize LSP for the file and request diagnostics
-            // TEMPORARILY DISABLED - Debugging WASM error
-            // let lsp_client = lsp.get_untracked();
-            //
-            // spawn_local(async move {
-            //     leptos::logging::log!("🔍 LSP: Initializing for file: {}", path);
-            //
-            //     // Extract workspace root from file path (parent directory)
-            //     let root_uri = if let Some(parent) = std::path::Path::new(&path).parent() {
-            //         parent.to_string_lossy().to_string()
-            //     } else {
-            //         ".".to_string()
-            //     };
-            //
-            //     // Initialize LSP server
-            //     match lsp_client.initialize(path.clone(), root_uri).await {
-            //         Ok(_) => {
-            //             leptos::logging::log!("✅ LSP: Initialized successfully");
-            //
-            //             // Request initial diagnostics
-            //             match lsp_client.request_diagnostics().await {
-            //                 Ok(diags) => {
-            //                     let count = diags.len();
-            //                     diagnostics.set(diags);
-            //                     leptos::logging::log!("✅ LSP: Diagnostics loaded: {} items", count);
-            //                 }
-            //                 Err(e) => {
-            //                     leptos::logging::log!("❌ LSP: Diagnostics error: {:?}", e);
-            //                 }
-            //             }
-            //         }
-            //         Err(e) => {
-            //             leptos::logging::log!("❌ LSP: Initialization error: {:?}", e);
-            //         }
-            //     }
-            // });
+            let lsp_client = lsp.get_untracked();
+
+            spawn_local(async move {
+                leptos::logging::log!("🔍 LSP: Initializing for file: {}", path);
+
+                // Extract workspace root from file path (parent directory)
+                let root_uri = if let Some(parent) = std::path::Path::new(&path).parent() {
+                    parent.to_string_lossy().to_string()
+                } else {
+                    ".".to_string()
+                };
+
+                // Initialize LSP server
+                match lsp_client.initialize(path.clone(), root_uri).await {
+                    Ok(_) => {
+                        leptos::logging::log!("✅ LSP: Initialized successfully");
+
+                        // Request initial diagnostics
+                        match lsp_client.request_diagnostics().await {
+                            Ok(diags) => {
+                                let count = diags.len();
+                                diagnostics.set(diags);
+                                leptos::logging::log!("✅ LSP: Diagnostics loaded: {} items", count);
+                            }
+                            Err(e) => {
+                                leptos::logging::log!("❌ LSP: Diagnostics error: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        leptos::logging::log!("❌ LSP: Initialization error: {:?}", e);
+                    }
+                }
+            });
 
             render_trigger.set(0);
         }
@@ -1151,6 +1154,49 @@ pub fn VirtualEditorPanel(
 
                 // 列位置を計算（measureText()を使って正確に）
                 let col = find_column_from_x_position(&renderer, &line_text, text_x);
+
+                // ✅ Cmd+Click (or Ctrl+Click) for go-to-definition
+                if ev.meta_key() || ev.ctrl_key() {
+                    leptos::logging::log!("🔍 Cmd/Ctrl+Click detected at line={}, col={}", line, col);
+
+                    // Update cursor position first
+                    tab.cursor_line = line;
+                    tab.cursor_col = col.min(line_len);
+                    current_tab.set(Some(tab.clone()));
+                    render_trigger.update(|v| *v += 1);
+
+                    // Call LSP goto_definition
+                    let lsp_client = lsp.get_untracked();
+                    let position = Position::new(line, col);
+
+                    spawn_local(async move {
+                        leptos::logging::log!("🔍 LSP: Goto definition at {:?}", position);
+                        match lsp_client.goto_definition(position).await {
+                            Ok(location) => {
+                                leptos::logging::log!("✅ LSP: Definition found at {}:{}:{}", location.uri, location.line, location.column);
+
+                                // Jump to definition location
+                                tabs.update(|tabs_vec| {
+                                    if let Some(active_idx) = active_tab_index.get_untracked() {
+                                        if let Some(tab) = tabs_vec.get_mut(active_idx) {
+                                            tab.cursor_line = location.line;
+                                            tab.cursor_col = location.column;
+                                            tab.scroll_into_view(canvas.client_height() as f64);
+                                            leptos::logging::log!("✅ LSP: Jumped to {:?}", location);
+                                        }
+                                    }
+                                });
+                                render_trigger.update(|v| *v += 1);
+                            }
+                            Err(e) => {
+                                leptos::logging::error!("❌ LSP: Goto definition failed: {}", e);
+                            }
+                        }
+                    });
+
+                    // Don't start drag selection for Cmd+Click
+                    return;
+                }
 
                 tab.cursor_line = line;
                 tab.cursor_col = col.min(line_len);

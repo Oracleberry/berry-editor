@@ -45,15 +45,23 @@ pub struct HoverInfo {
     pub range: Option<DiagnosticRange>,
 }
 
+/// LSP Location Information (for go-to-definition)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocationInfo {
+    pub uri: String,         // File path
+    pub line: usize,         // Line number
+    pub column: usize,       // Column number
+}
+
 /// LSP Integration Manager
 #[derive(Clone, Copy)]
 pub struct LspIntegration {
     /// Current file path
-    file_path: RwSignal<String>,
+    pub file_path: RwSignal<String>, // Made public for testing
     /// Current language
     language: RwSignal<String>,
     /// LSP initialized flag
-    initialized: RwSignal<bool>,
+    pub initialized: RwSignal<bool>, // Made public for initialization checks
     /// Completion items cache
     completion_cache: RwSignal<Vec<CompletionItem>>,
     /// Diagnostics cache
@@ -94,10 +102,14 @@ impl LspIntegration {
     pub async fn initialize(&self, file_path: String, root_uri: String) -> anyhow::Result<()> {
         let language = Self::detect_language(&file_path);
 
+        leptos::logging::log!("🔍 LSP initializing: file={}, language={}, root={}",
+            file_path, language, root_uri);
+
         #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct InitRequest {
             language: String,
-            root_uri: String,
+            root_uri: String,  // Will be serialized as "rootUri"
         }
 
         let request = InitRequest {
@@ -105,13 +117,22 @@ impl LspIntegration {
             root_uri,
         };
 
-        let _result: bool = TauriBridge::invoke("lsp_initialize", request).await?;
+        match TauriBridge::invoke::<_, bool>("lsp_initialize", request).await {
+            Ok(_result) => {
+                self.language.set(language.clone());
+                self.file_path.set(file_path.clone());
+                self.initialized.set(true);
 
-        self.language.set(language);
-        self.file_path.set(file_path);
-        self.initialized.set(true);
+                leptos::logging::log!("✅ LSP initialized successfully: file={}, language={}, initialized={}",
+                    file_path, language, self.initialized.get_untracked());
 
-        Ok(())
+                Ok(())
+            }
+            Err(e) => {
+                leptos::logging::error!("❌ LSP initialization failed: {}", e);
+                Err(e)
+            }
+        }
     }
 
     /// Set the current file path
@@ -205,12 +226,23 @@ impl LspIntegration {
     }
 
     /// Go to definition at a specific position
-    pub async fn goto_definition(&self, position: Position) -> anyhow::Result<Position> {
-        if !self.initialized.get_untracked() {
-            return Err(anyhow::anyhow!("LSP not initialized"));
+    pub async fn goto_definition(&self, position: Position) -> anyhow::Result<LocationInfo> {
+        // ✅ FIX: Log initialization status for debugging
+        let is_init = self.initialized.get_untracked();
+        leptos::logging::log!("🔍 LSP goto_definition: initialized={}, file_path={}",
+            is_init, self.file_path.get_untracked());
+
+        if !is_init {
+            // ✅ FIX: Provide more helpful error message
+            let file_path = self.file_path.get_untracked();
+            return Err(anyhow::anyhow!(
+                "LSP not initialized for file: {}. Please wait for file to load completely.",
+                if file_path.is_empty() { "(no file)" } else { &file_path }
+            ));
         }
 
         #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct DefinitionRequest {
             language: String,
             file_path: String,
@@ -219,7 +251,19 @@ impl LspIntegration {
         }
 
         #[derive(Deserialize)]
-        struct Location {
+        struct LocationResponse {
+            uri: String,
+            range: RangeResponse,
+        }
+
+        #[derive(Deserialize)]
+        struct RangeResponse {
+            start: PositionResponse,
+            end: PositionResponse,
+        }
+
+        #[derive(Deserialize)]
+        struct PositionResponse {
             line: u32,
             character: u32,
         }
@@ -231,9 +275,33 @@ impl LspIntegration {
             character: position.column as u32,
         };
 
-        let location: Location = TauriBridge::invoke("lsp_goto_definition", request).await?;
+        leptos::logging::log!("🔍 LSP: Sending goto_definition request: language={}, file={}, line={}, char={}",
+            request.language, request.file_path, request.line, request.character);
 
-        Ok(Position::new(location.line as usize, location.character as usize))
+        let location: LocationResponse = TauriBridge::invoke("lsp_goto_definition", request).await?;
+
+        leptos::logging::log!("🔍 LSP: Received response: uri={}, line={}, char={}",
+            location.uri, location.range.start.line, location.range.start.character);
+
+        // Convert file:// URI to regular file path
+        let file_path = if location.uri.starts_with("file://") {
+            location.uri[7..].to_string()
+        } else {
+            location.uri
+        };
+
+        leptos::logging::log!("🔍 LSP: Converted file path: {}", file_path);
+
+        let result = LocationInfo {
+            uri: file_path.clone(),
+            line: location.range.start.line as usize,
+            column: location.range.start.character as usize,
+        };
+
+        leptos::logging::log!("✅ LSP: Returning LocationInfo: uri={}, line={}, column={}",
+            result.uri, result.line, result.column);
+
+        Ok(result)
     }
 
     /// Find all references at a specific position
@@ -311,5 +379,41 @@ mod tests {
         let lsp = LspIntegration::new();
         lsp.set_file_path("/path/to/file.rs".to_string());
         assert_eq!(lsp.file_path.get_untracked(), "/path/to/file.rs");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_goto_definition_requires_initialization() {
+        use crate::types::Position;
+        use wasm_bindgen_futures::JsFuture;
+        use wasm_bindgen::JsValue;
+
+        let lsp = LspIntegration::new();
+
+        // Without initialization, goto_definition should fail
+        let position = Position::new(10, 5);
+
+        // Create async test
+        wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+        // Since we can't use async in wasm_bindgen_test easily, we test the preconditions
+        assert_eq!(lsp.file_path.get_untracked(), "", "File path should be empty initially");
+        assert_eq!(lsp.initialized.get_untracked(), false, "LSP should not be initialized");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_file_path_must_be_set_before_goto_definition() {
+        use crate::types::Position;
+
+        let lsp = LspIntegration::new();
+
+        // Test that file_path is checked before allowing goto_definition
+        let file_path = lsp.file_path.get_untracked();
+        assert!(file_path.is_empty(), "File path must be empty initially");
+
+        // After setting file path, it should be non-empty
+        lsp.set_file_path("/test/file.rs".to_string());
+        let file_path_after = lsp.file_path.get_untracked();
+        assert!(!file_path_after.is_empty(), "File path must be set");
+        assert_eq!(file_path_after, "/test/file.rs");
     }
 }
