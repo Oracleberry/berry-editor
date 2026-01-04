@@ -25,8 +25,15 @@ pub async fn lsp_initialize(
     root_uri: String,
     manager: State<'_, Arc<Mutex<LspManager>>>,
 ) -> Result<bool, String> {
+    eprintln!("[LSP COMMAND] ========================================");
+    eprintln!("[LSP COMMAND] lsp_initialize CALLED");
+    eprintln!("[LSP COMMAND] language={}, root_uri={}", language, root_uri);
+    eprintln!("[LSP COMMAND] ========================================");
+
     let mgr = manager.lock().unwrap();
     mgr.initialize_client(language, root_uri)?;
+
+    eprintln!("[LSP COMMAND] ✅ Initialization completed successfully");
     Ok(true)
 }
 
@@ -87,21 +94,61 @@ pub async fn lsp_get_hover(
 /// Go to definition
 #[tauri::command]
 pub async fn lsp_goto_definition(
-    _language: String,
-    _file_path: String,
+    language: String,
+    file_path: String,
     line: u32,
     character: u32,
-    _manager: State<'_, Arc<Mutex<LspManager>>>,
+    manager: State<'_, Arc<Mutex<LspManager>>>,
 ) -> Result<Location, String> {
-    // Simplified implementation for now
-    // Return current position as placeholder
-    Ok(Location {
-        uri: String::new(),
-        range: Range {
-            start: Position { line, character },
-            end: Position { line, character },
-        },
-    })
+    eprintln!("[LSP COMMAND] ========================================");
+    eprintln!("[LSP COMMAND] lsp_goto_definition CALLED");
+    eprintln!("[LSP COMMAND] language={}, file={}, line={}, char={}", language, file_path, line, character);
+    eprintln!("[LSP COMMAND] ========================================");
+
+    let mgr = manager.lock().unwrap();
+
+    let client_arc = mgr
+        .get_client(&language)
+        .ok_or_else(|| {
+            let err = format!("LSP not initialized for {}", language);
+            eprintln!("[LSP COMMAND] ❌ ERROR: {}", err);
+            err
+        })?;
+
+    let mut client = client_arc.lock().unwrap();
+
+    // Convert file path to URI
+    let file_uri = if file_path.starts_with("file://") {
+        file_path
+    } else {
+        format!("file://{}", file_path)
+    };
+
+    eprintln!("[LSP COMMAND] Calling LSP client with URI: {}", file_uri);
+
+    // Call LSP client's goto_definition method
+    match client.goto_definition(&file_uri, line, character) {
+        Ok(Some(location)) => {
+            eprintln!("[LSP COMMAND] ✅ Definition found: uri={}, line={}, char={}",
+                location.uri, location.range.start.line, location.range.start.character);
+            Ok(location)
+        }
+        Ok(None) => {
+            eprintln!("[LSP COMMAND] ⚠️  No definition found, returning current position");
+            // No definition found, return current position
+            Ok(Location {
+                uri: file_uri,
+                range: Range {
+                    start: Position { line, character },
+                    end: Position { line, character },
+                },
+            })
+        }
+        Err(e) => {
+            eprintln!("[LSP COMMAND] ❌ ERROR in goto_definition: {}", e);
+            Err(e)
+        }
+    }
 }
 
 /// Get diagnostics for a file
